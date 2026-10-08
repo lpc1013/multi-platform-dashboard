@@ -22,7 +22,7 @@
           或手动粘贴 Cookie 字符串，存入凭据文件 dumate_accounts.json。
           （DuMate 无网页版，浏览器登录入口已移除——dumate.cn 仅是下载页，拿不到登录态。）
 """
-import os, sys, time, uuid, json, urllib.parse
+import os, sys, time, uuid, json
 
 try:
     import requests

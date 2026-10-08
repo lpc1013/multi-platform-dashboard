@@ -37,7 +37,6 @@ BASE = (os.environ.get("QODER_HOST") or "https://openapi.qoder.com.cn").rstrip("
 CAMPAIGNS_PATH = "/sash/api/v1/me/campaigns"
 CLAIM_PATH = "/sash/api/v1/me/campaigns/%s/claim"
 USAGE_PATH = "/api/v2/quota/usage"
-REFRESH_PATH = "/api/v1/deviceToken/refresh"
 USERINFO_PATH = "/api/v1/userinfo"
 
 UA = "Qoder"

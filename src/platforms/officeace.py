@@ -48,9 +48,17 @@ import sys
 import json
 import hmac
 import hashlib
-import time
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, quote
+
+try:                       # 包内导入（server.py: import platforms.officeace）
+    from ._util import to_float
+except ImportError:        # 直接以脚本运行时的兜底
+    def to_float(v, default=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
 
 try:
     import requests
@@ -255,10 +263,7 @@ def _bonus_grant(b):
 
 
 def _num(v, default=0.0):
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return default
+    return to_float(v, default)
 
 
 def _parse_subscription(d):

@@ -377,7 +377,6 @@ def read_lingxi():
     返回 (ok, msg, accounts)；accounts = {名字: {"wps_sid": ...}}
     """
     import glob as _glob
-    import shutil
     import sqlite3
     import tempfile
 

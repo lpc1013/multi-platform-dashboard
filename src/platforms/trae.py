@@ -16,12 +16,20 @@ Trae（CN / SOLO CN）平台适配器
   X-User-Region: CN
 """
 import os
-import sys
 import json
 import time
 import datetime
 import urllib.request
 import urllib.error
+
+try:                       # 包内导入（server.py: import platforms.trae）
+    from ._util import to_float as _num
+except ImportError:        # 直接以脚本运行（python platforms/trae.py）时的兜底
+    def _num(v, default=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -224,13 +232,6 @@ def _msg_of(d, j):
             if d.get(k):
                 return str(d[k])[:120]
     return str(j)[:120]
-
-
-def _num(v):
-    try:
-        return float(v)
-    except Exception:
-        return 0.0
 
 
 def _fmt_ts(ts):

@@ -16,8 +16,8 @@ WorkBuddy 看板数据生成器  ->  dashboard_data.json
   2) ../WorkBuddy-Daily/wb_refresh_tokens.json（L0NE-6 脚本维护）
   获取凭据：在 WorkBuddy-Daily 目录跑  python workbuddy_login.py
 """
-import os, sys, json, time, base64, calendar
-from datetime import datetime, timedelta
+import os, sys, json, time, base64
+from datetime import datetime
 
 try:
     import requests

@@ -17,12 +17,19 @@ WPS 灵犀（智点）平台适配器
 均带 withCredentials:true → 即靠 wps_sid cookie 鉴权。
 """
 import os
-import sys
 import json
-import time
 import urllib.request
 import urllib.error
 import urllib.parse
+
+try:                       # 包内导入（server.py: import platforms.lingxi）
+    from ._util import to_float as _num
+except ImportError:        # 直接以脚本运行（python platforms/lingxi.py）时的兜底
+    def _num(v, default=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -221,13 +228,6 @@ def read_account(name, ent):
             "pkg_count": len(packages),
         },
     }
-
-
-def _num(v):
-    try:
-        return float(v)
-    except Exception:
-        return 0.0
 
 
 def _fmt_time(s):

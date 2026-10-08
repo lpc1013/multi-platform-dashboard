@@ -2230,7 +2230,6 @@ def _run_lingxi_sms_job(job, phone, on_success):
 
 import http.server
 import re
-import socket
 
 _HW_PHONE_SEL = 'input[name="username"]'          # 仅作兜底/文档
 _HW_CODE_SEL = 'input[placeholder*="验证码"]'
@@ -2456,8 +2455,9 @@ def _hw_submit_code(page, ctx, job, code):
 #     IDE 线（auth_from=trae）对应 **Trae CN**；SOLO 线对应 TRAE SOLO CN。必须按线取。
 _TRAE_CONSOLE = "https://www.trae.cn"
 _TRAE_API = "https://api.trae.cn"
-_TRAE_ICUBE = "https://api.trae.com.cn"
-_TRAE_OAUTH_APP_ID = "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8"
+# 参考值（逆向自客户端，当前流程未使用，保留备查）：
+#   iCube 域名 = https://api.trae.com.cn
+#   OAuth app_id = 6eefa01c-1036-4c7e-9ca5-d891f63bfcd8
 _TRAE_APP_VERSION = "3.3.104"        # 兜底；运行时优先读客户端真值
 _TRAE_PLUGIN_VERSION = "2.3.87416"   # = buildVersion（兜底值，运行时优先读 iCubeLastVersion）
 _TRAE_LINES = {
@@ -2622,7 +2622,7 @@ def _trae_device_suffix():
 
     nls.messages.json(en)      [200] = "'s computer"
     nls.zh-cn.messages.json(zh)[200] = "的电脑"
-    本机实测客户端发的 DeviceName = "user的电脑" → 中文后缀。
+    本机实测客户端发的 DeviceName = "<用户名>的电脑" → 中文后缀。
     优先按 Trae 安装目录里是否存在 nls.zh-cn.messages.json 判定语言（与客户端界面一致）。
     """
     for d in _trae_out_dirs():
@@ -2656,7 +2656,7 @@ def _trae_device_name():
       CTe(): win32 → `net.exe user <USERNAME>` 的 Full Name；空 → Electron os.userInfo().username;
              再空 → process.env.USER || USERNAME
       ETe(): CTe() + f(200)  ← f(200) 是 nls i18n 字符串（zh="的电脑" / en="'s computer"）
-    本机真值（客户端成功请求 body 原文）：DeviceName = "user的电脑"
+    本机真值（客户端成功请求 body 原文）：DeviceName = "<用户名>的电脑"
     """
     base = _trae_account_full_name()
     if not base:
@@ -2681,7 +2681,7 @@ def _trae_system_facts():
        osName             = process.platform                ("windows"，小写)
        osVersion          = os.version()                    ("Windows 11 Home")
        cpuBrand           = os.cpus()[0].model              ("Intel(R) Core(TM) i7-14650HX")
-       DeviceName         = ETe() = 账户名 + i18n 后缀       ("user的电脑")
+       DeviceName         = ETe() = 账户名 + i18n 后缀       ("<用户名>的电脑")
     """
     import platform as _pf
     model = _trae_reg_str(r"HARDWARE\DESCRIPTION\System\BIOS", "SystemProductName")
@@ -2852,7 +2852,7 @@ def _trae_exchange(line, auth_code, verifier, dev, dbg=None):
 
     本机客户端成功请求原文见
       %APPDATA%\\Trae CN\\logs\\20261008T114448\\main.log:150
-    —— 我们的 payload 已逐字段比对为**零差异**（含 DeviceName="user的电脑"）。
+    —— 我们的 payload 已逐字段比对为**零差异**（含 DeviceName="<用户名>的电脑"）。
     """
     cfg = _TRAE_LINES[line]
     sysf = _trae_system_facts()
@@ -3181,22 +3181,6 @@ def _trae_click_open(ctx, debug=None):
             except Exception:
                 pass
     return False
-
-
-def _trae_on_authorize_page(page):
-    """⚠ 已弃用（2026-10-08 实地取证）——保留仅为向后兼容，**不要再用它做「该不该代点」的判断**。
-
-    原因：`www.trae.cn/authorization?…` 这个 URL **渲染的是登录表单**（标题「登录 | TRAE」，
-    实测 FINAL_URL 就是 /authorization），登录成功后才在**同一个 URL 上**切到授权确认态。
-    因此「URL 含 /authorization」**无法区分登录页与授权确认页**，用它做主条件会导致
-    ① 在登录页阶段每轮空试（浪费 1.8 秒/轮）；② 授权确认页出现时机被错过。
-    正确做法（见 `_run_trae_sms_job` 主循环）：**不判 URL**，用 `_trae_sms_page_ok(page)`
-    排除登录表单阶段，其余每轮都尝试 `_trae_click_open`。"""
-    try:
-        u = page.url or ""
-        return "/authorization" in u and "127.0.0.1" not in u
-    except Exception:
-        return False
 
 
 def start_trae_sms_job(phone, name, on_success):

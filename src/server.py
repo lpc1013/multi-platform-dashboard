@@ -20,7 +20,7 @@
   python server.py            # 默认 http://127.0.0.1:8799
   python server.py 9000       # 指定端口
 """
-import os, sys, json, time, uuid, itertools, threading, hashlib
+import os, sys, json, time, itertools, threading, hashlib
 import concurrent.futures as cf
 import http.server, socketserver, urllib.parse
 from datetime import datetime
@@ -176,7 +176,7 @@ def _wb_match(it, name):
 
 def _dedupe_store(path, pid, keep_name, rec):
     """写入前清掉「同一身份、换了显示名」的旧条目。
-    场景：桌面端把显示名从「示例用户A」改成「用户68388451332」，
+    场景：桌面端把显示名从「示例用户C」改成「用户68388451332」，
     再点一次导入，若不去重就会多出一张同名不同键的卡片，账号数被虚增。"""
     data = _read_json(path, {})
     if not isinstance(data, dict):

@@ -36,7 +36,6 @@ ROOT = os.path.dirname(HERE)
 # 因此默认 cn 优先，io 仅作回退；可用环境变量 MINIMAX_HOST 强制指定。
 _HOST_ENV = (os.environ.get("MINIMAX_HOST") or "").strip().rstrip("/")
 HOSTS = [h for h in (_HOST_ENV, "https://agent.minimax.cn", "https://agent.minimax.io") if h]
-HOST = HOSTS[0]
 RENEW_PATH = "/v1/api/user/renewal"
 USER_INFO_PATH = "/v1/api/user/info"
 STATUS_PATH = "/minimax-cloud/api/v1/signin/status"
