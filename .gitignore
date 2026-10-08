@@ -1,0 +1,39 @@
+# ── 凭据 / 敏感数据（绝不入库）──────────────────────────────
+*.accounts.json
+*_accounts.json
+wb_login_result.json
+.minimax_token.json
+*.token.json
+credentials.json
+.env
+.env.*
+
+# ── Python ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ── 运行产物 / 日志 ─────────────────────────────────────
+*.log
+backend_run.log
+backend_err.log
+
+# ── AI 工作记忆（含本机隐私，不上传）────────────────────
+.workbuddy/
+.workbuddy-ai/
+
+# ── 编辑器 / 系统 ───────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

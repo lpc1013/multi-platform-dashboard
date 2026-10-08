@@ -1,0 +1,1929 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>多平台账号看板</title>
+<style>
+:root{
+  --bg:#f6f8fb; --card:#ffffff; --ink:#0a2540; --ink2:#425466; --muted:#8792a2;
+  --line:#e6ebf1; --brand:#635bff; --brand-soft:#eef0ff;
+  --green:#0d9f6e; --green-soft:#e6f7f0; --orange:#d97706; --orange-soft:#fef3e2;
+  --red:#dc2626; --red-soft:#fdecec; --blue:#2563eb; --blue-soft:#e8f0fe;
+  --purple:#7c3aed; --purple-soft:#f1ebfe;
+  --shadow:0 1px 2px rgba(10,37,64,.06),0 4px 14px rgba(10,37,64,.05);
+  --shadow-lg:0 2px 6px rgba(10,37,64,.08),0 12px 32px rgba(10,37,64,.10);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  background:
+    radial-gradient(1100px 480px at 12% -8%, #eef1ff 0%, rgba(238,241,255,0) 62%),
+    radial-gradient(900px 420px at 92% 0%, #e6f4ff 0%, rgba(230,244,255,0) 58%),
+    var(--bg);
+  color:var(--ink); min-height:100vh; padding:34px 26px 70px;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1180px;margin:0 auto}
+
+/* ── 头部 ── */
+.head{display:flex;align-items:flex-end;justify-content:space-between;gap:22px;flex-wrap:wrap;margin-bottom:24px}
+h1{font-size:31px;font-weight:700;letter-spacing:-.4px}
+.sub{color:var(--muted);font-size:13.5px;margin-top:7px}
+.sub b{color:var(--ink2);font-weight:600}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px}
+.dot.on{background:var(--green);box-shadow:0 0 0 3px var(--green-soft)}
+.dot.off{background:#cbd5e1}
+
+/* ── 一键区 ── */
+.actionbar{
+  background:linear-gradient(135deg,#fff 0%,#fbfcff 100%);
+  border:1px solid var(--line);border-radius:18px;padding:20px 22px;
+  box-shadow:var(--shadow);margin-bottom:26px;
+  display:flex;align-items:center;gap:18px;flex-wrap:wrap;
+}
+.btn-main{
+  background:linear-gradient(135deg,#635bff 0%,#7a6bff 100%);color:#fff;border:0;
+  padding:15px 30px;border-radius:12px;font-size:16.5px;font-weight:650;cursor:pointer;
+  box-shadow:0 4px 14px rgba(99,91,255,.28),inset 0 1px 0 rgba(255,255,255,.18);
+  transition:transform .14s,box-shadow .14s;white-space:nowrap;
+}
+.btn-main:hover:not(:disabled){transform:translateY(-1.5px);box-shadow:0 7px 20px rgba(99,91,255,.34)}
+.btn-main:disabled{opacity:.62;cursor:not-allowed;transform:none}
+.btn-ghost{
+  background:#fff;color:var(--ink2);border:1px solid var(--line);padding:12px 18px;
+  border-radius:10px;font-size:14px;font-weight:560;cursor:pointer;transition:.14s;
+}
+.btn-ghost:hover:not(:disabled){border-color:#c9d2e0;background:#fafbfd}
+.btn-ghost:disabled{opacity:.5;cursor:not-allowed}
+.taskpick{display:flex;gap:9px;flex-wrap:wrap;margin-left:auto}
+.chk{
+  display:flex;align-items:center;gap:7px;background:#fff;border:1px solid var(--line);
+  padding:9px 14px;border-radius:10px;font-size:13.5px;cursor:pointer;user-select:none;
+  color:var(--ink2);font-weight:540;transition:.14s;
+}
+.chk:hover{border-color:#c9d2e0}
+.chk.on{background:var(--brand-soft);border-color:#c5c0ff;color:#4b41d6}
+.chk input{accent-color:var(--brand);cursor:pointer;width:15px;height:15px}
+.hint{font-size:12.5px;color:var(--muted);margin-left:auto}
+
+/* ── 进度条 ── */
+.prog{background:#fff;border:1px solid var(--line);border-radius:14px;padding:15px 18px;margin-bottom:20px;box-shadow:var(--shadow)}
+.prow{display:flex;align-items:center;gap:12px;font-size:14.5px;min-height:22px}
+.ptext{font-weight:600;color:var(--ink);letter-spacing:-.1px}
+.ptext b{color:var(--brand);font-weight:700}
+.pcount{margin-left:auto;color:var(--muted);font-size:13px;font-weight:650;font-variant-numeric:tabular-nums}
+.pbar2{height:8px;background:#eef1f6;border-radius:5px;margin:11px 0 9px;overflow:hidden}
+.pbar2 i{display:block;height:100%;width:0;border-radius:5px;background:linear-gradient(90deg,#635bff,#8b7dff);transition:width .35s ease}
+.psteps{font-size:12.5px;color:var(--ink2);line-height:1.85;max-height:132px;overflow:auto}
+.psteps div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.psteps .ok{color:var(--green);font-weight:700}
+.psteps .no{color:var(--red);font-weight:700}
+.psteps .nm{color:var(--muted);margin-left:5px}
+
+/* ── 汇总条 ── */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:22px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:var(--shadow)}
+.stat .k{font-size:12px;color:var(--muted);font-weight:560;letter-spacing:.2px}
+.stat .v{font-size:27px;font-weight:700;margin-top:6px;letter-spacing:-.5px}
+.stat .v small{font-size:13px;font-weight:600;color:var(--muted);margin-left:3px}
+
+/* ── 平台分组 ── */
+.psec-wrap{margin-bottom:10px}
+.phead{display:flex;align-items:center;gap:12px;margin:8px 2px 14px;padding-top:6px}
+.phead .pdot{width:11px;height:11px;border-radius:3px;flex:0 0 11px}
+.phead .pname{font-size:18.5px;font-weight:700;letter-spacing:-.2px}
+.phead .pcnt{font-size:12.5px;color:var(--muted);font-weight:560}
+.phead .ptag{margin-left:auto;font-size:12px;color:var(--green);font-weight:600}
+.phead .ptag.off{color:var(--muted)}
+.cards{display:flex;flex-direction:column;gap:14px}
+
+/* ── 账号卡片（长方形） ── */
+.list{display:flex;flex-direction:column;gap:22px}
+.card{
+  background:var(--card);border:1px solid var(--line);border-radius:16px;
+  box-shadow:var(--shadow);overflow:hidden;transition:box-shadow .18s,border-color .18s;
+}
+.card:hover{box-shadow:var(--shadow-lg);border-color:#d6dde8}
+.card.open{box-shadow:var(--shadow-lg);border-color:#c3cbf7}
+.card.error{border-left:4px solid var(--red)}
+
+.row{
+  display:grid;grid-template-columns:230px 1fr 172px 30px;align-items:center;
+  gap:20px;padding:20px 22px;cursor:pointer;
+}
+.who{display:flex;align-items:center;gap:14px;min-width:0}
+.ava{
+  width:46px;height:46px;border-radius:13px;flex:0 0 46px;display:grid;place-items:center;
+  color:#fff;font-size:18px;font-weight:700;
+  background:linear-gradient(135deg,#635bff,#8b7dff);
+  box-shadow:0 3px 9px rgba(99,91,255,.24);
+}
+.ava.g2{background:linear-gradient(135deg,#0ea5e9,#38bdf8);box-shadow:0 3px 9px rgba(14,165,233,.24)}
+.ava.g3{background:linear-gradient(135deg,#0d9f6e,#34d399);box-shadow:0 3px 9px rgba(13,159,110,.24)}
+.ava.g4{background:linear-gradient(135deg,#d97706,#fbbf24);box-shadow:0 3px 9px rgba(217,119,6,.24)}
+.ava.g5{background:linear-gradient(135deg,#e8574a,#f78d7b);box-shadow:0 3px 9px rgba(232,87,74,.24)}
+.ava.g6{background:linear-gradient(135deg,#3355e8,#5b7cff);box-shadow:0 3px 9px rgba(51,85,232,.24)}
+.ava.g7{background:linear-gradient(135deg,#7c3aed,#a78bfa);box-shadow:0 3px 9px rgba(124,58,237,.24)}
+.ava.g8{background:linear-gradient(135deg,#0f766e,#2dd4bf);box-shadow:0 3px 9px rgba(15,118,110,.24)}
+.ava.g9{background:linear-gradient(135deg,#c2410c,#fb923c);box-shadow:0 3px 9px rgba(194,65,12,.24)}
+.ava.g10{background:linear-gradient(135deg,#0369a1,#38bdf8);box-shadow:0 3px 9px rgba(3,105,161,.24)}
+
+/* ── 平台分组：分区标题 + 折叠 ── */
+.gsec{margin-bottom:26px}
+.ghead{display:flex;align-items:center;gap:11px;padding:11px 15px;border-radius:13px;
+  background:linear-gradient(90deg,#f2f5fa,#fbfcfe);border:1px solid var(--line);cursor:pointer;
+  user-select:none;transition:.15s}
+.ghead:hover{border-color:#c9d2e0;background:linear-gradient(90deg,#eef2f9,#f9fbfe)}
+.ghead .gico{font-size:15px;line-height:1}
+.ghead .gname{font-size:15px;font-weight:700;letter-spacing:-.1px}
+.ghead .gdesc{font-size:12px;color:var(--muted);font-weight:520}
+.ghead .gnum{margin-left:auto;font-size:12px;font-weight:650;color:var(--ink2);
+  background:#fff;border:1px solid var(--line);border-radius:20px;padding:3px 11px}
+.ghead .gchev{color:#b7c0cd;font-size:14px;transition:transform .2s}
+.gsec.closed .gchev{transform:rotate(-90deg)}
+.gbody{display:flex;flex-direction:column;gap:16px;margin-top:14px;padding-left:4px}
+.gsec.closed .gbody{display:none}
+/* 弹窗内的分组标签行 */
+.tabs .tabsep{display:flex;align-items:center;gap:8px;width:100%;font-size:11.5px;
+  color:var(--muted);font-weight:650;letter-spacing:.4px;margin:9px 0 2px}
+.tabs .tabsep::after{content:"";flex:1;height:1px;background:var(--line)}
+.nm{font-size:16.5px;font-weight:650;letter-spacing:-.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lv{font-size:12.5px;color:var(--muted);margin-top:3px;font-weight:520}
+
+.tags{display:flex;flex-wrap:wrap;gap:7px}
+.tag{
+  display:inline-flex;align-items:center;gap:5px;font-size:12.5px;font-weight:600;
+  padding:3px 9px;border-radius:8px;white-space:nowrap;
+}
+.t-green{background:var(--green-soft);color:var(--green)}
+.t-orange{background:var(--orange-soft);color:var(--orange)}
+.t-red{background:var(--red-soft);color:var(--red)}
+.t-blue{background:var(--blue-soft);color:var(--blue)}
+.t-gray{background:#f1f4f8;color:var(--ink2)}
+.t-purple{background:var(--purple-soft);color:var(--purple)}
+
+.cred{text-align:right}
+.cred .n{font-size:26px;font-weight:700;letter-spacing:-.6px}
+.cred .n small{font-size:12.5px;color:var(--muted);font-weight:600;margin-left:3px}
+.bar{height:6px;background:#eef1f6;border-radius:4px;margin-top:8px;overflow:hidden}
+.bar i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,#635bff,#8b7dff)}
+.exp-mini{font-size:11.5px;margin-top:6px;color:var(--muted);font-weight:560}
+.exp-mini.warn{color:var(--red)}
+.chev{color:#b7c0cd;font-size:15px;text-align:center;transition:transform .2s}
+.card.open .chev{transform:rotate(90deg)}
+
+/* ── 展开详情 ── */
+.detail{display:none;border-top:1px solid var(--line);background:#fbfcfe;padding:20px 22px 22px}
+.card.open .detail{display:block;animation:fade .2s ease}
+@keyframes fade{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.dgrid{display:grid;grid-template-columns:1.15fr .85fr;gap:18px}
+@media(max-width:900px){.dgrid{grid-template-columns:1fr}}
+.dgrid.three{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media(max-width:1040px){.dgrid.three{grid-template-columns:1fr}}
+
+/* DuMate 抽奖/中奖记录 */
+.wins{margin-top:4px}
+.wlast{font-size:13px;color:var(--ink2);background:var(--green-soft);border-radius:8px;padding:8px 11px;margin-bottom:11px;font-weight:540}
+.wlast b{color:var(--green)}
+.win{padding:10px 0;border-bottom:1px dashed #edf1f6}
+.win:last-child{border-bottom:0;padding-bottom:2px}
+.win:first-of-type{padding-top:2px}
+.wtop{display:flex;align-items:center;gap:9px;font-size:13.5px}
+.wname{font-weight:600;color:var(--ink);flex:1;min-width:0}
+.wtag{font-size:10.5px;font-weight:700;padding:2.5px 7px;border-radius:5px;letter-spacing:.2px;flex:0 0 auto}
+.wtime{font-size:11.5px;color:var(--muted);margin-top:3px;font-variant-numeric:tabular-nums}
+.dbox{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px 17px}
+.dtitle{font-size:12.5px;font-weight:700;color:var(--ink2);letter-spacing:.3px;margin-bottom:13px;
+  display:flex;align-items:center;gap:7px}
+.dtitle .cnt{margin-left:auto;font-weight:560;color:var(--muted);font-size:12px}
+
+.pkg{padding:11px 0;border-bottom:1px dashed #edf1f6}
+.pkg:last-child{border-bottom:0;padding-bottom:2px}
+.pkg:first-of-type{padding-top:2px}
+.ptop{display:flex;align-items:center;gap:10px;font-size:13.5px}
+.pname{font-weight:600;color:var(--ink);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pval{font-weight:700;font-size:15px;letter-spacing:-.2px}
+.pval small{font-weight:600;color:var(--muted);font-size:11.5px;margin-left:2px}
+.pbar{height:5px;background:#eef1f6;border-radius:4px;margin:8px 0 7px;overflow:hidden}
+.pbar i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,#0ea5e9,#38bdf8)}
+.pmeta{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted);flex-wrap:wrap}
+.badge{font-size:10.5px;font-weight:700;padding:2.5px 7px;border-radius:5px;letter-spacing:.2px}
+.b-meas{background:var(--green-soft);color:var(--green)}
+.b-est{background:var(--orange-soft);color:var(--orange)}
+.b-man{background:var(--blue-soft);color:var(--blue)}
+.b-per{background:var(--purple-soft);color:var(--purple)}
+
+.kv{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px dashed #edf1f6;font-size:13.5px}
+.kv:last-child{border-bottom:0}
+.kv span{color:var(--muted)}
+.kv b{font-weight:650}
+
+.acts{display:flex;gap:9px;flex-wrap:wrap;margin-top:15px;align-items:center}
+.acts .btn-ghost{padding:7px 13px;font-size:13px}
+
+/* ── 空 / 提示 ── */
+.banner{
+  background:#fff8e6;border:1px solid #f3e0b0;color:#8a6314;border-radius:12px;
+  padding:13px 17px;font-size:13.5px;margin-bottom:20px;line-height:1.7;
+}
+.banner b{font-weight:700}
+.banner code{background:#f1f4f8;padding:2px 7px;border-radius:5px;font-size:12.5px;color:#4b41d6}
+.empty{background:var(--card);border:1px dashed #cfd7e3;border-radius:16px;padding:44px 26px;text-align:center;color:var(--muted)}
+.empty h3{color:var(--ink);font-size:17px;margin-bottom:9px;font-weight:650}
+.empty code{background:#f1f4f8;padding:2px 7px;border-radius:5px;font-size:12.5px;color:#4b41d6}
+
+/* ── 日志 / toast ── */
+.logbox{margin-top:26px;background:#0a2540;border-radius:14px;padding:16px 18px;color:#c3d0e0;
+  font:12px/1.75 ui-monospace,SFMono-Regular,Consolas,monospace;max-height:230px;overflow:auto;white-space:pre-wrap}
+.logbox:empty{display:none}
+.toast{
+  position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(18px);
+  background:#0a2540;color:#fff;padding:13px 22px;border-radius:12px;font-size:14px;font-weight:560;
+  box-shadow:0 10px 34px rgba(10,37,64,.3);opacity:0;pointer-events:none;transition:.24s;z-index:99;max-width:88vw;
+}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.ok{background:var(--green)}
+.toast.err{background:var(--red)}
+
+/* ── 添加账号弹窗 ── */
+.modal-mask{position:fixed;inset:0;background:rgba(10,37,64,.42);display:flex;align-items:center;
+  justify-content:center;z-index:120;padding:18px;backdrop-filter:blur(2px)}
+/* 弹窗改为 flex 纵向布局：头部+标签固定，内容区独立滚动
+   —— 解决「内容过高时标题被顶出视口 / 进度与状态文字被挡在折叠线下」的排版问题 */
+.modal{background:#fff;border-radius:18px;box-shadow:var(--shadow-lg);width:100%;max-width:560px;
+  max-height:min(90vh,860px);display:flex;flex-direction:column;overflow:hidden;padding:22px 0 0;
+  /* 拖动选择文本时不要因为指针越界触发自动滚动（“滑滑的”根因之一） */
+  overscroll-behavior:contain}
+.modal-head,.tabs{padding-left:24px;padding-right:24px}
+.modal>form,.modal .modal-body{display:flex;flex-direction:column;min-height:0}
+.modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex:0 0 auto}
+.mtitle{font-size:17px;font-weight:700}
+.x{border:0;background:#f1f4f8;width:30px;height:30px;border-radius:9px;font-size:18px;line-height:1;
+  cursor:pointer;color:var(--ink2)}
+.x:hover{background:#e7ebf2}
+/* 标签区：**不设内部滚动**（双滚动容器会让弹窗“滑滑的”：滚轮在两块区域间跳、
+   而拖动选择文本时指针一旦越界就会被容器自动滚动带跑）。9 个平台标签换行后
+   由外层 .tabpanes 统一滚动，全弹窗只有一个滚动条。 */
+.tabs{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:16px;flex:0 0 auto;
+  padding-right:2px}
+.tab{border:1px solid var(--line);background:#fff;color:var(--ink2);padding:8px 13px;border-radius:9px;
+  font-size:13px;font-weight:560;cursor:pointer;transition:.14s;user-select:none}
+.tab.on{background:var(--brand-soft);border-color:#c5c0ff;color:#4b41d6}
+/* 内容区：唯一滚动容器，状态/进度文字随内容滚动、不会被固定头部遮挡 */
+.tabpanes{flex:1 1 auto;min-height:0;overflow-y:auto;padding:2px 24px 20px;
+  overscroll-behavior:contain;scroll-behavior:auto}
+.tabpane{display:none}
+.field{margin-bottom:12px}
+.field label{display:block;font-size:12.5px;color:var(--ink2);font-weight:600;margin-bottom:6px}
+.field input,.field textarea{width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 13px;
+  font-size:14px;font-family:inherit;outline:none;background:#fff;color:var(--ink)}
+.field input:focus,.field textarea:focus{border-color:#b9b1ff}
+.field textarea{resize:vertical;line-height:1.6}
+.btn-main.sm{padding:12px 20px;font-size:14.5px;width:100%;margin-top:4px}
+.batch-toggle{margin-top:14px;font-size:13px;color:var(--ink2)}
+.batch-toggle input{accent-color:var(--brand);margin-right:5px}
+/* 状态消息固定在弹窗底部（不随内容滚走）—— 进度/结果始终可见，不再被内容挡在折叠线下 */
+.addmsg{margin:0;padding:11px 24px;font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;
+  flex:0 0 auto;border-top:1px solid var(--line);background:#fbfcfe;color:var(--ink2);min-height:0}
+.addmsg:empty{display:none}
+.addmsg.ok{color:var(--green)}
+.addmsg.err{color:var(--red)}
+.hint-sm{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.6;user-select:text}
+/* 弹窗内所有可读文本允许框选复制（默认继承 auto，这里显式声明以防被父级 none 波及） */
+.modal .hint-sm,.modal code,.modal .field label,.modal .addmsg{user-select:text}
+.modal code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+  background:#f2f5fa;border:1px solid var(--line);border-radius:5px;padding:1px 5px}
+.btn-del{background:#fff;color:var(--red);border:1px solid #f1c9c9;padding:7px 13px;border-radius:9px;
+  font-size:13px;font-weight:560;cursor:pointer;margin-top:12px}
+.btn-del:hover{background:var(--red-soft)}
+/* 改名：卡片名旁的铅笔 + 详情区的「改备注名」按钮 */
+.btn-ren{background:transparent;border:0;color:#b7c0cd;cursor:pointer;font-size:12px;
+  padding:2px 5px;border-radius:6px;opacity:.45;transition:opacity .15s,background .15s;vertical-align:middle}
+.card:hover .btn-ren{opacity:1}
+.btn-ren:hover{background:#eef2f9;color:var(--ink)}
+.reninp{width:100%;font:inherit;font-weight:700;color:var(--ink);padding:3px 8px;
+  border:1px solid #cfd8e6;border-radius:8px;outline:none;background:#fff}
+.reninp:focus{border-color:#8fb0e8;box-shadow:0 0 0 3px rgba(143,176,232,.18)}
+/* 与同排的任务按钮等高：不要 margin-top（.acts 是 flex，会把高度算歪） */
+.btn-ren2{background:#fff;color:var(--ink2);border:1px solid #dbe2ee;padding:7px 13px;border-radius:9px;
+  font-size:13px;font-weight:560;cursor:pointer}
+.btn-ren2:hover{background:#eef2f9}
+
+/* ── 移动端适配（≤640px，覆盖所有手机竖屏） ── */
+@media (max-width:640px){
+  body{padding:18px 12px 56px}
+  .head{gap:12px;margin-bottom:18px}
+  .head h1{font-size:24px;letter-spacing:-.2px}
+  .sub{font-size:12.5px}
+
+  /* 操作栏：纵向堆叠，按钮铺满宽度 */
+  .actionbar{flex-direction:column;align-items:stretch;gap:13px;padding:16px 15px;border-radius:15px}
+  .btn-main{width:100%;padding:14px 20px;font-size:16px}
+  .taskpick{margin-left:0;width:100%;gap:8px}
+  .chk{flex:1 1 0;justify-content:center;padding:10px 6px}
+  #btnRefresh{width:100%}
+  #btnAdd{width:100%}
+
+  /* 汇总条：固定两列，避免手机上挤成过窄的单列 */
+  .stats{grid-template-columns:repeat(2,1fr);gap:11px;margin-bottom:18px}
+  .stat{padding:13px 14px;border-radius:12px}
+  .stat .v{font-size:23px}
+
+  /* 平台分组头 */
+  .phead{margin:4px 2px 12px}
+  .phead .pname{font-size:16px}
+
+  /* 账号卡片行：四列网格重排为「头像+箭头 / 积分 / 标签」三段纵向 */
+  .row{
+    grid-template-columns:1fr 26px;
+    grid-template-areas:"who chev" "cred cred" "tags tags";
+    gap:11px 12px;padding:15px 15px;
+  }
+  .who{grid-area:who;min-width:0}
+  .chev{grid-area:chev;justify-self:end;align-self:start;margin-top:5px;font-size:17px}
+  .cred{grid-area:cred;text-align:left}
+  .cred .n{font-size:24px}
+  .cred .bar{margin-top:7px}
+  .tags{grid-area:tags}
+
+  /* 展开详情：单列，内边距收紧 */
+  .detail{padding:16px 15px 18px}
+  .dgrid{grid-template-columns:1fr;gap:13px}
+  .dgrid.three{grid-template-columns:1fr}
+  .dbox{padding:14px 14px}
+  .acts .btn-ghost{flex:1 1 auto;justify-content:center}
+
+  /* 进度面板：内边距收紧，字号略减 */
+  .prog{padding:13px 15px;border-radius:13px}
+  .prow{font-size:13.5px}
+  .psteps{font-size:12px}
+}
+@media (max-width:380px){
+  .head h1{font-size:22px}
+  .chk{font-size:12.5px;padding:9px 4px}
+  .stat .v{font-size:21px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="head">
+    <div>
+      <h1>多平台账号看板</h1>
+      <div class="sub" id="sub">
+        <span class="dot off" id="dot"></span><span id="conn">正在连接本地后端…</span>
+      </div>
+    </div>
+  </div>
+
+  <div id="banner" class="banner" style="display:none"></div>
+
+  <div class="actionbar">
+    <button class="btn-main" id="btnAll">⚡ 一键执行（全部账号）</button>
+    <button class="btn-ghost" id="btnAdd">➕ 添加账号</button>
+    <div class="taskpick" id="taskpick"></div>
+    <button class="btn-ghost" id="btnRefresh">↻ 刷新状态</button>
+  </div>
+
+  <div class="prog" id="prog" style="display:none">
+    <div class="prow">
+      <div class="ptext" id="ptext">准备中…</div>
+      <div class="pcount" id="pcount">0 / 0</div>
+    </div>
+    <div class="pbar2"><i id="pfill"></i></div>
+    <div class="psteps" id="psteps"></div>
+  </div>
+
+  <div class="stats" id="stats"></div>
+  <div class="list" id="list"></div>
+  <div class="logbox" id="logbox"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="modal-mask" id="addMask" style="display:none">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="mtitle">➕ 添加账号</div>
+      <button class="x" id="addClose" title="关闭">×</button>
+    </div>
+    <div class="tabs">
+      <div class="tabsep">🤖 AI 助手 / 对话</div>
+      <button class="tab on" data-tab="workbuddy">WorkBuddy（短信）</button>
+      <button class="tab" data-tab="minimax">MiniMax（Token）</button>
+      <button class="tab" data-tab="baidu_dumate">DuMate（Cookie）</button>
+      <div class="tabsep">🛠 编程 / 开发</div>
+      <button class="tab" data-tab="trae">Trae（积分）</button>
+      <button class="tab" data-tab="qoder">Qoder CN（Credits）</button>
+      <button class="tab" data-tab="zcode">ZCode（z.ai）</button>
+      <button class="tab" data-tab="codearts">CodeArts Agent（积分）</button>
+      <div class="tabsep">📄 办公 / 云平台</div>
+      <button class="tab" data-tab="lingxi">WPS 灵犀（智点）</button>
+      <button class="tab" data-tab="officeace">OfficeACE（华为云）</button>
+    </div>
+
+    <div class="tabpanes">
+
+    <!-- WorkBuddy：短信两步登录 -->
+    <div class="tabpane" data-pane="workbuddy">
+      <div class="field">
+        <label>手机号</label>
+        <input id="wbPhone" inputmode="numeric" autocomplete="off" placeholder="如 13800000000">
+      </div>
+      <button class="btn-main sm" id="wbSend">📩 发送验证码</button>
+      <div class="field" style="margin-top:12px">
+        <label>短信验证码（手机收到的 6 位数字）</label>
+        <input id="wbCode" inputmode="numeric" autocomplete="off" placeholder="填到这里">
+      </div>
+      <button class="btn-main sm" id="wbLogin">🔑 登录并保存</button>
+      <div class="hint-sm">登录态自动写入 wb_login_result.json，看板立即识别，无需改环境变量。</div>
+
+      <div class="batch-toggle"><label><input type="checkbox" id="wbBatchOn"> 批量模式（一次添加多个 WorkBuddy 账号）</label></div>
+      <div id="wbBatch" style="display:none">
+        <div class="field" style="margin-top:12px">
+          <label>手机号（每行一个）</label>
+          <textarea id="wbPhones" rows="4" placeholder="13800000000&#10;13900000000"></textarea>
+        </div>
+        <button class="btn-main sm" id="wbBatchSend">📩 批量发送验证码</button>
+        <div class="field" style="margin-top:12px">
+          <label>验证码（与上面顺序一一对应，每行一个）</label>
+          <textarea id="wbCodes" rows="4" placeholder="123456&#10;654321"></textarea>
+        </div>
+        <button class="btn-main sm" id="wbBatchLogin">🔑 批量登录并保存</button>
+      </div>
+    </div>
+
+    <!-- MiniMax：手机号验证码直登 / 本地导入 -->
+    <div class="tabpane" data-pane="minimax" style="display:none">
+      <div class="field">
+        <label>备注名（可选，留空用客户端默认名；多账号导入时作为前缀）</label>
+        <input id="mmName" autocomplete="off" placeholder="如 minimax_alpha">
+      </div>
+      <div class="field">
+        <label>手机号</label>
+        <input id="mmPhone" autocomplete="off" inputmode="numeric" maxlength="11" placeholder="11 位手机号">
+      </div>
+      <button class="btn-main sm" id="mmSms"
+        style="background:linear-gradient(135deg,#7c3aed,#a78bfa);box-shadow:0 4px 14px rgba(124,58,237,.28)">
+        📩 发送验证码</button>
+      <div id="mmSmsTxt" style="display:none;margin-top:8px;font-size:13px;color:var(--ink2);line-height:1.6"></div>
+      <div class="field" style="margin-top:12px">
+        <label>短信验证码（手机收到的数字）</label>
+        <input id="mmCode" autocomplete="off" inputmode="numeric" maxlength="8" placeholder="填到这里">
+      </div>
+      <button class="btn-main sm" id="mmCodeGo"
+        style="background:linear-gradient(135deg,#059669,#34d399);box-shadow:0 4px 14px rgba(5,150,105,.25)">
+        🔑 登录并保存</button>
+      <span id="mmSmsLeft" style="font-size:12.5px;color:var(--muted);margin-left:8px"></span>
+      <div class="hint-sm">和 WorkBuddy 一样两步走：点「发送验证码」会自动打开登录窗口、
+        替你填好手机号并点发送（窗口若弹滑块顺手完成），短信到了在这里填入点「登录并保存」。</div>
+      <hr style="border:0;border-top:1px dashed var(--line);margin:16px 0">
+      <button class="btn-main sm" id="mmImport"
+        style="background:linear-gradient(135deg,#0ea5e9,#38bdf8);box-shadow:0 4px 14px rgba(14,165,233,.28)">
+        📱 从本地客户端导入（已装桌面端时用）</button>
+      <div class="hint-sm">读取本机已登录的 <b>MiniMax Code 桌面端</b>登录态（含全部可读账号），
+        一键完成。注意桌面端只有 2 个登录槽位，看板会把你导入过的账号都留着。</div>
+    </div>
+
+    <!-- DuMate（百度搭子）：网页验证码直登 / 本地客户端导入 -->
+    <div class="tabpane" data-pane="baidu_dumate" style="display:none">
+      <div class="field">
+        <label>备注名（可选，留空用登录账号昵称）</label>
+        <input id="dmName" autocomplete="off" placeholder="如 搭子·A">
+      </div>
+      <div class="field">
+        <label>手机号（百度账号）</label>
+        <input id="dmPhone" autocomplete="off" inputmode="numeric" maxlength="11" placeholder="11 位手机号">
+      </div>
+      <button class="btn-main sm" id="dmSms"
+        style="background:linear-gradient(135deg,#0d9f6e,#34d399);box-shadow:0 4px 14px rgba(13,159,110,.28)">
+        📩 发送验证码</button>
+      <div id="dmSmsTxt" style="display:none;margin-top:8px;font-size:13px;color:var(--ink2);line-height:1.6"></div>
+      <div class="field" style="margin-top:12px">
+        <label>短信验证码（手机收到的数字）</label>
+        <input id="dmCode" autocomplete="off" inputmode="numeric" maxlength="8" placeholder="填到这里">
+      </div>
+      <button class="btn-main sm" id="dmCodeGo"
+        style="background:linear-gradient(135deg,#059669,#34d399);box-shadow:0 4px 14px rgba(5,150,105,.25)">
+        🔑 登录并保存</button>
+      <span id="dmSmsLeft" style="font-size:12.5px;color:var(--muted);margin-left:8px"></span>
+      <div class="hint-sm">和 WorkBuddy 一样两步走：点「发送验证码」会自动打开 DuMate 网页版、
+        自动点「立即登录」并替你填好手机号发送（窗口若弹滑块顺手完成），短信到了在这里填入点「登录并保存」。</div>
+      <hr style="border:0;border-top:1px dashed var(--line);margin:16px 0">
+      <button class="btn-main sm" id="dmImport"
+        style="background:linear-gradient(135deg,#0d9f6e,#34d399);box-shadow:0 4px 14px rgba(13,159,110,.28)">
+        📱 从本地客户端导入（推荐）</button>
+      <div class="hint-sm">直接解密本机已登录的 <b>百度搭子 DuMate 桌面端</b>登录态（Cookie 含 BDUSS），
+        一键完成，无需再用手机验证码登录。</div>
+    </div>
+
+    <!-- WPS 灵犀：从本地客户端解密 wps_sid -->
+    <div class="tabpane" data-pane="lingxi" style="display:none">
+      <div class="field">
+        <label>备注名（可选，留空用客户端默认名；多账号导入时作为前缀）</label>
+        <input id="lxName" autocomplete="off" placeholder="如 灵犀·主号">
+      </div>
+      <button class="btn-main sm" id="lxImport"
+        style="background:linear-gradient(135deg,#e8574a,#f78d7b);box-shadow:0 4px 14px rgba(232,87,74,.28)">
+        📱 从本地客户端导入（推荐）</button>
+      <div class="hint-sm">自动解密本机已登录的 <b>WPS 灵犀桌面端</b>登录态（<code>wps_sid</code>，
+        存在客户端 session partition 的 Cookies 里），可一次导入多个已登录账号，一键完成。<br>
+        <b>多账号提示：</b>客户端正在运行时，个别 cookie 文件会被独占，退出灵犀后再点一次即可读全。</div>
+      <!-- 灵犀网页短信直登：account.wps.cn 弹窗代点（与 WorkBuddy 同款两步式） -->
+      <div class="field">
+        <label>手机号（WPS 账号）</label>
+        <input id="lxPhone" autocomplete="off" inputmode="numeric" maxlength="11" placeholder="11 位手机号">
+      </div>
+      <button class="btn-main sm" id="lxSms"
+        style="background:linear-gradient(135deg,#e8574a,#f78d7b);box-shadow:0 4px 14px rgba(232,87,74,.28)">
+        📩 发送验证码</button>
+      <div id="lxSmsTxt" style="display:none;margin-top:8px;font-size:13px;color:var(--ink2);line-height:1.6"></div>
+      <div class="field" style="margin-top:12px">
+        <label>短信验证码（手机收到的数字）</label>
+        <input id="lxCode" autocomplete="off" inputmode="numeric" maxlength="8" placeholder="填到这里">
+      </div>
+      <button class="btn-main sm" id="lxCodeGo"
+        style="background:linear-gradient(135deg,#059669,#34d399);box-shadow:0 4px 14px rgba(5,150,105,.25)">
+        🔑 登录并保存</button>
+      <span id="lxSmsLeft" style="font-size:12.5px;color:var(--muted);margin-left:8px"></span>
+      <div class="hint-sm">和 WorkBuddy 一样两步走：点「发送验证码」会自动打开 WPS 登录页、
+        切到手机登录、替你填好手机号并点发送（窗口若弹滑块顺手完成），短信到了在这里填入点「登录并保存」，
+        看板自动抓 <code>wps_sid</code>。不用装 WPS 灵犀桌面端也能登录。</div>
+    </div>
+
+    <!-- Trae：从本地客户端解密登录态 -->
+    <div class="tabpane" data-pane="trae" style="display:none">
+      <div class="field">
+        <label>备注名（可选，留空用客户端默认名）</label>
+        <input id="trName" autocomplete="off" placeholder="如 Trae·主号">
+      </div>
+      <!-- Trae 手机号直登：OAuth PKCE + 随机回调端口（2026-10-08 接入，对齐客户端） -->
+      <div class="field">
+        <label>手机号（Trae 账号）</label>
+        <input id="trPhone" autocomplete="off" inputmode="numeric" maxlength="11" placeholder="11 位手机号">
+      </div>
+      <button class="btn-main sm" id="trSms"
+        style="background:linear-gradient(135deg,#3355e8,#5b7cff);box-shadow:0 4px 14px rgba(51,85,232,.28)">
+        📩 发送验证码</button>
+      <div id="trSmsTxt" style="display:none;margin-top:8px;font-size:13px;color:var(--ink2);line-height:1.6"></div>
+      <div class="field" style="margin-top:12px">
+        <label>短信验证码（手机收到的数字）</label>
+        <input id="trCode" autocomplete="off" inputmode="numeric" maxlength="8" placeholder="填到这里">
+      </div>
+      <button class="btn-main sm" id="trCodeGo"
+        style="background:linear-gradient(135deg,#059669,#34d399);box-shadow:0 4px 14px rgba(5,150,105,.25)">
+        🔑 登录并保存</button>
+      <span id="trSmsLeft" style="font-size:12.5px;color:var(--muted);margin-left:8px"></span>
+      <div class="hint-sm">走 Trae 官网 OAuth 授权链路（本地随机回调端口，与客户端一致），
+        登录成功后看板自动兑换 Token（含 <b>refresh_token</b>，可续期）。<br>
+        <b>前提：</b>本机装过 Trae 客户端（看板要读它的设备身份）。</div>
+
+      <hr style="border:0;border-top:1px dashed var(--line);margin:16px 0">
+      <button class="btn-main sm" id="trImport"
+        style="background:linear-gradient(135deg,#3355e8,#5b7cff);box-shadow:0 4px 14px rgba(51,85,232,.28)">
+        📱 从本地客户端导入（推荐）</button>
+      <div class="hint-sm">解密本机已登录的 <b>Trae / TRAE SOLO CN</b> 登录态
+        （<code>storage.json</code> 里的 <code>iCubeAuthInfo://icube.cloudide</code>，
+        AES-128-CBC + SHA-512 派生，只读不改），        同时自动带出 <code>device_id</code>（签到必需）。</div>
+    </div>
+
+    <!-- Qoder CN：从本地客户端解密 auth.v1.dat -->
+    <div class="tabpane" data-pane="qoder" style="display:none">
+      <div class="field">
+        <label>备注名（可选，留空用客户端默认名）</label>
+        <input id="qdName" autocomplete="off" placeholder="如 Qoder·主号">
+      </div>
+
+      <!-- Qoder 手机号直登：弹窗代点（阿里云登录，2026-10-08 实测 DOM） -->
+      <div class="field">
+        <label>手机号（阿里云账号）</label>
+        <input id="qdPhone" autocomplete="off" inputmode="numeric" maxlength="11" placeholder="11 位手机号">
+      </div>
+      <button class="btn-main sm" id="qdSms"
+        style="background:linear-gradient(135deg,#7c3aed,#a78bfa);box-shadow:0 4px 14px rgba(124,58,237,.28)">
+        📩 发送验证码</button>
+      <div id="qdSmsTxt" style="display:none;margin-top:8px;font-size:13px;color:var(--ink2);line-height:1.6"></div>
+      <div class="field" style="margin-top:12px">
+        <label>短信验证码（手机收到的数字）</label>
+        <input id="qdCode" autocomplete="off" inputmode="numeric" maxlength="8" placeholder="填到这里">
+      </div>
+      <button class="btn-main sm" id="qdCodeGo"
+        style="background:linear-gradient(135deg,#059669,#34d399);box-shadow:0 4px 14px rgba(5,150,105,.25)">
+        🔑 登录并保存</button>
+      <span id="qdSmsLeft" style="font-size:12.5px;color:var(--muted);margin-left:8px"></span>
+      <div class="hint-sm">和 WorkBuddy 一样两步走：点「发送验证码」会自动打开「阿里云登录」、
+        替你填好手机号并点获取（窗口若弹滑块顺手完成），短信到了在这里填入点「登录并保存」。</div>
+
+      <hr style="border:0;border-top:1px dashed var(--line);margin:16px 0">
+      <button class="btn-main sm" id="qdImport"
+        style="background:linear-gradient(135deg,#7c3aed,#a78bfa);box-shadow:0 4px 14px rgba(124,58,237,.28)">
+        📱 从本地客户端导入（推荐）</button>
+      <div class="hint-sm">解密本机已登录的 <b>Qoder CN 桌面端</b>登录态
+        （<code>auth.v1.dat</code>，Chromium AES-256-GCM + DPAPI 密钥，只读不改）。
+        每日 10:00（北京时间）刷新，每次 <b>+100 Credits</b>，领取后 30 天有效。</div>
+    </div>
+
+    <!-- ZCode（z.ai） -->
+    <div class="tabpane" data-pane="zcode" style="display:none">
+      <div class="field">
+        <label>备注名（可选，留空用客户端默认名）</label>
+        <input id="zcName" autocomplete="off" placeholder="如 ZCode·主号">
+      </div>
+      <div class="field">
+        <label>登录通道</label>
+        <select id="zcSub" style="width:100%">
+          <option value="zai">Z.ai 账号（chat.z.ai）</option>
+          <option value="bigmodel">智谱 BigModel（bigmodel.cn）</option>
+        </select>
+      </div>
+      <!-- ZCode 手机号直登：cli/init 流 + 弹窗代点（2026-10-08 侦察实测 DOM） -->
+      <div class="field">
+        <label>手机号</label>
+        <input id="zcPhone" autocomplete="off" inputmode="numeric" maxlength="11" placeholder="11 位手机号">
+      </div>
+      <button class="btn-main sm" id="zcSms"
+        style="background:linear-gradient(135deg,#7c3aed,#a78bfa);box-shadow:0 4px 14px rgba(124,58,237,.28)">
+        📩 发送验证码</button>
+      <div id="zcSmsTxt" style="display:none;margin-top:8px;font-size:13px;color:var(--ink2);line-height:1.6"></div>
+      <div class="field" style="margin-top:12px">
+        <label>短信验证码（手机收到的数字）</label>
+        <input id="zcCode" autocomplete="off" inputmode="numeric" maxlength="8" placeholder="填到这里">
+      </div>
+      <button class="btn-main sm" id="zcCodeGo"
+        style="background:linear-gradient(135deg,#059669,#34d399);box-shadow:0 4px 14px rgba(5,150,105,.25)">
+        🔑 登录并保存</button>
+      <span id="zcSmsLeft" style="font-size:12.5px;color:var(--muted);margin-left:8px"></span>
+      <div class="hint-sm">两步走：点「发送验证码」会自动打开登录页、替你填手机号并点发送
+        （bigmodel 通道可能弹滑块，窗口会自动拉回屏幕请你拖一下），短信到了在这里填入点
+        「登录并保存」，看板自动接管令牌。令牌与客户端 CLI 登录同源
+        （<code>POST /api/v1/oauth/cli/init</code> → 网页登录 → 轮询取令牌）。</div>
+      <button class="btn-main sm" id="zcOauth"
+        style="background:linear-gradient(135deg,#64748b,#94a3b8);box-shadow:none">
+        🔗 备用：打开授权网页手动登录</button>
+      <div id="zcOauthBox" style="display:none;margin-top:10px;padding:12px 13px;border:1px solid var(--line);border-radius:10px;background:var(--bg)">
+        <div id="zcOauthTxt" style="font-size:13px;color:var(--ink2);line-height:1.6"></div>
+        <div style="margin-top:9px">
+          <a id="zcOauthLink" href="#" target="_blank" rel="noopener"
+             style="display:inline-flex;align-items:center;gap:5px;padding:7px 13px;border-radius:9px;
+                    border:1px solid var(--line);background:var(--card);color:var(--ink);font-size:13px;
+                    font-weight:560;text-decoration:none">🔗 打开授权网页（没自动弹出就点这里）</a>
+        </div>
+      </div>
+      <hr style="border:0;border-top:1px dashed var(--line);margin:16px 0">
+      <button class="btn-main sm" id="zcImport"
+        style="background:linear-gradient(135deg,#0f766e,#2dd4bf);box-shadow:0 4px 14px rgba(15,118,110,.28)">
+        📱 从本地客户端导入（推荐）</button>
+      <div class="hint-sm">解密本机已登录的 <b>ZCode 桌面端</b>凭据
+        （<code>~/.zcode/v2/credentials.json</code>，AES-256-GCM，只读不改）。<br>
+        <b>说明：</b>ZCode 的赠送 token 是<b>不定时发放</b>，平时列表为空属正常；看板会持续监测，
+        一旦有可领项会在卡片上标出来。<b>计划类赠送领取需过阿里云滑块验证</b>，纯接口领不了 ——
+        看板会提示你去客户端点一下；<b>活动类发放（marketing deliveries）看板可直接领</b>。</div>
+    </div>
+
+    <!-- CodeArts Agent（码道） -->
+    <div class="tabpane" data-pane="codearts" style="display:none">
+      <div class="field">
+        <label>备注名（可选，留空用客户端默认名）</label>
+        <input id="caName" autocomplete="off" placeholder="如 CodeArts·主号">
+      </div>
+      <!-- CodeArts 手机号直登：自建 OAuth 会话（DPoP），refresh 归看板独享（2026-10-08 接入） -->
+      <div class="field">
+        <label>手机号（华为云账号）</label>
+        <input id="caPhone" autocomplete="off" inputmode="numeric" maxlength="11" placeholder="11 位手机号">
+      </div>
+      <button class="btn-main sm" id="caSms"
+        style="background:linear-gradient(135deg,#0369a1,#38bdf8);box-shadow:0 4px 14px rgba(3,105,161,.28)">
+        📩 发送验证码</button>
+      <div id="caSmsTxt" style="display:none;margin-top:8px;font-size:13px;color:var(--ink2);line-height:1.6"></div>
+      <div class="field" style="margin-top:12px">
+        <label>短信验证码（手机收到的数字）</label>
+        <input id="caCode" autocomplete="off" inputmode="numeric" maxlength="8" placeholder="填到这里">
+      </div>
+      <button class="btn-main sm" id="caCodeGo"
+        style="background:linear-gradient(135deg,#059669,#34d399);box-shadow:0 4px 14px rgba(5,150,105,.25)">
+        🔑 登录并保存</button>
+      <span id="caSmsLeft" style="font-size:12.5px;color:var(--muted);margin-left:8px"></span>
+      <div class="hint-sm">看板<b>自建 OAuth 会话</b>（与桌面端互不干扰）：登录成功后拿到的是
+        看板独享的 <b>refresh_token</b>，过期自动续期 —— <b>1 小时过期问题就此解决</b>，
+        不再需要打开客户端续期。</div>
+
+      <hr style="border:0;border-top:1px dashed var(--line);margin:16px 0">
+      <button class="btn-main sm" id="caImport"
+        style="background:linear-gradient(135deg,#0369a1,#38bdf8);box-shadow:0 4px 14px rgba(3,105,161,.28)">
+        📱 从本地客户端导入（推荐）</button>
+      <div class="hint-sm">读取本机已登录的 <b>CodeArts Agent（码道）桌面端</b>凭据
+        （VS Code SecretStorage 里的华为云 STS 临时凭证，<b>以只读方式打开</b>，绝不写入）。<br>
+        <b>每日签到 +1000 积分</b>（30 天有效，北京时间 00:00 重置）。<br>
+        <b>注意：</b>临时凭证约 1 小时过期。看板不写入客户端凭据库、也不刷新令牌
+        （避免与桌面端争用一次性 refresh_token），凭证过期时会提示你打开客户端续期。</div>
+    </div>
+
+    <!-- OfficeACE（华为云 AgentArts） -->
+    <div class="tabpane" data-pane="officeace" style="display:none">
+      <div class="field">
+        <label>备注名（可选，留空用客户端默认名）</label>
+        <input id="oaName" autocomplete="off" placeholder="如 OfficeACE·主号">
+      </div>
+      <!-- OfficeACE 手机号直登：驱动桌面端本地 API（127.0.0.1:3004）完成华为云登录 -->
+      <div class="field">
+        <label>手机号（华为云账号）</label>
+        <input id="oaPhone" autocomplete="off" inputmode="numeric" maxlength="11" placeholder="11 位手机号">
+      </div>
+      <button class="btn-main sm" id="oaSms"
+        style="background:linear-gradient(135deg,#c2410c,#fb923c);box-shadow:0 4px 14px rgba(194,65,12,.28)">
+        📩 发送验证码</button>
+      <button class="btn-ghost" id="oaLaunch" style="margin-top:8px;width:100%">
+        🚀 启动 OfficeACE 客户端</button>
+      <div id="oaSmsTxt" style="display:none;margin-top:8px;font-size:13px;color:var(--ink2);line-height:1.6"></div>
+      <div class="field" style="margin-top:12px">
+        <label>短信验证码（手机收到的数字）</label>
+        <input id="oaCode" autocomplete="off" inputmode="numeric" maxlength="8" placeholder="填到这里">
+      </div>
+      <button class="btn-main sm" id="oaCodeGo"
+        style="background:linear-gradient(135deg,#059669,#34d399);box-shadow:0 4px 14px rgba(5,150,105,.25)">
+        🔑 登录并保存</button>
+      <span id="oaSmsLeft" style="font-size:12.5px;color:var(--muted);margin-left:8px"></span>
+      <div class="hint-sm">驱动 <b>OfficeACE 桌面端自己的登录通道</b>（本地 API，
+        端口从客户端 <code>runtime-state.json</code> 实时读取，默认 <code>3004</code>）：
+        华为云统一登录后 App 自动保存全新凭据，看板顺手重新导入。<br>
+        <b>前提：OfficeACE 桌面端正在运行</b> —— 点「📩 发送验证码」时看板会<b>自动尝试拉起客户端</b>；
+        若超时，可点上方「🚀 启动 OfficeACE 客户端」或手动双击
+        <code>OfficeAce.exe</code>（托盘里在跑即可）。</div>
+
+      <hr style="border:0;border-top:1px dashed var(--line);margin:16px 0">
+      <button class="btn-main sm" id="oaImport"
+        style="background:linear-gradient(135deg,#c2410c,#fb923c);box-shadow:0 4px 14px rgba(194,65,12,.28)">
+        📱 从本地客户端导入（推荐）</button>
+      <div class="hint-sm">解密本机已登录的 <b>OfficeACE 桌面端</b>临时凭据
+        （DPAPI 包裹的 AES key + <code>oauth-*.json</code>，只读不改）。<br>
+        每日登录可领 <b>1000 积分</b>（北京时间 23:59:59 前有效）。<br>
+        <b>注意：</b>华为云 STS 临时凭证约 24 小时过期；过期后请打开 OfficeACE 客户端
+        登录一次即可刷新，再点本按钮导入。</div>
+    </div>
+
+    </div><!-- /.tabpanes -->
+
+    <div class="addmsg" id="addMsg"></div>
+  </div>
+</div>
+
+<script>
+/* 任务主元数据：全局任务条按各平台 TASKS 的并集动态生成 */
+const TASK_META = {
+  checkin:{label:"每日签到", icon:"✓"},
+  travel: {label:"派小猫出行", icon:"🐱"},
+  chat:   {label:"给 AI 打招呼", icon:"💬"},
+  draw:   {label:"每日抽奖", icon:"🎁"}
+};
+/* 平台配色（头部圆点 + 头像渐变） */
+const PLAT_CLR = { workbuddy:"#635bff", minimax:"#0ea5e9", baidu_dumate:"#0d9f6e",
+                   lingxi:"#e8574a", trae:"#3355e8", qoder:"#7c3aed",
+                   zcode:"#0f766e", officeace:"#c2410c", codearts:"#0369a1" };
+const PLAT_GRAD = { workbuddy:"", minimax:"g2", baidu_dumate:"g3", lingxi:"g5",
+                    trae:"g6", qoder:"g7", zcode:"g8", officeace:"g9", codearts:"g10" };
+/* 「从本地客户端导入」失败提示里用到的桌面端名称 */
+const PLAT_LOCAL_NAME = { workbuddy:"WorkBuddy", minimax:"MiniMax Code", baidu_dumate:"百度搭子 DuMate",
+                          lingxi:"WPS 灵犀", trae:"Trae / TRAE SOLO CN", qoder:"Qoder CN",
+                          zcode:"ZCode（z.ai）", officeace:"OfficeACE", codearts:"CodeArts Agent" };
+
+/* ── 平台分组（前端按业务域分区展示，避免一屏铺开 9 个平台） ── */
+const GROUPS = [
+  { id:"dev",  name:"编程 / 开发",   icon:"🛠", desc:"AI 编程助手与客户端每日额度" },
+  { id:"ai",   name:"AI 助手 / 对话", icon:"🤖", desc:"通用 AI 助手类客户端" },
+  { id:"office", name:"办公 / 云平台", icon:"📄", desc:"办公套件与云平台权益" }
+];
+const PLAT_GROUP = { trae:"dev", qoder:"dev", zcode:"dev", codearts:"dev",
+                     workbuddy:"ai", minimax:"ai", baidu_dumate:"ai",
+                     lingxi:"office", officeace:"office" };
+const GROUP_OF = pid => PLAT_GROUP[pid] || "ai";
+/* 分组折叠状态（localStorage 记忆） */
+let GROUP_OPEN = {};
+try{ GROUP_OPEN = JSON.parse(localStorage.getItem("wb_group_open")||"{}")||{}; }catch(e){ GROUP_OPEN={}; }
+const groupOpen = gid => GROUP_OPEN[gid] !== false;   /* 默认展开 */
+function toggleGroup(gid){
+  GROUP_OPEN[gid] = !groupOpen(gid);
+  try{ localStorage.setItem("wb_group_open", JSON.stringify(GROUP_OPEN)); }catch(e){}
+  render();
+}
+
+/* 离线 / 无凭据时的演示骨架（含 WorkBuddy + MiniMax + DuMate，离线预览更直观） */
+const DEMO = {
+  demo:true,
+  generated_at:"演示数据",
+  hint:"本地后端未运行或无可执行凭据，当前为演示数据",
+  platforms:{
+    workbuddy:{
+      id:"workbuddy", label:"WorkBuddy", has_credentials:false,
+      tasks:[{key:"checkin",label:"每日签到"},{key:"travel",label:"派小猫出行"},{key:"chat",label:"给 AI 打招呼"}],
+      accounts:[
+        {name:"138****8888", ok:true, level:"Lv.6", energy:320, streak_days:12, signed_today:true,
+         credits:{remain:8420,total:12000,used:3580},
+         packages:[
+           {name:"主套餐（月度）",amount:6000,remain:4200,expire:"2026-10-31",source:"estimate",perpetual:false},
+           {name:"签到赠送积分",amount:2000,remain:1800,expire:"2026-10-09",source:"estimate",perpetual:false},
+           {name:"每月固定发放",amount:500,remain:500,expire:null,source:"manual",perpetual:true}
+         ],
+         buddy:{state:"traveling",arrive_in_min:186,location:"大理"}},
+        {name:"139****6666", ok:true, level:"Lv.4", energy:150, streak_days:3, signed_today:false,
+         credits:{remain:2310,total:6000,used:3690},
+         packages:[
+           {name:"主套餐（月度）",amount:6000,remain:2310,expire:"2026-10-31",source:"estimate",perpetual:false}
+         ],
+         buddy:{state:"arrived",arrive_in_min:0,location:"成都"}},
+        {name:"150****1234", ok:false, error:"凭据已失效，请重新登录", level:"?", signed_today:false,
+         credits:{remain:0,total:0,used:0}, packages:[], buddy:{state:"unknown"}}
+      ]
+    },
+    minimax:{
+      id:"minimax", label:"MiniMax Code", has_credentials:false,
+      tasks:[{key:"checkin",label:"每日签到"}],
+      accounts:[
+        {name:"minimax_alpha", ok:true, level:"MiniMax Code", signed_today:true,
+         credits:{remain:0,total:0,used:0}, packages:[],
+         extra:{exp_days:28}},
+        {name:"minimax_beta", ok:true, level:"MiniMax Code 会员", signed_today:false,
+         credits:{remain:0,total:0,used:0}, packages:[],
+         extra:{exp_days:2}}
+      ]
+    },
+    baidu_dumate:{
+      id:"baidu_dumate", label:"百度搭子 DuMate", has_credentials:false,
+      tasks:[{key:"checkin",label:"每日签到"},{key:"draw",label:"每日抽奖"}],
+      accounts:[
+        {name:"搭子·A", ok:true, level:"Pro", signed_today:true,
+         credits:{remain:3680,total:5000,used:1320},
+         packages:[
+           {name:"Pro 月度积分",amount:5000,remain:3680,expire:"2026-10-31",source:"measured",perpetual:false},
+           {name:"活动奖励积分",amount:300,remain:300,expire:"2026-11-15",source:"measured",perpetual:false}
+         ],
+         extra:{remaining_draws:1,
+                win_records:[
+                  {name:"100 积分",at:"2026-10-06 19:42",source:"官方"},
+                  {name:"Pro 会员体验卡（3天）",at:"2026-10-05 12:08",source:"官方"}
+                ],
+                last_draw:"100 积分"}},
+        {name:"搭子·B", ok:true, level:"免费版", signed_today:false,
+         credits:{remain:520,total:1000,used:480},
+         packages:[
+           {name:"免费版积分",amount:1000,remain:520,expire:"2026-10-20",source:"measured",perpetual:false}
+         ],
+         extra:{remaining_draws:0, win_records:[], last_draw:null}}
+      ]
+    },
+    qoder:{
+      id:"qoder", label:"Qoder CN", has_credentials:false,
+      tasks:[{key:"checkin",label:"每日领取 100 Credits"}],
+      accounts:[
+        {name:"示例用户", ok:true, level:"Qoder CN · personal_standard", signed_today:false,
+         credits:{remain:1311,total:1500,used:189},
+         packages:[{name:"活动赠送额度",amount:200,remain:200,used:0,expire:null,source:"measured",perpetual:false,kind:"Credits"}],
+         extra:{can_sign_in:true, today_reward:100, today_kind:"CREDITS", claimable_count:1}}
+      ]
+    },
+    zcode:{
+      id:"zcode", label:"ZCode（z.ai）", has_credentials:false,
+      tasks:[{key:"checkin",label:"领取赠送额度"}],
+      accounts:[
+        {name:"旅行者8566", ok:true, level:"ZCode", signed_today:true,
+         credits:{remain:0,total:0,used:0}, packages:[],
+         extra:{can_sign_in:false, plan_count:0, claimable_count:0, delivery_count:0}}
+      ]
+    },
+    codearts:{
+      id:"codearts", label:"CodeArts Agent", has_credentials:false,
+      tasks:[{key:"checkin",label:"每日领取 1000 积分"}],
+      accounts:[
+        {name:"示例用户B", ok:true, level:"CodeArts Agent · 华为云", signed_today:true,
+         credits:{remain:0,total:1000,used:0}, packages:[],
+         extra:{can_sign_in:false, today_reward:1000, daily_status:"CONFIRMED", expired:false}}
+      ]
+    },
+    officeace:{
+      id:"officeace", label:"OfficeACE（华为云）", has_credentials:false,
+      tasks:[{key:"checkin",label:"每日登录领取"}],
+      accounts:[
+        {name:"示例用户B", ok:true, level:"OfficeACE 会员", signed_today:true,
+         credits:{remain:1000,total:1000,used:0},
+         packages:[{name:"每日登录奖励",amount:1000,remain:1000,used:0,expire:null,source:"measured",perpetual:false,kind:"积分"}],
+         extra:{can_sign_in:false, today_reward:1000, streak_days:7, expired:false}}
+      ]
+    }
+  }
+};
+
+let STATE = null, running = false, USER_TASKS = null, renaming = false;
+/* 「后端是否连接」与「有没有账号凭据」是两件独立的事。
+   没有凭据时页面走 demo 骨架，但浏览器登录/添加账号恰恰是用来获取首个凭据的入口，
+   不能因为 demo 就被拦住（否则「没账号 → 禁止登录 → 永远没账号」死锁）。 */
+let BACKEND_OK = false;
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function today(){ const d=new Date(); return new Date(d.getFullYear(),d.getMonth(),d.getDate()); }
+function daysLeft(exp){
+  if(!exp) return null;
+  const d = new Date(String(exp).slice(0,10)+"T00:00:00");
+  return Math.round((d - today())/86400000);
+}
+
+/* 按到期日聚合：官方接口会返回上百个积分包，逐条列出会刷屏 */
+function pkgGroups(pkgs){
+  const m = new Map();
+  (pkgs||[]).forEach(p=>{
+    if((p.remain||0) <= 0) return;              // 已用完的不占版面
+    const d = p.expire ? String(p.expire).slice(0,10) : "无到期";
+    if(!m.has(d)) m.set(d, {date:d, sum:0, n:0, first:p.expire||""});
+    const g = m.get(d);
+    g.sum += (p.remain||0); g.n++;
+    if(p.expire && (!g.first || p.expire < g.first)) g.first = p.expire;
+  });
+  return [...m.values()].sort((a,b)=>{
+    if(a.date==="无到期") return 1;
+    if(b.date==="无到期") return -1;
+    return a.date < b.date ? -1 : 1;
+  });
+}
+function fmtMin(m){
+  m = Math.max(0, +m||0);
+  if(m>=60){ const h=Math.floor(m/60), r=m%60; return h+" 小时"+(r?r+" 分":""); }
+  return m+" 分钟";
+}
+function toast(msg, kind){
+  const t=$("#toast"); t.textContent=msg; t.className="toast show "+(kind||"");
+  clearTimeout(t._tm); t._tm=setTimeout(()=>t.className="toast "+(kind||""),3400);
+}
+function conn(on, txt){
+  $("#dot").className = "dot "+(on?"on":"off");
+  $("#conn").textContent = txt;
+}
+
+/* ── 状态拉取 ──
+   scope = 平台 id 时，只让后端重读该平台并合并进快照（秒级返回），
+   用于「添加 / 删除 / 导入账号后立即刷新」，避免整盘重读导致长时间无反馈。 */
+async function load(force, scope){
+  try{
+    let url = "/api/state";
+    const qs = [];
+    if(force) qs.push("force=1");
+    if(scope) qs.push("platform="+encodeURIComponent(scope));
+    if(qs.length) url += "?" + qs.join("&");
+    if(force) conn(true, scope ? "正在同步 "+(PLAT_LOCAL_NAME[scope]||scope)+" …" : "正在同步全部账号 …");
+    const r = await fetch(url, {cache:"no-store"});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    const real = await r.json();
+    BACKEND_OK = !!(real && real.platforms);   // 能拿到 platforms 即说明本地后端在线
+    const anyAcc = real.platforms && Object.values(real.platforms).some(p=>p.accounts && p.accounts.length);
+    STATE = anyAcc ? real : Object.assign({}, DEMO, {hint: real.hint || DEMO.hint});
+
+    if(STATE.demo){
+      conn(false, "后端已连接 · 未检测到账号凭据（演示数据）");
+      $("#banner").style.display = "block";
+      $("#banner").innerHTML = "<b>未检测到登录凭据，当前显示演示数据（签到 / 派猫等真实操作已禁用）。</b><br>" +
+        "点右上角 <code>➕ 添加账号</code> 即可在网页里配置（无需重启后端）：<br>" +
+        "· <b>WorkBuddy</b>：填手机号 → 发验证码 → 填手机收到的码 → 保存<br>" +
+        "· <b>MiniMax Code</b>：点「📱 从本地客户端导入」（读取桌面端登录态），或粘贴 <code>MINIMAX_TOKEN</code><br>" +
+        "· <b>百度搭子 DuMate</b>：点「📱 从本地客户端导入」（解密桌面端 Cookie），或粘贴浏览器 Cookie<br>" +
+        "· <b>Trae</b>：点「📱 从本地客户端导入」（解密桌面端登录态，自动带 <code>device_id</code>）<br>" +
+        "· <b>Qoder CN / ZCode / CodeArts Agent / OfficeACE / WPS 灵犀</b>：均在「添加账号」弹窗里按分组找到，点「📱 从本地客户端导入」即可（自动解密本机已登录的桌面端凭据）";
+    }else{
+      const nPlat = Object.keys(STATE.platforms).length;
+      const nAcc = Object.values(STATE.platforms).reduce((s,p)=>s+(p.accounts?p.accounts.length:0),0);
+      conn(true, "后端已连接 · " + (STATE.generated_at||"—") + " · " + nPlat + " 个平台 · 共 " + nAcc + " 个账号");
+      $("#banner").style.display = "none";
+    }
+    syncTaskBar();
+    render();
+    renderLog(STATE.log);
+  }catch(e){
+    BACKEND_OK = false;
+    STATE = DEMO;
+    conn(false, "未连接本地后端（显示演示数据）");
+    $("#banner").style.display="block";
+    $("#banner").innerHTML = "<b>未连接本地后端，当前显示演示数据。</b><br>" +
+      "在 dashboard 目录执行 <code>python server.py</code>，然后在浏览器打开 <code>http://127.0.0.1:8799</code> 即可操作真实账号。";
+    syncTaskBar();
+    render();
+  }
+}
+
+/* ── 全局任务条（并集） ── */
+function unionTasks(){
+  const set=[];
+  for(const pid in (STATE && STATE.platforms || {})){
+    (STATE.platforms[pid].tasks||[]).forEach(t=>{ if(!set.includes(t.key)) set.push(t.key); });
+  }
+  return set;
+}
+function syncTaskBar(){
+  const union = unionTasks();
+  if(USER_TASKS===null) USER_TASKS = new Set(union);
+  // 清理已不存在的 key
+  [...USER_TASKS].forEach(k=>{ if(!union.includes(k)) USER_TASKS.delete(k); });
+  const box = $("#taskpick");
+  if(!union.length){ box.innerHTML=""; return; }
+  box.innerHTML = union.map(k=>{
+    const on = USER_TASKS.has(k);
+    const m = TASK_META[k]||{label:k,icon:""};
+    return `<label class="chk ${on?'on':''}"><input type="checkbox" data-key="${k}" ${on?'checked':''}>${m.icon} ${m.label}</label>`;
+  }).join("");
+  box.querySelectorAll('input[data-key]').forEach(inp=>{
+    inp.addEventListener('change', ()=>{
+      const k=inp.dataset.key;
+      if(inp.checked) USER_TASKS.add(k); else USER_TASKS.delete(k);
+      inp.closest('.chk').classList.toggle('on', inp.checked);
+    });
+  });
+}
+function picked(){ return unionTasks().filter(k=>USER_TASKS.has(k)); }
+
+/* ── 渲染 ── */
+function render(){
+  const plats = (STATE && STATE.platforms) || {};
+  const accCount = Object.values(plats).reduce((s,p)=>s+(p.accounts?p.accounts.length:0),0);
+
+  // 汇总
+  let signed=0, credits=0, pending=0, drewLeft=0, wins=0;
+  Object.keys(plats).forEach(pid=>{
+    (plats[pid].accounts||[]).forEach(a=>{
+      if(a.signed_today) signed++;
+      const c=a.credits||{};
+      credits += (c.remain||0);
+      if(pid==="workbuddy" && ((a.buddy||{}).state==="arrived")) pending++;
+      if(pid==="baidu_dumate"){
+        drewLeft += ((a.extra||{}).remaining_draws||0);
+        wins += ((a.extra||{}).win_records||[]).length;
+      }
+    });
+  });
+  const nPlat = Object.keys(plats).length;
+  $("#stats").innerHTML = [
+    ["接入平台", nPlat, ""],
+    ["账号总数", accCount, ""],
+    ["今日已签到", signed+" / "+accCount, ""],
+    ["积分剩余", credits.toLocaleString(), "分"],
+    ["待办事项", (pending+drewLeft), "项"],
+    ["抽奖中奖", wins, "次"]
+  ].map(([k,v,u])=>`<div class="stat"><div class="k">${k}</div><div class="v">${v}${u?`<small>${u}</small>`:""}</div></div>`).join("");
+
+  if(!accCount){
+    $("#list").innerHTML = `<div class="empty"><h3>还没有账号</h3>
+      <div>点右上角 <code>➕ 添加账号</code>：WorkBuddy 填手机号收验证码；其余平台（MiniMax / DuMate / Trae / Qoder CN / ZCode / CodeArts Agent / OfficeACE / WPS 灵犀）点「📱 从本地客户端导入」一键读取本机已登录的桌面端凭据，账号立即出现。</div></div>`;
+    return;
+  }
+
+  // 按业务域分组渲染，避免一屏铺开 9 个平台
+  const byGroup = {};
+  Object.keys(plats).forEach(pid=>{
+    const p = plats[pid];
+    if(!p.accounts || !p.accounts.length) return;
+    const gid = GROUP_OF(pid);
+    (byGroup[gid] = byGroup[gid] || []).push(pid);
+  });
+
+  let html = "";
+  GROUPS.forEach(g=>{
+    const pids = byGroup[g.id];
+    if(!pids || !pids.length) return;
+    const nAcc = pids.reduce((s,pid)=>s+plats[pid].accounts.length,0);
+    const open = groupOpen(g.id);
+    let inner = "";
+    pids.forEach(pid=>{
+      const p = plats[pid];
+      const clr = PLAT_CLR[pid]||"#8792a2";
+      inner += `<div class="psec-wrap">
+        <div class="phead">
+          <span class="pdot" style="background:${clr}"></span>
+          <span class="pname">${esc(p.label||pid)}</span>
+          <span class="pcnt">${p.accounts.length} 个账号</span>
+          <span class="ptag ${p.has_credentials?'':'off'}">${p.has_credentials?'● 凭据已就绪':'○ 未配置凭据'}</span>
+        </div>
+        <div class="cards">${p.accounts.map(a=>cardHTML(a,pid)).join("")}</div>
+      </div>`;
+    });
+    html += `<div class="gsec${open?'':' closed'}" data-group="${g.id}">
+      <div class="ghead" data-gtoggle="${g.id}" title="点击折叠 / 展开">
+        <span class="gico">${g.icon}</span>
+        <span class="gname">${esc(g.name)}</span>
+        <span class="gdesc">${esc(g.desc)}</span>
+        <span class="gnum">${pids.length} 个平台 · ${nAcc} 个账号</span>
+        <span class="gchev">▾</span>
+      </div>
+      <div class="gbody">${inner}</div>
+    </div>`;
+  });
+  $("#list").innerHTML = html;
+
+  $("#list").querySelectorAll("[data-gtoggle]").forEach(el=>{
+    el.addEventListener("click", ()=> toggleGroup(el.dataset.gtoggle));
+  });
+
+  $("#list").querySelectorAll(".row").forEach(el=>{
+    el.addEventListener("click", ()=> el.parentElement.classList.toggle("open"));
+  });
+  $("#list").querySelectorAll("[data-act]").forEach(b=>{
+    b.addEventListener("click", ev=>{
+      ev.stopPropagation();
+      runOne(b.dataset.act, b.dataset.platform, b.dataset.name);
+    });
+  });
+  $("#list").querySelectorAll("[data-del]").forEach(b=>{
+    b.addEventListener("click", ev=>{
+      ev.stopPropagation();
+      runDel(b.dataset.del, b.dataset.name, b.dataset.key);
+    });
+  });
+  $("#list").querySelectorAll("[data-ren]").forEach(b=>{
+    b.addEventListener("click", ev=>{
+      ev.stopPropagation();
+      startRename(b);
+    });
+  });
+}
+
+function buddyTag(b){
+  b = b || {};
+  switch(b.state){
+    case "traveling": return `<span class="tag t-blue">🧳 旅行中 · ${fmtMin(b.arrive_in_min)}后到</span>`;
+    case "arrived":   return `<span class="tag t-orange">🎁 已回来，待领礼物</span>`;
+    case "departed":  return `<span class="tag t-blue">🧳 刚出发</span>`;
+    case "done":      return `<span class="tag t-green">✅ 出行+礼物已完成</span>`;
+    case "idle":      return `<span class="tag t-gray">🏠 在家待命</span>`;
+    case "limited":   return `<span class="tag t-gray">🚫 今日次数已用尽</span>`;
+    case "no_buddy":  return `<span class="tag t-gray">未领养 Buddy</span>`;
+    default:          return `<span class="tag t-gray">🐱 状态未知</span>`;
+  }
+}
+
+/* 平台专有标签（卡片行内） */
+function platTags(a, pid){
+  const t=[];
+  if(pid==="workbuddy"){
+    if(a.energy!=null) t.push(`<span class="tag t-purple">⚡ ${esc(a.energy)}</span>`);
+    if(a.streak_days!=null) t.push(`<span class="tag t-gray">🔥 连签 ${esc(a.streak_days)} 天</span>`);
+    t.push(buddyTag(a.buddy||{}));
+  } else if(pid==="minimax"){
+    const ex=a.extra||{};
+    // 手机号放最前：MiniMax 只有 2 个登录槽位，多账号常常显示名雷同，靠手机号才分得清
+    if(ex.phone) t.push(`<span class="tag t-gray">📱 ${esc(ex.phone)}</span>`);
+    if(ex.refreshable){
+      // 带 refresh_token 的 Bearer 令牌会静默续期，1 小时寿命不再值得 alarm
+      t.push(`<span class="tag t-green">♻️ 自动续期</span>`);
+    }else{
+      const exp=ex.exp_days;
+      if(exp!=null) t.push(`<span class="tag ${exp<3?'t-red':'t-gray'}">⏳ token 剩 ${exp} 天</span>`);
+    }
+  } else if(pid==="baidu_dumate"){
+    const rem=(a.extra||{}).remaining_draws;
+    if(rem!=null) t.push(`<span class="tag t-orange">🎁 可抽奖 ${rem} 次</span>`);
+    const wins=(a.extra||{}).win_records||[];
+    if(wins.length) t.push(`<span class="tag t-purple">🏆 中奖 ${wins.length} 次</span>`);
+  } else if(pid==="lingxi"){
+    const ex=a.extra||{};
+    if(ex.streak_days!=null) t.push(`<span class="tag t-gray">🔥 连签 ${esc(ex.streak_days)} 天</span>`);
+    if(ex.can_sign_in) t.push(`<span class="tag t-orange">○ 今日可签</span>`);
+    if(ex.today_reward) t.push(`<span class="tag t-green">+${esc(ex.today_reward)} 智点/天</span>`);
+    const op=(ex.one_time_pending||[]).length;
+    if(op) t.push(`<span class="tag t-purple">📋 待领 ${op} 项</span>`);
+  } else if(pid==="trae"){
+    const ex=a.extra||{};
+    if(ex.today_reward) t.push(`<span class="tag t-green">+${esc(ex.today_reward)} 分/天</span>`);
+    const d=ex.token_exp_days;
+    if(d!=null) t.push(`<span class="tag ${d<3?'t-red':'t-gray'}">⏳ 登录态剩 ${esc(d)} 天</span>`);
+    if(ex.region) t.push(`<span class="tag t-gray">🌏 ${esc(ex.region)}</span>`);
+  } else if(pid==="qoder"){
+    const ex=a.extra||{};
+    if(ex.today_reward) t.push(`<span class="tag t-green">+${esc(ex.today_reward)} Credits/天</span>`);
+    if(ex.claimable_count) t.push(`<span class="tag t-orange">🎁 可领 ${esc(ex.claimable_count)} 项</span>`);
+    if(ex.expires_at) t.push(`<span class="tag t-gray">⏳ ${esc(String(ex.expires_at).slice(0,10))} 到期</span>`);
+  } else if(pid==="zcode"){
+    const ex=a.extra||{};
+    if(ex.delivery_count) t.push(`<span class="tag t-orange">📦 活动发放 ${esc(ex.delivery_count)} 项</span>`);
+    if(ex.claimable_count) t.push(`<span class="tag t-orange">🎁 可领计划 ${esc(ex.claimable_count)} 个</span>`);
+    if(ex.captcha_required) t.push(`<span class="tag t-red">需滑块验证</span>`);
+    if(!ex.claimable_count && !ex.delivery_count && ex.plan_count) t.push(`<span class="tag t-gray">📋 计划 ${esc(ex.plan_count)} 个</span>`);
+    if(!ex.claimable_count && !ex.delivery_count && !ex.plan_count) t.push(`<span class="tag t-gray">⏳ 暂无可领（不定时发放）</span>`);
+  } else if(pid==="codearts"){
+    const ex=a.extra||{};
+    if(ex.today_reward) t.push(`<span class="tag t-green">+${esc(ex.today_reward)} 积分/天</span>`);
+    if(ex.daily_status) t.push(`<span class="tag ${a.signed_today?'t-gray':'t-orange'}">${esc(ex.daily_status)}</span>`);
+    const exp=ex.expired===true;
+    if(ex.expires_at) t.push(`<span class="tag ${exp?'t-red':'t-gray'}">${exp?'⛔ 凭证已过期':'⏳ 凭证至 '+esc(String(ex.expires_at).slice(11,16))+'Z'}</span>`);
+  } else if(pid==="officeace"){
+    const ex=a.extra||{};
+    if(ex.today_reward) t.push(`<span class="tag t-green">+${esc(ex.today_reward)} 积分/天</span>`);
+    if(ex.streak_days!=null) t.push(`<span class="tag t-gray">🔥 连签 ${esc(ex.streak_days)} 天</span>`);
+    if(ex.can_sign_in) t.push(`<span class="tag t-orange">○ 今日可领</span>`);
+    const acts=ex.today_activities||[];
+    if(acts.length) t.push(`<span class="tag t-green">今日已领：${esc(acts.join("、"))}</span>`);
+    const exp=ex.expired===true;
+    if(ex.expires_at) t.push(`<span class="tag ${exp?'t-red':'t-gray'}">${exp?'⛔ 凭证已过期':'⏳ 凭证有效'}</span>`);
+  }
+  return t;
+}
+
+function cardHTML(a, pid){
+  const c = a.credits||{}, grad = PLAT_GRAD[pid]||"";
+  const showCred = (c.total>0 || c.remain>0);
+  const pct = c.total ? Math.round((c.remain/c.total)*100) : 0;
+  const initial = esc(String(a.name||"?").replace(/[^\d\w一-龥]/g,"").slice(-2)||"?");
+  const g0 = pkgGroups(a.packages||[])[0];
+  const d0 = g0 && g0.date!=="无到期" ? daysLeft(g0.date) : null;
+  const expMini = a.ok===false ? "" :
+    (g0 && showCred
+      ? `<div class="exp-mini${(d0!==null && d0<=7)?' warn':''}">最近到期 ${
+          d0===null?"无到期日":(d0<=0?"今天":d0+" 天后")} · ${Math.round(g0.sum).toLocaleString()} 分</div>`
+      : (showCred?`<div class="exp-mini">暂无可用积分</div>`:""));
+
+  const tags = [];
+  tags.push(a.signed_today
+    ? `<span class="tag t-green">✓ 今日已签</span>`
+    : `<span class="tag t-orange">○ 今日未签</span>`);
+  platTags(a,pid).forEach(x=>tags.push(x));
+
+  const credHTML = showCred
+    ? `<div><div class="n">${(c.remain||0).toLocaleString()}<small>分</small></div>
+        <div class="bar"><i style="width:${pct}%"></i></div>${expMini}</div>`
+    : `<div><div class="n" style="font-size:18px;color:var(--muted)">—</div></div>`;
+
+  return `<div class="card${a.ok===false?" error":""}" data-name="${esc(a.name)}">
+    <div class="row">
+      <div class="who">
+        <div class="ava ${grad}">${initial}</div>
+        <div>
+          <div class="nm">${esc(a.name)}${STATE.demo?'':`<button class="btn-ren" data-ren="${pid}" data-name="${esc(a.name)}" data-key="${esc(a.key||a.name)}" title="修改备注名">✏</button>`}</div>
+          <div class="lv">${esc(a.level||"—")}${a.ok===false?" · 凭据异常":""}</div>
+        </div>
+      </div>
+      <div class="tags">${tags.join("")}${a.ok===false?`<span class="tag t-red">${esc((a.error||"").slice(0,26))}</span>`:""}</div>
+      <div class="cred">${credHTML}</div>
+      <div class="chev">›</div>
+    </div>
+    <div class="detail">${detailHTML(a,pid)}</div>
+  </div>`;
+}
+
+function detailHTML(a, pid){
+  const c = a.credits||{};
+  const pkgs = (a.packages||[]).slice().sort((x,y)=>{
+    if(x.perpetual) return 1;
+    if(y.perpetual) return -1;
+    return (daysLeft(x.expire)??9999) - (daysLeft(y.expire)??9999);
+  });
+  const groups = pkgGroups(pkgs);
+
+  // 左侧：积分与到期（或平台说明）
+  let pkgHTML;
+  if(pid==="minimax" && !groups.length){
+    // 已接入官方积分明细接口（/minimax-cloud/api/v1/credit/details），
+    // 仅在拉取失败 / 无积分包时给说明，不再无条件写「未公开」。
+    pkgHTML = a.credits_ok===false
+      ? `<div style="color:var(--muted);font-size:13px;padding:6px 0">积分明细暂不可用：${esc((a.credits_error||"查询失败").slice(0,60))}</div>`
+      : `<div style="color:var(--muted);font-size:13px;padding:6px 0">该账号暂无可用积分包。</div>`;
+  } else if(groups.length){
+    const isEst = pkgs.length && pkgs[0].source==="estimate";
+    const badge = isEst ? `<span class="badge b-est">估算</span>` : `<span class="badge b-meas">官方</span>`;
+    const shown = groups.slice(0,10), rest = groups.slice(10);
+    const restSum = rest.reduce((s,g)=>s+g.sum,0);
+    const groupRow = g => {
+      const d = g.date==="无到期" ? null : daysLeft(g.date);
+      let tail, color="var(--ink)";
+      if(g.date==="无到期"){ tail="无到期日"; }
+      else if(d<0){ tail="已过期"; color="var(--red)"; }
+      else if(d===0){ tail="今天到期"; color="var(--red)"; }
+      else if(d<=3){ tail="剩 "+d+" 天"; color="var(--red)"; }
+      else if(d<=7){ tail="剩 "+d+" 天"; color="var(--orange)"; }
+      else { tail="剩 "+d+" 天"; }
+      return `<div class="pkg">
+        <div class="ptop">
+          <span class="pname">${esc(g.date)}（<b style="color:${color}">${tail}</b>）</span>
+          <span class="pval">${Math.round(g.sum).toLocaleString()}<small>分 · ${g.n} 个包</small></span>
+        </div>
+        <div class="pmeta">${badge}<span>最早 ${esc(g.first||"—")}</span></div>
+      </div>`;
+    };
+    pkgHTML = shown.map(groupRow).join("") +
+      (rest.length ? `<div class="pkg">
+        <div class="ptop"><span class="pname">更晚到期</span>
+          <span class="pval">${Math.round(restSum).toLocaleString()}<small>分 · ${rest.length} 个到期日</small></span></div>
+        <div class="pmeta">${badge}<span>日期更靠后，暂不展开</span></div>
+      </div>` : "");
+  } else {
+    pkgHTML = `<div style="color:var(--muted);font-size:13px;padding:6px 0">暂无可用积分包</div>`;
+  }
+
+  // 右侧：账号详情（平台专有字段）
+  const kv = [];
+  if(pid==="workbuddy"){
+    const bud=a.buddy||{};
+    kv.push(`<div class="kv"><span>成长等级</span><b>${esc(a.level||"—")}</b></div>`);
+    kv.push(`<div class="kv"><span>能量值</span><b>${a.energy!=null?esc(a.energy):"—"}</b></div>`);
+    kv.push(`<div class="kv"><span>连续签到</span><b>${a.streak_days!=null?esc(a.streak_days)+" 天":"—"}</b></div>`);
+    kv.push(`<div class="kv"><span>今日签到</span><b style="color:${a.signed_today?"var(--green)":"var(--orange)"}">${a.signed_today?"已完成":"未完成"}</b></div>`);
+    kv.push(`<div class="kv"><span>积分剩余 / 总量</span><b>${(c.remain||0).toLocaleString()} / ${(c.total||0).toLocaleString()}</b></div>`);
+    kv.push(`<div class="kv"><span>已消耗</span><b>${(c.used||0).toLocaleString()}</b></div>`);
+    kv.push(`<div class="kv"><span>Buddy 状态</span><b>${{traveling:"旅行中",arrived:"已到达待领",done:"今日已完成（出行+礼物）",idle:"在家待命",limited:"今日次数已用尽",no_buddy:"未领养",unknown:"未知"}[bud.state]||esc(bud.state||"—")}</b></div>`);
+    if(bud.location) kv.push(`<div class="kv"><span>目的地</span><b>${esc(bud.location)}</b></div>`);
+    if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
+  } else if(pid==="minimax"){
+    const exp=(a.extra||{}).exp_days;
+    kv.push(`<div class="kv"><span>账号类型</span><b>${esc(a.level||"—")}</b></div>`);
+    kv.push(`<div class="kv"><span>Token 有效期</span><b style="color:${exp!=null&&exp<3?'var(--red)':'var(--ink)'}">${exp!=null?exp+" 天":"—"}</b></div>`);
+    kv.push(`<div class="kv"><span>今日签到</span><b style="color:${a.signed_today?"var(--green)":"var(--orange)"}">${a.signed_today?"已完成":"未完成"}</b></div>`);
+    if(a.credits_ok){
+      kv.push(`<div class="kv"><span>积分剩余</span><b style="color:var(--ink)">${(c.remain||0).toLocaleString()} 分</b></div>`);
+      kv.push(`<div class="kv"><span>累计获得</span><b>${(c.granted||0).toLocaleString()} 分 · ${c.count||0} 笔</b></div>`);
+      kv.push(`<div class="kv"><span>已消耗</span><b>${(c.used||0).toLocaleString()} 分</b></div>`);
+      const ne=c.nearest_expire_ms;
+      if(ne){ const d=Math.round((ne/1000-today()/1000)/86400);
+        kv.push(`<div class="kv"><span>最近到期</span><b style="color:${d<=3?'var(--red)':d<=7?'var(--orange)':'var(--ink)'}">${new Date(ne).toISOString().slice(0,10)}（剩 ${d} 天）</b></div>`);
+      }
+    }
+    if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
+  } else if(pid==="baidu_dumate"){
+    const rem=(a.extra||{}).remaining_draws;
+    kv.push(`<div class="kv"><span>会员等级</span><b>${esc(a.level||"—")}</b></div>`);
+    kv.push(`<div class="kv"><span>今日签到</span><b style="color:${a.signed_today?"var(--green)":"var(--orange)"}">${a.signed_today?"已完成":"未完成"}</b></div>`);
+    kv.push(`<div class="kv"><span>积分剩余 / 总量</span><b>${(c.remain||0).toLocaleString()} / ${(c.total||0).toLocaleString()}</b></div>`);
+    kv.push(`<div class="kv"><span>已消耗</span><b>${(c.used||0).toLocaleString()}</b></div>`);
+    kv.push(`<div class="kv"><span>今日可抽奖</span><b style="color:${rem>0?'var(--green)':'var(--orange)'}">${rem!=null?rem+" 次":"—"}</b></div>`);
+    if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
+  } else if(pid==="lingxi"){
+    const ex=a.extra||{};
+    kv.push(`<div class="kv"><span>账号类型</span><b>${esc(a.level||"—")}</b></div>`);
+    kv.push(`<div class="kv"><span>今日签到</span><b style="color:${a.signed_today?"var(--green)":"var(--orange)"}">${a.signed_today?"已完成":"未完成"}</b></div>`);
+    kv.push(`<div class="kv"><span>智点剩余 / 总量</span><b>${(c.remain||0).toLocaleString()} / ${(c.total||0).toLocaleString()}</b></div>`);
+    kv.push(`<div class="kv"><span>已消耗</span><b>${(c.used||0).toLocaleString()}</b></div>`);
+    if(ex.streak_days!=null) kv.push(`<div class="kv"><span>连签天数</span><b>${esc(ex.streak_days)} 天</b></div>`);
+    if(ex.total_claimed!=null) kv.push(`<div class="kv"><span>累计已领智点</span><b>${Number(ex.total_claimed).toLocaleString()}</b></div>`);
+    if(ex.today_reward) kv.push(`<div class="kv"><span>每日签到奖励</span><b>${esc(ex.today_reward)} 智点</b></div>`);
+    const op=ex.one_time_pending||[];
+    if(op.length) kv.push(`<div class="kv"><span>待领任务</span><b>${op.map(esc).join("、")}</b></div>`);
+    if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
+  } else if(pid==="trae"){
+    const ex=a.extra||{};
+    kv.push(`<div class="kv"><span>账号类型</span><b>${esc(a.level||"—")}</b></div>`);
+    kv.push(`<div class="kv"><span>今日签到</span><b style="color:${a.signed_today?"var(--green)":"var(--orange)"}">${a.signed_today?"已完成":"未完成"}</b></div>`);
+    kv.push(`<div class="kv"><span>积分剩余 / 总量</span><b>${(c.remain||0).toLocaleString()} / ${(c.total||0).toLocaleString()}</b></div>`);
+    kv.push(`<div class="kv"><span>已消耗</span><b>${(c.used||0).toLocaleString()}</b></div>`);
+    if(ex.today_reward) kv.push(`<div class="kv"><span>每日签到奖励</span><b>${esc(ex.today_reward)} 分</b></div>`);
+    if(ex.user_id) kv.push(`<div class="kv"><span>User ID</span><b>${esc(ex.user_id)}</b></div>`);
+    if(ex.region) kv.push(`<div class="kv"><span>区域</span><b>${esc(ex.region)}</b></div>`);
+    if(ex.token_exp_days!=null) kv.push(`<div class="kv"><span>登录态剩余</span><b style="color:${ex.token_exp_days<3?'var(--red)':'var(--ink)'}">${esc(ex.token_exp_days)} 天</b></div>`);
+    if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
+  } else if(pid==="qoder"){
+    const ex=a.extra||{};
+    kv.push(`<div class="kv"><span>账号类型</span><b>${esc(a.level||"—")}</b></div>`);
+    kv.push(`<div class="kv"><span>今日领取</span><b style="color:${a.signed_today?"var(--green)":"var(--orange)"}">${a.signed_today?"已完成":"未完成"}</b></div>`);
+    kv.push(`<div class="kv"><span>Credits 剩余 / 总量</span><b>${(c.remain||0).toLocaleString()} / ${(c.total||0).toLocaleString()}</b></div>`);
+    kv.push(`<div class="kv"><span>已消耗</span><b>${(c.used||0).toLocaleString()}</b></div>`);
+    if(ex.today_reward) kv.push(`<div class="kv"><span>每日奖励</span><b>${esc(ex.today_reward)} ${esc(ex.today_kind||"Credits")}</b></div>`);
+    if(ex.claimable_count!=null) kv.push(`<div class="kv"><span>可领活动</span><b style="color:${ex.claimable_count>0?'var(--green)':'var(--muted)'}">${esc(ex.claimable_count)} 个</b></div>`);
+    if(ex.phone) kv.push(`<div class="kv"><span>手机号</span><b>${esc(String(ex.phone).replace(/^(\d{3})\d{4}/, "$1****"))}</b></div>`);
+    if(ex.expires_at) kv.push(`<div class="kv"><span>登录态到期</span><b>${esc(String(ex.expires_at).replace("T"," ").slice(0,16))}</b></div>`);
+    if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
+  } else if(pid==="zcode"){
+    const ex=a.extra||{};
+    kv.push(`<div class="kv"><span>账号类型</span><b>${esc(a.level||"—")}</b></div>`);
+    kv.push(`<div class="kv"><span>今日状态</span><b style="color:${a.signed_today?"var(--muted)":"var(--green)"}">${a.signed_today?"暂无可领":"有可领项"}</b></div>`);
+    kv.push(`<div class="kv"><span>可领计划</span><b style="color:${ex.claimable_count>0?'var(--green)':'var(--muted)'}">${esc(ex.claimable_count||0)} 个</b></div>`);
+    kv.push(`<div class="kv"><span>活动发放</span><b style="color:${ex.delivery_count>0?'var(--green)':'var(--muted)'}">${esc(ex.delivery_count||0)} 项</b></div>`);
+    kv.push(`<div class="kv"><span>已订阅计划</span><b>${esc(ex.plan_count||0)} 个</b></div>`);
+    if((ex.plans||[]).length) kv.push(`<div class="kv"><span>计划</span><b>${(ex.plans||[]).map(p=>esc(p.name)).join("、")}</b></div>`);
+    if(ex.captcha_required) kv.push(`<div class="kv"><span>领取方式</span><b style="color:var(--orange)">需在客户端过滑块验证</b></div>`);
+    if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
+  } else if(pid==="codearts"){
+    const ex=a.extra||{};
+    kv.push(`<div class="kv"><span>账号类型</span><b>${esc(a.level||"—")}</b></div>`);
+    kv.push(`<div class="kv"><span>今日签到</span><b style="color:${a.signed_today?"var(--green)":"var(--orange)"}">${a.signed_today?"已完成":"未完成"}</b></div>`);
+    kv.push(`<div class="kv"><span>待领 / 每日额度</span><b>${(c.remain||0).toLocaleString()} / ${(c.total||0).toLocaleString()}</b></div>`);
+    if(ex.today_reward) kv.push(`<div class="kv"><span>每日奖励</span><b>${esc(ex.today_reward)} 积分（30 天有效）</b></div>`);
+    if(ex.daily_status) kv.push(`<div class="kv"><span>签到状态</span><b>${esc(ex.daily_status)}</b></div>`);
+    if(ex.expires_at) kv.push(`<div class="kv"><span>临时凭证到期</span><b style="color:${ex.expired?'var(--red)':'var(--ink)'}">${esc(String(ex.expires_at).replace("T"," ").slice(0,19))}Z</b></div>`);
+    const oc=ex.other_campaigns||[];
+    if(oc.length) kv.push(`<div class="kv"><span>其他活动</span><b>${oc.map(x=>`#${x.id}(+${x.amount})`).join("、")}</b></div>`);
+    kv.push(`<div class="kv"><span>客户端凭据库</span><b style="color:var(--green)">只读，未改动</b></div>`);
+    if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
+  } else if(pid==="officeace"){
+    const ex=a.extra||{};
+    kv.push(`<div class="kv"><span>账号类型</span><b>${esc(a.level||"—")}</b></div>`);
+    kv.push(`<div class="kv"><span>今日领取</span><b style="color:${a.signed_today?"var(--green)":"var(--orange)"}">${a.signed_today?"已完成":"未完成"}</b></div>`);
+    kv.push(`<div class="kv"><span>积分剩余 / 总量</span><b>${(c.remain||0).toLocaleString()} / ${(c.total||0).toLocaleString()}</b></div>`);
+    if(ex.today_reward) kv.push(`<div class="kv"><span>每日登录奖励</span><b>${esc(ex.today_reward)} 积分</b></div>`);
+    if(ex.streak_days!=null) kv.push(`<div class="kv"><span>连签天数</span><b>${esc(ex.streak_days)} 天</b></div>`);
+    if(ex.expires_at) kv.push(`<div class="kv"><span>STS 凭证到期</span><b style="color:${ex.expired?'var(--red)':'var(--ink)'}">${esc(String(ex.expires_at).replace("T"," ").slice(0,19))}Z</b></div>`);
+    if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
+  }
+
+  // 操作按钮：仅显示该平台支持的 TASKS
+  const pinfo = (STATE.platforms||{})[pid]||{};
+  const acts = (pinfo.tasks||[]).map(t=>{
+    const gm = TASK_META[t.key]||{};
+    const icon = gm.icon||"✓";
+    const label = t.label || gm.label || t.key;
+    return `<button class="btn-ghost" data-act="${t.key}" data-name="${esc(a.name)}" data-platform="${pid}">${icon} ${label}</button>`;
+  }).join("");
+
+  // DuMate：第三栏「抽奖与中奖记录」
+  let extraBox = "";
+  if(pid==="baidu_dumate"){
+    const recs = (a.extra||{}).win_records||[];
+    const last = (a.extra||{}).last_draw||"";
+    const recHTML = recs.length ? recs.map(r=>`<div class="win">
+        <div class="wtop"><span class="wname">${esc(r.name||"奖励")}</span>
+          <span class="wtag ${r.source==="官方"?"b-meas":"b-per"}">${esc(r.source||"")}</span></div>
+        <div class="wtime">${esc(r.at||"")}</div>
+      </div>`).join("")
+      : `<div style="color:var(--muted);font-size:13px;padding:6px 0">暂无中奖记录</div>`;
+    extraBox = `<div class="dbox">
+      <div class="dtitle">🎁 抽奖与中奖记录 <span class="cnt">${recs.length?recs.length+" 条":"本会话"}</span></div>
+      ${last?`<div class="wlast">最近抽奖：<b>${esc(last)}</b></div>`:""}
+      <div class="wins">${recHTML}</div>
+    </div>`;
+  }
+
+  const gridCls = pid==="baidu_dumate" ? "dgrid three" : "dgrid";
+  return `<div class="${gridCls}">
+    <div class="dbox">
+      <div class="dtitle">💠 积分与到期 <span class="cnt">${groups.length?("共 "+pkgs.length+" 个积分包"):"本平台积分"}</span></div>
+      ${pkgHTML}
+      <div class="acts">${acts}
+        ${STATE.demo?'':`<button class="btn-ren2" data-ren="${pid}" data-name="${esc(a.name)}" data-key="${esc(a.key||a.name)}">✏ 改备注名</button>`}
+      </div>
+      ${STATE.demo?'':`<button class="btn-del" data-del="${pid}" data-name="${esc(a.name)}" data-key="${esc(a.key||a.name)}">🗑 删除此账号</button>`}
+    </div>
+    <div class="dbox">
+      <div class="dtitle">📋 账号详情</div>
+      ${kv.join("")}
+    </div>
+    ${extraBox}
+  </div>`;
+}
+
+function renderLog(lines){
+  if(!lines || !lines.length){ $("#logbox").textContent=""; return; }
+  $("#logbox").textContent = lines.join("\n");
+  $("#logbox").scrollTop = 1e9;
+}
+
+/* ── 执行 ── */
+async function callRun(payload){
+  const r = await fetch("/api/run", {method:"POST", headers:{"Content-Type":"application/json"},
+                                     body:JSON.stringify(payload)});
+  const j = await r.json();
+  if(!r.ok || j.error) throw new Error(j.error || ("HTTP "+r.status));
+  return j;
+}
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+const mask = n => (n && n.length>=11) ? n.slice(0,3)+"****"+n.slice(-4) : (n||"");
+
+function updateProg(p){
+  $("#prog").style.display = "block";
+  const total = p.total||0, done = p.done||0;
+  $("#pcount").textContent = done + " / " + total;
+  $("#pfill").style.width = (total ? Math.round(done/total*100) : 0) + "%";
+  $("#ptext").innerHTML = p.finished
+    ? "执行完成"
+    : `正在处理 <b>${esc(mask(p.current_name))}</b> · ${esc(p.current_task||"")}`;
+  const steps = p.steps||[];
+  $("#psteps").innerHTML = steps.map(s=>
+    `<div><span class="${s.ok?"ok":"no"}">${s.ok?"✓":"✗"}</span> ${esc(mask(s.name))}<span class="nm">${esc(TASK_META[s.task]?TASK_META[s.task].label:s.task)}：${esc(s.msg||"")}</span></div>`
+  ).join("");
+  const box = $("#psteps"); box.scrollTop = box.scrollHeight;
+}
+
+/* 一键执行：每个有凭据的平台各起一个异步任务，并行轮询聚合进度 */
+async function runAll(){
+  if(running) return;
+  const tasks = picked();
+  if(!tasks.length){ toast("请至少勾选一个任务","err"); return; }
+  if(!BACKEND_OK){ toast("未连接本地后端，请先运行「启动看板.bat」","err"); return; }
+  if(STATE && STATE.demo){ toast("未检测到账号凭据，请先点右上角「➕ 添加账号」完成配置","err"); return; }
+
+  const plats = [];
+  for(const pid in (STATE.platforms||{})){
+    const p = STATE.platforms[pid];
+    if(p.has_credentials) plats.push(pid);
+  }
+  if(!plats.length){ toast("没有检测到任何平台凭据","err"); return; }
+
+  const jobs = [];
+  for(const pid of plats){
+    try{
+      const res = await callRun({platform:pid, tasks, async:true});
+      if(res.ok && res.job) jobs.push({pid, jid:res.job, total:res.total||0, done:0, results:[]});
+      else console.warn("启动失败", pid, res.error);
+    }catch(e){ console.warn(e); }
+  }
+  if(!jobs.length){ toast("未能启动任务（可能所选任务不被任何平台支持）","err"); return; }
+
+  running = true; $("#btnAll").disabled = true; $("#btnRefresh").disabled = true;
+  $("#psteps").innerHTML = ""; updateProg({total:0,done:0,finished:false,steps:[]});
+  try{
+    const t0 = Date.now();
+    while(true){
+      await sleep(450);
+      let total=0, done=0, allFinished=true, steps=[], curName="", curTask="";
+      for(const j of jobs){
+        const p = await fetch("/api/progress?job="+j.jid,{cache:"no-store"}).then(r=>r.json());
+        total += (p.total||0); done += (p.done||0);
+        if(!p.finished){ allFinished=false; if(p.current_name){ curName=p.current_name; curTask=p.current_task; } }
+        else j.results = p.results||[];
+        (p.steps||[]).forEach(s=>steps.push(s));
+      }
+      updateProg({total, done, finished:allFinished, steps:steps.slice(-14), current_name:curName, current_task:curTask});
+      if(allFinished) break;
+      if(Date.now()-t0 > 360000){ toast("等待超时，请稍后刷新查看结果","err"); break; }
+    }
+    let ok=0, fail=0;
+    jobs.forEach(j=>(j.results||[]).forEach(r=>(r.steps||[]).forEach(s=>{ s.ok?ok++:fail++; })));
+    if(fail) toast(`完成 ${ok} 项，失败 ${fail} 项`, "err");
+    else toast(`全部完成 ✓（${ok} 项）`, "ok");
+    await load(false);   // 后端在任务结束时已强制重读过，这里直接复用最新快照，秒回
+  }catch(e){ toast("执行失败："+e.message, "err"); }
+  finally{
+    running = false; $("#btnAll").disabled = false; $("#btnRefresh").disabled = false;
+    $("#btnAll").textContent = "⚡ 一键执行（全部账号）";
+    setTimeout(()=>{ if(!running) $("#prog").style.display = "none"; }, 8000);
+  }
+}
+
+/* 单账号单任务 */
+async function runOne(task, platform, name){
+  if(!BACKEND_OK){ toast("未连接本地后端，请先运行「启动看板.bat」","err"); return; }
+  if(STATE && STATE.demo){ toast("未检测到账号凭据，无法执行真实操作","err"); return; }
+  const label = (TASK_META[task]||{}).label || task;
+  toast(name+" 正在"+label+"…");
+  try{
+    const res = await callRun({platform, names:[name], tasks:[task]});
+    const r = (res.results||[])[0];
+    const st = ((r&&r.steps)||[])[0] || {};
+    toast(st.ok ? `${name} ${label}成功：${st.msg}` : `${name} ${label}失败：${st.msg}`, st.ok?"ok":"err");
+    await load(false);   // /api/run 已在结束前重读并写缓存，直接取最新快照
+  }catch(e){ toast("失败："+e.message, "err"); }
+}
+
+/* ── 添加账号弹窗 ── */
+function openAdd(){ $("#addMask").style.display="flex"; setTab("workbuddy"); clearAddMsg(); }
+function closeAdd(){ $("#addMask").style.display="none"; }
+function setTab(pid){
+  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t.dataset.tab===pid));
+  document.querySelectorAll(".tabpane").forEach(p=>p.style.display = p.dataset.pane===pid ? "block" : "none");
+}
+function clearAddMsg(){ const x=$("#addMsg"); x.textContent=""; x.className="addmsg"; }
+function addMsg(m, ok){ const x=$("#addMsg"); x.textContent=m; x.className="addmsg "+(ok?"ok":"err"); }
+async function apiPost(path, body){
+  try{
+    const r = await fetch(path, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    return await r.json();
+  }catch(e){
+    /* 后端不可达：返回结构化失败而不是抛异常，各按钮的既有 `if(j.ok)…else addMsg("❌ "+j.msg)`
+       分支即可给出可读提示，避免「点了没反应」 */
+    BACKEND_OK = false;
+    return {ok:false, msg:"未连接本地后端，请先运行「启动看板.bat」后重试"};
+  }
+}
+
+$("#btnAdd").addEventListener("click", openAdd);
+$("#addClose").addEventListener("click", closeAdd);
+$("#addMask").addEventListener("click", e=>{ if(e.target.id==="addMask") closeAdd(); });
+document.querySelectorAll(".tab").forEach(t=>t.addEventListener("click", ()=>{ setTab(t.dataset.tab); clearAddMsg(); }));
+$("#wbBatchOn").addEventListener("change", e=>{ $("#wbBatch").style.display = e.target.checked ? "block" : "none"; });
+
+$("#wbSend").addEventListener("click", async ()=>{
+  const phone=$("#wbPhone").value.trim();
+  if(!phone){ addMsg("请先输入手机号", false); return; }
+  addMsg("正在发送验证码…", true);
+  const j = await apiPost("/api/account/wb_send", {phone});
+  addMsg(j.msg ? ("📩 "+j.msg) : (j.ok?"验证码已发送":"发送失败"), j.ok);
+});
+$("#wbLogin").addEventListener("click", async ()=>{
+  const phone=$("#wbPhone").value.trim(), code=$("#wbCode").value.trim();
+  if(!phone||!code){ addMsg("手机号与验证码都要填", false); return; }
+  addMsg("正在登录…", true);
+  const j = await apiPost("/api/account/wb_login", {phone, code});
+  if(j.ok){ addMsg("✅ "+j.msg, true); setTimeout(closeAdd, 900); await load(true, "workbuddy"); }
+  else addMsg("❌ "+(j.msg||"登录失败"), false);
+});
+$("#wbBatchSend").addEventListener("click", async ()=>{
+  const phones=$("#wbPhones").value.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+  if(!phones.length){ addMsg("请先填写手机号（每行一个）", false); return; }
+  addMsg("正在批量发送…", true);
+  const j = await apiPost("/api/account/wb_batch_send", {phones});
+  addMsg("批量发送完成：\n"+(j.details||[]).map(d=>`${d.phone}: ${d.ok?"✓":"✗"} ${d.msg||""}`).join("\n"), j.ok);
+});
+$("#wbBatchLogin").addEventListener("click", async ()=>{
+  const phones=$("#wbPhones").value.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+  const codes=$("#wbCodes").value.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+  if(!phones.length){ addMsg("请先填写手机号", false); return; }
+  if(phones.length!==codes.length){ addMsg("手机号与验证码数量不一致（"+phones.length+" vs "+codes.length+"）", false); return; }
+  addMsg("正在批量登录…", true);
+  const j = await apiPost("/api/account/wb_batch_login", {phones, codes});
+  addMsg("批量登录完成：\n"+(j.results||[]).map(d=>`${d.phone}: ${d.ok?"✓":"✗"} ${d.msg||""}`).join("\n"), true);
+  setTimeout(closeAdd, 1200); await load(true, "workbuddy");
+});
+
+/* ── 从本地客户端一键导入凭据（推荐路径：确定性读取已登录的桌面端，不依赖浏览器登录） ── */
+async function importLocal(platform, nameVal){
+  if(!BACKEND_OK){
+    addMsg("未连接本地后端，无法读取本地凭据。请先双击运行「启动看板.bat」，刷新页面后重试。","err");
+    return;
+  }
+  addMsg("正在读取本地客户端登录态…", true);
+  const tname = PLAT_LOCAL_NAME[platform] || platform;
+  try{
+    const j = await apiPost("/api/account/import_local", {platform, name:nameVal});
+    if(j.ok){
+      const extra = (j.merged_from && j.merged_from.length) ? "（已合并同身份旧条目："+j.merged_from.join("、")+"）" : "";
+      let line = "✅ "+j.msg+"（已保存："+((j.names||[]).join("、")||"1 个账号")+"）"+extra;
+      if(typeof j.total==="number"){
+        line += "\n📇 "+tname+" 看板现有 "+j.total+" 个账号";
+        if(j.kept>0) line += "，其中 "+j.kept+" 个是本地客户端本次已不再暴露、但看板替你保留的";
+      }
+      addMsg(line, true);
+      setTimeout(closeAdd, 900); await load(true, platform);
+    }else{
+      addMsg("❌ "+j.msg, false);
+      addMsg("如确认已安装并登录「"+tname+"」桌面端，请打开桌面端登录一次后再点本按钮。", false);
+    }
+  }catch(e){
+    addMsg("❌ 读取本地凭据失败："+(e.message||e), false);
+  }
+}
+$("#mmImport").addEventListener("click", ()=> importLocal("minimax", $("#mmName").value.trim()));
+$("#dmImport").addEventListener("click", ()=> importLocal("baidu_dumate", $("#dmName").value.trim()));
+$("#lxImport").addEventListener("click", ()=> importLocal("lingxi", $("#lxName").value.trim()));
+$("#trImport").addEventListener("click", ()=> importLocal("trae", $("#trName").value.trim()));
+$("#qdImport").addEventListener("click", ()=> importLocal("qoder", $("#qdName").value.trim()));
+$("#zcImport").addEventListener("click", ()=> importLocal("zcode", $("#zcName").value.trim()));
+$("#caImport").addEventListener("click", ()=> importLocal("codearts", $("#caName").value.trim()));
+$("#oaImport").addEventListener("click", ()=> importLocal("officeace", $("#oaName").value.trim()));
+/* OfficeACE：一键启动桌面端客户端（本地 API 未就绪时的兜底；正常点「发送验证码」也会自动拉起） */
+$("#oaLaunch") && $("#oaLaunch").addEventListener("click", async ()=>{
+  if(!BACKEND_OK){ addMsg("未连接本地后端，无法启动客户端", false); return; }
+  const btn = $("#oaLaunch");
+  const old = btn.textContent; btn.disabled = true; btn.textContent = "🚀 正在启动客户端…（最多 30 秒）";
+  addMsg("正在启动 OfficeACE 客户端并等待本地 API 就绪…", true);
+  let j;
+  try{ j = await apiPost("/api/officeace/launch", {}); }
+  catch(e){ j = {ok:false, msg:"启动请求失败："+(e.message||e)}; }
+  btn.disabled = false; btn.textContent = old;
+  if(j.ok){
+    addMsg("✅ " + (j.msg||"客户端已就绪") + "　现在可以点「📩 发送验证码」了。", true);
+  }else{
+    addMsg("❌ " + (j.msg||"未能启动客户端") + "　请手动双击 OfficeAce.exe（托盘里在跑即可）。", false);
+  }
+});
+
+/* ── 浏览器辅助登录（备用：未装桌面客户端时使用，受网络/滑块影响不稳定） ── */
+/* ── 手机号登录（OAuth 设备码授权）：弹授权网页 → 手机号+短信验证码 → 自动回填 ──
+   MiniMax Code 桌面端「登录」用的就是这套 OAuth 流程（逆向自客户端 app.asar，
+   端点 https://account.minimax.cn/oauth2/{device/code,token}），
+   所以拿到的是与桌面端同源的正式令牌：不需要装/开桌面端，
+   也不用去猜浏览器 localStorage 的键名（那条路又脆又容易抓错）。 */
+/* 各平台的授权面板元素 & 提示语（新增平台只要在这里加一行） */
+const OAUTH_UI = {
+  zcode:{box:"#zcOauthBox", txt:"#zcOauthTxt", link:"#zcOauthLink", code:null,
+         name:"#zcName", sub:"#zcSub",
+         tip:"请在授权网页里登录你的 Z.ai / BigModel 账号并授权。"
+             + "本窗口会自动检测，授权完成后不用再点任何按钮。"},
+};
+async function startOauthLogin(platform, nameVal){
+  if(!BACKEND_OK){
+    addMsg("未连接本地后端，无法发起授权登录。请先双击运行「启动看板.bat」，刷新页面后重试。","err");
+    return;
+  }
+  const U = OAUTH_UI[platform] || {};
+  const sub = U.sub ? (($(U.sub)||{}).value || "").trim() : undefined;
+  addMsg("正在向官方账号中心申请授权…", true);
+  let j;
+  try{
+    j = await apiPost("/api/account/oauth_start", {platform, name:nameVal, sub});
+  }catch(e){
+    addMsg("❌ 发起失败："+(e.message||e), false); return;
+  }
+  if(!j.ok){ addMsg("❌ "+j.msg, false); return; }
+
+  const box=$(U.box), txt=$(U.txt), link=$(U.link), code=$(U.code);
+  if(box) box.style.display="block";
+  if(code) code.textContent = j.user_code || "";
+  if(link && j.verify_url) link.href = j.verify_url;
+  if(txt) txt.textContent = U.tip || "请在授权网页里完成登录与授权。";
+  try{ if(j.verify_url) window.open(j.verify_url, "_blank", "noopener"); }catch(e){}
+  addMsg("已打开授权网页"+(j.user_code?("，授权码 "+j.user_code):"")+"。若被浏览器拦截，请手动点面板里的链接。", true);
+
+  const t0 = Date.now();
+  const limit = (j.expires_in || 300) * 1000 + 8000;
+  while(Date.now() - t0 < limit){
+    await sleep(1500);
+    let s;
+    try{
+      s = await fetch("/api/account/oauth_status?job="+encodeURIComponent(j.job),{cache:"no-store"})
+            .then(r=>r.json());
+    }catch(e){ continue; }
+    if(s && s.finished){
+      if(box) box.style.display="none";
+      if(s.ok){
+        addMsg("✅ "+(s.text||"授权成功，已保存账号"), true);
+        setTimeout(closeAdd, 900); await load(true, platform);
+      }else{
+        addMsg("❌ "+(s.text||"授权未完成"), false);
+      }
+      return;
+    }
+    if(txt && s && s.seconds_left != null){
+      txt.textContent = "等待你在网页上完成授权…（剩余 "+s.seconds_left+" 秒）";
+    }
+  }
+  if(box) box.style.display="none";
+  addMsg("⏰ 授权超时，请重新点一次登录按钮", false);
+}
+$("#zcOauth").addEventListener("click", ()=> startOauthLogin("zcode", (($("#zcName")||{}).value||"").trim()));
+/* ── 手机号 + 短信验证码直登 ──
+   后端拉起可见 Chromium 打开 MiniMax 授权页，代填手机号 / 代点「获取验证码」/
+   代填验证码 / 代点「立即登录」/ 代点「授权」，最后轮询拿正式令牌落盘。
+   用户在看板里只需要做两件事：填手机号、填短信验证码。 */
+/* 各平台短信直登的元素映射（MiniMax 走自家登录页；Qoder 走阿里云登录页） */
+const SMS_UI = {
+  minimax:{label:"MiniMax", phone:"#mmPhone", name:"#mmName", send:"#mmSms",
+           txt:"#mmSmsTxt", code:"#mmCode", login:"#mmCodeGo", left:"#mmSmsLeft"},
+  qoder:{label:"Qoder（阿里云登录）", phone:"#qdPhone", name:"#qdName", send:"#qdSms",
+         txt:"#qdSmsTxt", code:"#qdCode", login:"#qdCodeGo", left:"#qdSmsLeft"},
+  baidu_dumate:{label:"百度搭子（百度账号登录）", phone:"#dmPhone", name:"#dmName", send:"#dmSms",
+         txt:"#dmSmsTxt", code:"#dmCode", login:"#dmCodeGo", left:"#dmSmsLeft"},
+  lingxi:{label:"WPS 灵犀", phone:"#lxPhone", name:"#lxName", send:"#lxSms",
+         txt:"#lxSmsTxt", code:"#lxCode", login:"#lxCodeGo", left:"#lxSmsLeft"},
+  zcode:{label:"ZCode", phone:"#zcPhone", name:"#zcName", send:"#zcSms",
+         txt:"#zcSmsTxt", code:"#zcCode", login:"#zcCodeGo", left:"#zcSmsLeft",
+         sub:"#zcSub"},
+  trae:{label:"Trae", phone:"#trPhone", name:"#trName", send:"#trSms",
+        txt:"#trSmsTxt", code:"#trCode", login:"#trCodeGo", left:"#trSmsLeft"},
+  codearts:{label:"CodeArts Agent（华为云）", phone:"#caPhone", name:"#caName", send:"#caSms",
+        txt:"#caSmsTxt", code:"#caCode", login:"#caCodeGo", left:"#caSmsLeft"},
+  officeace:{label:"OfficeACE（华为云）", phone:"#oaPhone", name:"#oaName", send:"#oaSms",
+        txt:"#oaSmsTxt", code:"#oaCode", login:"#oaCodeGo", left:"#oaSmsLeft"},
+};
+let SMS_JOB = null, SMS_PLAT = null;
+const _uiVal = s => { const e = s && $(s); return e ? (e.value||"").trim() : ""; };
+/* 第①步：发送验证码（弹窗自动填手机号 + 代点发送，用户不碰窗口除非有滑块） */
+async function smsSend(platform){
+  const U = SMS_UI[platform] || {};
+  const phone = _uiVal(U.phone);
+  if(!/^1\d{10}$/.test(phone)){ addMsg("请填写 11 位手机号（当前："+(phone||"空")+"）", false); return; }
+  if(!BACKEND_OK){
+    addMsg("未连接本地后端，无法发送验证码。请先双击运行「启动看板.bat」，刷新页面后重试。", false);
+    return;
+  }
+  const txt=$(U.txt);
+  if(txt){ txt.style.display="block"; txt.textContent = "正在打开 "+(U.label||platform)+" 登录窗口…"; }
+  addMsg("正在发送验证码…（会弹出登录窗口，手机号已替你填好）", true);
+  let j;
+  try{
+    j = await apiPost("/api/account/sms_start", {platform, phone, name:_uiVal(U.name),
+                                                 sub: U.sub ? _uiVal(U.sub) : undefined});
+  }catch(e){
+    if(txt) txt.textContent = "发起失败："+(e.message||e);
+    addMsg("❌ 发起失败："+(e.message||e), false); return;
+  }
+  if(!j || !j.ok){
+    if(txt) txt.textContent = (j&&j.msg)||"发起失败";
+    addMsg("❌ "+((j&&j.msg)||"发起失败"), false); return;
+  }
+  SMS_JOB = j.job; SMS_PLAT = platform;
+  smsPoll(platform, j.job);
+}
+/* 后台轮询：更新进度文本 / 倒计时 / 收尾（与第②步提交解耦） */
+async function smsPoll(platform, jobId){
+  const U = SMS_UI[platform] || {};
+  const txt=$(U.txt), left=$(U.left);
+  const t0 = Date.now(), limit = 600 * 1000;
+  let codeShown = false, clientWarned = false;
+  while(Date.now() - t0 < limit){
+    await sleep(1200);
+    if(jobId !== SMS_JOB) return;   // 已被重新发送覆盖
+    let s;
+    try{
+      s = await fetch("/api/account/oauth_status?job="+encodeURIComponent(jobId), {cache:"no-store"})
+            .then(r=>r.json());
+    }catch(e){ continue; }
+    if(!s) continue;
+    if(!clientWarned && s.client_running){
+      clientWarned = true;
+      addMsg("⚠️ 检测到 Trae 客户端正在运行——它可能抢先兑换授权码（导致「Token 兑换失败」）。建议先退出 Trae 客户端再重试。", false);
+    }
+    if(txt && s.text){
+      txt.style.display = "block";
+      txt.textContent = s.captcha
+        ? "⚠️ 登录窗口弹出了滑块/图片验证码，请先在窗口里完成，短信才会发出。"
+        : s.text;
+    }
+    if(!codeShown && s.need_code){
+      codeShown = true;
+      const ci = $(U.code); if(ci) ci.focus();
+    }
+    if(left && s.seconds_left != null){
+      left.textContent = s.seconds_left > 0 ? ("剩余 " + s.seconds_left + " 秒") : "已过期，请重新发送";
+    }
+    if(s.finished){
+      if(SMS_JOB === jobId) SMS_JOB = null;
+      if(txt) txt.style.display = "none";
+      if(s.ok){
+        addMsg("✅ " + (s.text || "登录成功，已保存账号"), true);
+        setTimeout(closeAdd, 900); await load(true, platform);
+      }else{
+        let extra = "";
+        const diag = Object.keys(s).filter(k => /^(callback_url|callback_port|callback_keys|auth_code_head|device_dir|plugin_version)$/.test(k) && s[k] && (!Array.isArray(s[k])||s[k].length));
+        if(diag.length){
+          extra = "　【诊断】" + diag.map(k => k+"="+JSON.stringify(s[k])).join("；");
+          console.warn("[Trae 诊断]", Object.fromEntries(diag.map(k=>[k,s[k]])));
+        }
+        addMsg("❌ " + (s.text || "登录失败") + extra, false);
+      }
+      return;
+    }
+  }
+  if(SMS_JOB === jobId) SMS_JOB = null;
+  if(txt) txt.style.display = "none";
+  addMsg("⏰ 登录超时，请重新点「📩 发送验证码」", false);
+}
+/* 第②步：提交验证码 → 后端弹窗代填 + 代点登录 → 自动抓取登录态落盘 */
+async function smsLogin(platform){
+  const U = SMS_UI[platform] || {};
+  if(!SMS_JOB){ addMsg("请先点「📩 发送验证码」", false); return; }
+  const code = _uiVal(U.code);
+  if(!/^\d{4,8}$/.test(code)){ addMsg("请填写短信验证码（4-8 位数字）", false); return; }
+  let j;
+  try{ j = await apiPost("/api/account/sms_code", {job:SMS_JOB, code}); }
+  catch(e){ addMsg("❌ 提交失败："+(e.message||e), false); return; }
+  if(!j || !j.ok){ addMsg("❌ "+((j&&j.msg)||"提交失败"), false); return; }
+  const txt = $(U.txt);
+  if(txt){ txt.style.display="block"; txt.textContent = "已提交验证码，正在登录并保存…"; }
+  addMsg("已提交验证码，窗口自动点「继续/授权」中，进度见下方状态行", true);
+}
+for(const P of Object.keys(SMS_UI)){
+  const U = SMS_UI[P];
+  const bSend=$(U.send), bLogin=$(U.login), bCode=$(U.code);
+  if(bSend) bSend.addEventListener("click", ()=> smsSend(P));
+  if(bLogin) bLogin.addEventListener("click", ()=> smsLogin(P));
+  if(bCode) bCode.addEventListener("keydown", e=>{ if(e.key === "Enter") smsLogin(P); });
+}
+
+/* 修改备注名：点卡片名旁的 ✏ 或详情区按钮 → 就地变成输入框，Enter 保存 / Esc 取消 */
+async function startRename(btn){
+  if(renaming) return;
+  const card = btn.closest(".card");
+  const pid = btn.dataset.ren, oldName = btn.dataset.name, oldKey = btn.dataset.key;
+  const nmEl = card && card.querySelector(".nm");
+  if(!card || !nmEl){ toast("无法定位该账号","err"); return; }
+  if(!BACKEND_OK){ toast("未连接本地后端，无法改名","err"); return; }
+
+  const oldHTML = nmEl.innerHTML;
+  renaming = true;
+  nmEl.innerHTML = `<input class="reninp" value="${esc(oldName)}" maxlength="40" spellcheck="false">`;
+  const inp = nmEl.querySelector(".reninp");
+  inp.focus(); inp.select();
+  let done = false;
+  const finish = async (save)=>{
+    if(done) return;
+    done = true;
+    const v = inp.value.trim();
+    if(!save || !v || v === oldName){ renaming = false; nmEl.innerHTML = oldHTML; return; }
+    renaming = false;
+    const j = await apiPost("/api/account/rename", {platform:pid, name:oldName, new_name:v, key: oldKey||""});
+    toast(j.ok ? ("已改名为「"+v+"」") : ("❌ "+(j.msg||"改名失败")), j.ok?"ok":"err");
+    if(j.ok) await load(true, pid);        // 只重读该平台，秒级对齐
+    else nmEl.innerHTML = oldHTML;
+  };
+  inp.addEventListener("keydown", e=>{
+    if(e.key === "Enter"){ e.preventDefault(); finish(true); }
+    else if(e.key === "Escape"){ e.preventDefault(); finish(false); }
+  });
+  inp.addEventListener("blur", ()=> finish(true));
+  inp.addEventListener("click", e=> e.stopPropagation());
+}
+
+/* 删除账号（仅删本机凭据文件，不影响平台账号） */
+async function runDel(platform, name, key){
+  if(!BACKEND_OK){ toast("未连接本地后端","err"); return; }
+  if(STATE && STATE.demo){ toast("当前没有真实账号可删除","err"); return; }
+  if(!confirm("确定删除账号「"+name+"」的本地凭据吗？（仅删本机文件，不影响平台账号）")) return;
+  try{
+    const j = await apiPost("/api/account/remove", {platform, name, key: key||""});
+    if(j.ok){
+      // 乐观更新：先从本地快照里摘掉这张卡，界面立即响应，不必等后端重读
+      const p = STATE.platforms && STATE.platforms[platform];
+      if(p){ p.accounts = (p.accounts||[]).filter(a=>a.name!==name); render(); }
+    }
+    toast(j.ok?("已删除 "+name):(j.msg||"未找到该账号"), j.ok?"ok":"err");
+    if(j.ok) await load(true, platform);   // 只重读该平台，秒级对齐真实状态
+  }catch(e){ toast("删除失败："+e.message, "err"); }
+}
+
+$("#btnAll").addEventListener("click", runAll);
+$("#btnRefresh").addEventListener("click", ()=>load(true));
+load(false);
+</script>
+</body>
+</html>
