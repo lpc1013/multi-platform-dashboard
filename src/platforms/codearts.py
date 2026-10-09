@@ -60,6 +60,17 @@ DEFAULT_HOST = SNAP
 DELIVERY_PATH = "/v1/ops/delivery"
 CLAIM_PATH = "/v1/ops/claim"
 CONFIRM_PATH = "/v1/ops/confirm"
+# 真实余额接口（2026-10-09 逆向自客户端 vscode-codebot/out/extension.js 的
+# getTokensBalance，与客户端同口径；GET，同一套 SDK-HMAC-SHA256 签名，实测 200）：
+#   返回 result.{total_balance, total_quota, used_amount, daily_token_limit,
+#                daily_tokens_used, monthly_*, expire_time}
+# ⚠ 这是【每日免费 token 额度】，不是积分！积分（签到领的那种）在
+#   GET /snap-manager/v1/statistics/plugin → metrics 里 name=usageTotalPackageCredit
+#   的 {package_credit_amount/used/remain, package_credit_expiring_amount}
+#   （2026-10-09 实测 remain=25000，与客户端显示一致）。
+OPENGW = "https://opengw.developer.huaweicloud.com"
+BALANCE_PATH = "/api/v1/user/tokens/balance"
+STATS_PATH = "/snap-manager/v1/statistics/plugin"
 CHANNEL = "IDE"
 ALGO = "SDK-HMAC-SHA256"
 DAILY_CAMPAIGN_ID = 1
@@ -101,8 +112,8 @@ def sign_headers(ak, sk, sts, method, url, body="", extra=None):
     return hdr
 
 
-def _req(ent, path, method="GET", query=None, body=None, timeout=25):
-    host = (ent.get("host") or DEFAULT_HOST).rstrip("/")
+def _req(ent, path, method="GET", query=None, body=None, timeout=25, base=None):
+    host = (base or ent.get("host") or DEFAULT_HOST).rstrip("/")
     url = host + path
     if query:
         url += "?" + "&".join("%s=%s" % (_enc(k), _enc(v)) for k, v in query)
@@ -139,6 +150,64 @@ _ACC_FILES = (os.path.join(ROOT, "codearts_accounts.json"),
               os.path.join(HERE, "codearts_accounts.json"))
 STS_TOKEN_URL = "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens"
 
+# ── 删除墓碑（2026-10-09）：删除只删凭据文件还不够 —— load_accounts 每次都会从
+#    客户端 state.vscdb 重新导入同名账号（「删完又冒出来；第二次删报未找到」）。
+#    墓碑按账号键名记录；文件里真实存在同键名条目时自动解除（新登录即复活）。
+_TOMB_FILES = (os.path.join(ROOT, "codearts_deleted.json"),
+               os.path.join(HERE, "codearts_deleted.json"))
+
+
+def _load_tombs():
+    """返回 (墓碑列表, 可写路径)。"""
+    for p in _TOMB_FILES:
+        if os.path.exists(p):
+            try:
+                d = json.load(open(p, encoding="utf-8"))
+                if isinstance(d, list):
+                    return d, p
+            except Exception:
+                pass
+    return [], _TOMB_FILES[0]
+
+
+def _save_tombs(lst, path):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(lst, f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
+
+
+def remove_account(name):
+    """删除 CodeArts 账号：移除凭据文件条目 + 记墓碑（抑制客户端导入复活）。
+    返回 (ok, msg)。"""
+    name = str(name or "").strip()
+    if not name:
+        return False, "缺少账号标识"
+    removed_file = False
+    for p in _ACC_FILES:
+        if not os.path.exists(p):
+            continue
+        try:
+            data = json.load(open(p, encoding="utf-8"))
+        except Exception:
+            continue
+        if isinstance(data, dict) and name in data:
+            data.pop(name, None)
+            try:
+                with open(p, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=1)
+                removed_file = True
+            except Exception:
+                pass
+    tombs, tp = _load_tombs()
+    if name not in tombs:
+        tombs.append(name)
+        _save_tombs(tombs, tp)
+    if removed_file:
+        return True, "已删除（客户端导入不会再复活）"
+    return True, "已删除并加入屏蔽名单（该账号来自客户端会话）"
+
 
 def load_accounts():
     """凭据来源（合并，同键名时后加载者优先）：
@@ -147,7 +216,8 @@ def load_accounts():
        3) 环境变量 CODEARTS_AK / CODEARTS_SK / CODEARTS_STS
     """
     accs = {}
-    # ① 看板自建会话
+    tombs, _tp = _load_tombs()
+    # ① 看板自建会话（真实保存的条目出现 → 自动解除同名墓碑）
     for path in _ACC_FILES:
         if not os.path.exists(path):
             continue
@@ -160,12 +230,26 @@ def load_accounts():
         for nm, v in items:
             if isinstance(v, dict) and v.get("ak") and v.get("sk") and v.get("sts_token"):
                 accs[nm] = v
-    # ② 客户端最新会话（同键名覆盖）
+                if nm in tombs:
+                    tombs = [t for t in tombs if t != nm]
+                    _save_tombs(tombs, _tp)
+    # ② 客户端最新会话（同键名覆盖，但**保留自建会话的续期材料**：
+    #    refresh_token 与 client_id=codearts-agent、DPoP 私钥绑定，与当前 STS 无关；
+    #    客户端导入的新鲜 AK/SK + 自建的 refresh_token 可以组合使用，且刷新成功
+    #    后 _persist_entry 会把续期材料固化回 codearts_accounts.json）
+    _PRESERVE = ("refresh_token", "dpop_priv_pem", "dpop_pub_jwk", "code_verifier")
     try:
         import local_import
         ok, _msg, live = local_import.read_codearts()
         if ok and live:
-            accs.update(live)
+            for k, v in live.items():
+                if k in tombs:          # 已删除的账号：客户端会话不再导入
+                    continue
+                base = accs.get(k) or {}
+                for f in _PRESERVE:
+                    if not (v.get(f) or "").strip() and (base.get(f) or "").strip():
+                        v[f] = base[f]
+                accs[k] = v
     except Exception:
         pass
     # ③ 环境变量
@@ -288,11 +372,31 @@ def try_refresh(name, ent):
     return False, "续期失败（HTTP %s）：%s" % (r.status_code, str(j)[:120])
 
 
+def _expiring_soon(ent, margin_s=900):
+    """是否将在 margin_s 秒内到期（True/False；None=未知）。"""
+    e = (ent.get("expires_at") or "").strip()
+    if not e:
+        return None
+    try:
+        t = datetime.fromisoformat(e.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return (t - datetime.now(timezone.utc)).total_seconds() <= margin_s
+
+
 def _refresh_if_needed(name, ent):
-    """过期时主动续一次；返回是否可用。"""
-    if expired(ent) is True and ent.get("refresh_token"):
+    """临期（≤15 分钟）即预刷新保活（不等真过期，避免链路断档）。
+       返回凭据当前是否可用：刷新成功/票还活着 → True。"""
+    if not (ent.get("refresh_token") or "").strip():
+        return expired(ent) is not True
+    if expired(ent) is True or _expiring_soon(ent) is True:
         ok, _msg = try_refresh(name, ent)
-        return ok
+        if ok:
+            return True
+        # 预刷新失败但旧票仍未过期（如瞬时网络问题）→ 继续用旧票
+        return expired(ent) is not True
     return True
 
 
@@ -304,6 +408,46 @@ def _items(j):
     if isinstance(d, list):
         return d
     return []
+
+
+def fetch_balance(ent):
+    """查【每日免费 token 额度】（客户端 getTokensBalance 同款，⚠ 不是积分）。
+    返回 (result_dict|None, err|None)。"""
+    st, j = _req(ent, BALANCE_PATH, base=OPENGW)
+    if st == 200 and isinstance(j, dict) and j.get("error_code") == "0000":
+        res = j.get("result")
+        return (res if isinstance(res, dict) else None), None
+    return None, "token额度查询失败（HTTP %s）：%s" % (st, str(j)[:120])
+
+
+def fetch_credits(ent):
+    """查真实【积分】（客户端「总积分」同款：statistics/plugin →
+    metrics[name=usageTotalPackageCredit].package_credit_*）。
+    返回 (dict{remain,used,total,expiring,bonus}|None, err|None)。"""
+    st, j = _req(ent, STATS_PATH)
+    if st != 200:
+        return None, "积分查询失败（HTTP %s）：%s" % (st, str(j)[:120])
+    metrics = (j or {}).get("metrics") if isinstance(j, dict) else None
+    if not isinstance(metrics, list):
+        return None, "积分响应无 metrics 字段：%s" % str(j)[:120]
+    tot = next((m for m in metrics if m.get("name") == "usageTotalPackageCredit"), None)
+    bonus = next((m for m in metrics if m.get("name") == "usageBonusPackageCredit"), None)
+    if tot is None:
+        return None, "metrics 中无 usageTotalPackageCredit：%s" % str(j)[:120]
+
+    def g(m, k):
+        try:
+            return float(m.get(k) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    return {
+        "remain": g(tot, "package_credit_remain"),
+        "used": g(tot, "package_credit_used"),
+        "total": g(tot, "package_credit_amount"),
+        "expiring": g(tot, "package_credit_expiring_amount"),
+        "bonus_remain": g(bonus, "package_credit_remain") if bonus else None,
+        "metrics": metrics,
+    }, None
 
 
 def read_account(name, ent):
@@ -361,27 +505,69 @@ def read_account(name, ent):
     except (TypeError, ValueError):
         pass
 
+    # ── 真实【积分】（客户端「总积分」同口径，2026-10-09 二次修复：
+    #    第一版误用 tokens/balance（那是每日免费 token 额度，10,000,000），
+    #    积分真身 = statistics/plugin → metrics[usageTotalPackageCredit].package_credit_*，
+    #    实测 remain=25000 与客户端显示一致）──
+    cred, cred_err = fetch_credits(ent)
+    if cred:
+        credits = {"remain": int(cred["remain"]), "total": int(cred["total"]),
+                   "used": int(cred["used"])}
+    else:
+        # 积分接口失败 → 置 0 并透出错误（绝不用 token 额度冒充积分）
+        credits = {"remain": 0, "total": 0, "used": 0}
+
+    extra = {
+        "can_sign_in": daily_claimable,
+        "today_reward": amount,
+        "today_kind": "积分",
+        "pending_amount": pending,
+        "daily_status": (daily or {}).get("status"),
+        "campaign_count": len(items),
+        "claimable_count": len(claimable),
+        "expires_at": ent.get("expires_at"),
+        "expired": exp,
+        "other_campaigns": [{"id": x.get("campaignId"), "type": x.get("type"),
+                             "amount": x.get("benefitAmount")} for x in items
+                            if x.get("campaignId") != DAILY_CAMPAIGN_ID][:5],
+        "account_id": ent.get("account_id"),
+    }
+    if cred:
+        extra.update({
+            "credits_ok": True,
+            "credits_expiring": int(cred["expiring"]),
+            "credits_bonus_remain": (int(cred["bonus_remain"])
+                                     if cred.get("bonus_remain") is not None else None),
+        })
+    else:
+        extra["credits_ok"] = False
+        extra["credits_error"] = cred_err
+    # 每日免费 token 额度（另一套体系，勿与积分混淆）→ 只进 extra
+    bal, bal_err = fetch_balance(ent)
+    if bal:
+        def _num(k):
+            try:
+                return int(float(bal.get(k) or 0))
+            except (TypeError, ValueError):
+                return 0
+        extra.update({
+            "free_token_total": _num("total_quota"),
+            "free_token_remain": _num("total_balance"),
+            "free_token_used": _num("used_amount"),
+            "free_token_daily_limit": _num("daily_token_limit"),
+            "free_token_daily_used": _num("daily_tokens_used"),
+            "free_token_channel": bal.get("channel"),
+        })
+    else:
+        extra["free_token_error"] = bal_err
+
     return {
         "name": name, "ok": True, "error": None,
         "level": "CodeArts Agent · 华为云",
         "signed_today": not daily_claimable,
-        "credits": {"remain": int(float(pending or 0)), "total": int(float(amount or 0)), "used": 0},
+        "credits": credits,
         "packages": pkgs,
-        "extra": {
-            "can_sign_in": daily_claimable,
-            "today_reward": amount,
-            "today_kind": "积分",
-            "pending_amount": pending,
-            "daily_status": (daily or {}).get("status"),
-            "campaign_count": len(items),
-            "claimable_count": len(claimable),
-            "expires_at": ent.get("expires_at"),
-            "expired": exp,
-            "other_campaigns": [{"id": x.get("campaignId"), "type": x.get("type"),
-                                 "amount": x.get("benefitAmount")} for x in items
-                                if x.get("campaignId") != DAILY_CAMPAIGN_ID][:5],
-            "account_id": ent.get("account_id"),
-        },
+        "extra": extra,
     }
 
 

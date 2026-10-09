@@ -9,7 +9,7 @@ WorkBuddy · 看板平台适配器
 凭据：WORKBUDDY_REFRESH_TOKEN 环境变量，或 ../WorkBuddy-Daily/wb_refresh_tokens.json、
       wb_login_result.json（fetch_state.load_accounts 已兼容 dict/list 两种格式）。
 """
-import os, sys, time, uuid
+import json, os, sys, time, uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -132,17 +132,22 @@ def do_chat(s, text=None, model="glm-5.2"):
         if r.status_code >= 400:
             r.close()
             return {"ok": False, "msg": "消息发送失败（HTTP %s）" % r.status_code}
-        srv_mid, txt, n = "", "", 0
+        # text/event-stream 无 charset，requests 默认按 ISO-8859-1 解码 → UTF-8 中文全乱码，强制改 UTF-8
+        r.encoding = "utf-8"
+        srv_mid, txt, n, pending = "", "", 0, ""
         for line in r.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data: "):
                 continue
-            d = line[6:]
+            d = pending + line[6:] if pending else line[6:]
             if d.strip() in ("[DONE]", "[完成]", "[✅完成]"):
                 break
             try:
                 jj = json.loads(d)
             except Exception:
+                # 分块边界可能把一条 data 行截断，留到下一行拼起来再解一次
+                pending = d if len(d) < 65536 else ""
                 continue
+            pending = ""
             if not srv_mid and jj.get("id"):
                 srv_mid = str(jj["id"])
             for c in jj.get("choices", []):

@@ -176,7 +176,7 @@ def _wb_match(it, name):
 
 def _dedupe_store(path, pid, keep_name, rec):
     """写入前清掉「同一身份、换了显示名」的旧条目。
-    场景：桌面端把显示名从「示例用户C」改成「用户68388451332」，
+    场景：桌面端把显示名从「一只总柴0623」改成「用户68388451332」，
     再点一次导入，若不去重就会多出一张同名不同键的卡片，账号数被虚增。"""
     data = _read_json(path, {})
     if not isinstance(data, dict):
@@ -219,7 +219,7 @@ def _alloc_account_name(path, pid, ideal, rec):
 
     为什么必须做这件事：MiniMax 客户端只有 user / sharedUser 两个登录槽位，
     登录第 3 个号时客户端会把先前槽位顶掉；而两个不同账号的显示名可能完全相同
-    （都叫「示例用户」之类）。此时若直接按名字写入字典，后写的就把前面的**覆盖**掉了
+    （都叫「一只总柴」之类）。此时若直接按名字写入字典，后写的就把前面的**覆盖**掉了
     —— 这正是「登了三个号，后面两个号总是互相覆盖」的根因。
 
     规则：
@@ -420,7 +420,7 @@ def _trae_oauth_save(name, grant):
            "screen_name": (grant or {}).get("name") or "",
            "via_oauth": True, "source": "网页授权登录（手机号+验证码）"}
     # 名字优先级：用户手填 > 回调 ScreenName > 手机号 > uid 尾4
-    # （回调 ScreenName 可能是「示例用户」这类昵称，与旧账号同名时 _save_cred 会自动加尾号，不会覆盖）
+    # （回调 ScreenName 可能是「一只总柴」这类昵称，与旧账号同名时 _save_cred 会自动加尾号，不会覆盖）
     ideal = (name or rec["screen_name"] or rec["mobile"]
              or ("Trae·" + (rec["user_id"] or rec["token"])[-4:]))
     use = _save_cred("trae", rec, ideal)
@@ -1024,6 +1024,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         _write_json(WB_LOGIN_FILE, new)
                     else:
                         removed = False
+                elif platform == "codearts":
+                    # 墓碑删除：凭据文件条目 + 客户端 vscdb 复活一并抑制（2026-10-09）
+                    key = (body.get("key") or "").strip()
+                    import importlib as _il
+                    try:
+                        _ca = _il.import_module("platforms.codearts")
+                        removed, _del_msg = _ca.remove_account(key or name)
+                    except Exception as _e:
+                        removed, _del_msg = False, "删除异常：%s" % str(_e)[:80]
                 elif platform in CRED_FILES:
                     key = (body.get("key") or "").strip()
                     removed = _cred_store_remove(CRED_FILES[platform], key) if key else False
@@ -1043,7 +1052,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 else:
                     removed = False
                 _invalidate_state()
-                _msg = "已删除" if removed else (_del_msg if platform == "minimax" and not removed else "未找到该账号")
+                _msg = "已删除" if removed else (
+                    _del_msg if _del_msg else "未找到该账号")
                 self._send(200, {"ok": removed, "msg": _msg})
 
             # ── 修改账号备注名（只改本机显示名，不动凭据内容/平台账号） ──

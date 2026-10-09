@@ -51,7 +51,7 @@ def load_accounts():
     """凭据来源（优先级从高到低）：
        1) 环境变量 TRAE_TOKEN（单账号，需配合 TRAE_DEVICE_ID）
        2) 凭据文件 ROOT/trae_accounts.json 或 HERE/trae_accounts.json
-          {"示例用户": {"token": "...", "device_id": "...", "user_id": "...",
+          {"一只总柴": {"token": "...", "device_id": "...", "user_id": "...",
                         "region": "CN", "host": "https://api.trae.cn"}}
     """
     accs = {}

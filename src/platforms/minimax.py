@@ -18,7 +18,7 @@ MiniMax Code 每日签到 · 看板平台适配器
 本适配器只做「续期 -> 状态 -> 领取」，并暴露看板统一的
 load_accounts / read_account / run_task 接口。
 """
-import os, sys, json, time, re, glob, hashlib, base64, shutil, urllib.parse
+import os, sys, json, time, re, glob, hashlib, base64, shutil, urllib.parse, threading
 from datetime import datetime, timezone
 
 try:
@@ -59,6 +59,14 @@ LABEL = "MiniMax Code"
 TASKS = [{"key": "checkin", "label": "每日签到", "daily": True}]
 
 CACHE_FILE = os.path.join(HERE, ".minimax_token.json")
+# refresh_token 轮换备份（多账号，防单点丢失）：
+# MiniMax 的 RT 用一次换一把、旧的当场作废，一旦「刷新成功但新 RT 没落盘」，
+# 这个账号就永久断链（只能重新走网页授权）。所以每次刷新成功都额外双写一份到这里，
+# 主凭据文件若写失败/被清空，还能从这里把 RT 捞回来。
+RT_BACKUP_FILE = os.path.join(HERE, ".minimax_rt_backup.json")
+# 刷新互斥：refresh_token 是一次性的，并发刷新必然有一方拿到 invalid_grant。
+# 同一账号被「/api/state 的并发读取」与「/api/run 的签到」同时刷新是真实存在的场景。
+_REFRESH_LOCK = threading.Lock()
 _DEFAULT_UUID = "3548c8fa-9ac2-4a28-8f6b-71ecd88bc048"
 _DEFAULT_DEVICE_ID = "1790426211"
 
@@ -340,15 +348,57 @@ def _cred_file_path():
     return os.path.join(HERE, "minimax_accounts.json")
 
 
+def _load_rt_backup(uid):
+    """从 RT 备份文件里取某账号的 refresh_token（用于主凭据里那把已失效时自救）。"""
+    if not uid:
+        return ""
+    try:
+        data = json.load(open(RT_BACKUP_FILE, encoding="utf-8"))
+    except Exception:
+        return ""
+    rec = (data or {}).get(str(uid)) or {}
+    return clean_env_value(rec.get("refresh_token") or "")
+
+
+def _save_rt_backup(uid, grant_rt, grant_at, expires_at_ms):
+    """把刷新后的新令牌双写一份到 RT 备份文件（按 uid 归并，保留所有账号）。"""
+    if not uid or not grant_rt:
+        return False
+    try:
+        data = json.load(open(RT_BACKUP_FILE, encoding="utf-8"))
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+    data[str(uid)] = {"refresh_token": grant_rt, "access_token": grant_at,
+                      "expires_at_ms": int(expires_at_ms or 0), "updated_at": int(time.time())}
+    try:
+        tmp = RT_BACKUP_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=1)
+        os.replace(tmp, RT_BACKUP_FILE)
+        return True
+    except Exception:
+        return False
+
+
 def _persist_grant(name, ent, grant):
-    """把续期得到的新令牌原地写回看板凭据文件（键名被改过则按 realUserID 找回）。"""
+    """把续期得到的新令牌原地写回看板凭据文件（键名被改过则按 realUserID 找回）。
+
+    返回 True/False。**必须原子写**：MiniMax 的 refresh_token 是轮换式的，
+    一旦新令牌没能落盘、而旧令牌又已在服务端作废，这个账号就永久断链了
+    （只能重新走一次网页授权）。所以用 .tmp + os.replace 落盘，
+    并**把失败暴露到后端控制台**，不再静默吞掉。
+    """
     path = _cred_file_path()
     try:
         data = json.load(open(path, encoding="utf-8"))
-    except Exception:
-        return
+    except Exception as e:
+        print("[MiniMax] ⚠ 续期落盘失败：读不到凭据文件 %s（%s）" % (path, str(e)[:80]))
+        return False
     if not isinstance(data, dict):
-        return
+        print("[MiniMax] ⚠ 续期落盘失败：凭据文件格式异常 %s" % path)
+        return False
     rec, key = data.get(name), name
     if not isinstance(rec, dict):
         uid = clean_env_value(ent.get("user_id", ""))
@@ -358,46 +408,123 @@ def _persist_grant(name, ent, grant):
                 rec, key = v, k
                 break
     if not isinstance(rec, dict):
-        return
+        print("[MiniMax] ⚠ 续期落盘失败：凭据文件里找不到账号 %r（uid=%s）" % (name, ent.get("user_id")))
+        return False
     rec["access_token"] = grant["access_token"]
     if grant.get("refresh_token"):
         rec["refresh_token"] = grant["refresh_token"]
     if grant.get("expires_in"):
         rec["expires_at_ms"] = int((time.time() + float(grant["expires_in"])) * 1000)
     try:
-        with open(path, "w", encoding="utf-8") as fh:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(data, fh, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)          # 原子替换：要么是旧内容，要么是完整新内容
+        return True
+    except Exception as e:
+        print("[MiniMax] ⚠ 续期落盘失败：写 %s 异常 %s" % (path, str(e)[:80]))
+        return False
+
+
+def _read_latest_tokens(name, uid):
+    """从凭据文件里读某账号当前最新的 (access_token, refresh_token, expires_at_ms)。
+
+    用途：并发场景下「等锁的第二个线程」先用它判断刚才是否已被别的线程刷过 ——
+    是则直接复用，避免拿一把已被用掉的旧 RT 再撞一次 invalid_grant。
+    """
+    try:
+        data = json.load(open(_cred_file_path(), encoding="utf-8"))
     except Exception:
-        pass
+        return "", "", 0
+    rec = data.get(name) if isinstance(data, dict) else None
+    if not isinstance(rec, dict) and uid and isinstance(data, dict):
+        for _k, v in data.items():
+            if isinstance(v, dict) and str(v.get("user_id") or "") == str(uid):
+                rec = v
+                break
+    if not isinstance(rec, dict):
+        return "", "", 0
+    return (clean_env_value(rec.get("access_token") or ""),
+            clean_env_value(rec.get("refresh_token") or ""),
+            int(rec.get("expires_at_ms") or 0))
 
 
 def refresh_bearer_token(name, ent):
-    """用 refresh_token 静默续期 Bearer 令牌。成功返回新 access_token，失败返回 ""。"""
+    """用 refresh_token 静默续期 Bearer 令牌。成功返回新 access_token，失败返回 ""。
+
+    ⚠ MiniMax 的 refresh_token 是**轮换式**的：用一次就换一把新的、旧的当场作废。
+    因此这里做了三道保护：
+      ① 全程持锁（_REFRESH_LOCK）——并发刷新必然有一方拿 invalid_grant；
+      ② 进临界区后再读一次 ent，用别的线程刚换来的新 RT（避免拿已被用掉的旧 RT 去撞墙）；
+      ③ 新令牌**双写**：主凭据文件（原子替换）+ RT 备份文件；主文件写失败也会留档，
+         下次从备份里还能把 RT 捞回来，不至于永久断链。
+    """
     rt = clean_env_value(ent.get("refresh_token", ""))
     if not rt:
-        return ""
+        # 主凭据里没有 RT（例如被清空过）→ 看抢救备份里是否还留着存底
+        rt = _load_rt_backup(ent.get("user_id"))
+        if not rt:
+            return ""
     try:
         import oauth_login
     except Exception:
         return ""
-    ok, grant, _ = oauth_login.refresh_grant("minimax", rt, ent.get("region") or "cn")
-    if not ok or not (grant or {}).get("access_token"):
-        return ""
-    g = {"access_token": grant["access_token"],
-         "refresh_token": grant.get("refresh_token") or rt,
-         "expires_in": grant.get("expires_in") or 3600}
-    _persist_grant(name, ent, g)
-    ent["access_token"] = g["access_token"]
-    ent["refresh_token"] = g["refresh_token"]
-    ent["expires_at_ms"] = int((time.time() + float(g["expires_in"])) * 1000)
-    save_token_cache(g["access_token"], "oauth_refresh")
-    return g["access_token"]
+    with _REFRESH_LOCK:
+        # ② 等锁期间可能已被别的线程刷新过：以凭据文件里的最新值为准
+        latest_at, latest_rt, latest_ms = _read_latest_tokens(name, ent.get("user_id"))
+        if latest_ms and (float(latest_ms) / 1000.0 - time.time()) > 300:
+            # 已被刷得足够新鲜（>5 分钟）：直接复用，不再消耗一次轮换
+            ent["access_token"] = latest_at or ent.get("access_token")
+            ent["refresh_token"] = latest_rt or ent.get("refresh_token")
+            ent["expires_at_ms"] = latest_ms
+            return clean_env_value(ent.get("access_token", ""))
+        cur = clean_env_value(ent.get("refresh_token", ""))
+        if latest_rt and latest_rt != cur:
+            rt = latest_rt
+        elif cur and cur != rt:
+            rt = cur
+        ok, grant, _ = oauth_login.refresh_grant("minimax", rt, ent.get("region") or "cn")
+        if not ok or not (grant or {}).get("access_token"):
+            # 主凭据里那把 RT 已失效时，拿「RT 备份」里的副本再试一次 ——
+            # 专治「上次刷新成功、新 RT 却没能写进主文件」这类断链（新 RT 只落在备份里）。
+            bak = _load_rt_backup(ent.get("user_id"))
+            if bak and bak != rt:
+                ok2, grant2, _ = oauth_login.refresh_grant("minimax", bak, ent.get("region") or "cn")
+                if ok2 and (grant2 or {}).get("access_token"):
+                    print("[MiniMax] 「%s」主凭据里的 refresh_token 已失效，已用备份副本续期成功"
+                          % name)
+                    ok, grant = ok2, grant2
+        if not ok or not (grant or {}).get("access_token"):
+            return ""
+        expires_ms = int((time.time() + float(grant.get("expires_in") or 3600)) * 1000)
+        g = {"access_token": grant["access_token"],
+             "refresh_token": grant.get("refresh_token") or rt,
+             "expires_in": grant.get("expires_in") or 3600}
+        # ③ 双写：先备份（成本低），再写主文件
+        _save_rt_backup(ent.get("user_id"), g["refresh_token"], g["access_token"], expires_ms)
+        if not _persist_grant(name, ent, g):
+            # 主文件写失败：重试一次（常见原因是文件被占用/锁），仍失败则靠备份兜底
+            if not _persist_grant(name, ent, g):
+                print("[MiniMax] ⚠ 续期成功但主凭据文件写失败（已备份，可在 %s 找回）"
+                      % os.path.basename(RT_BACKUP_FILE))
+        ent["access_token"] = g["access_token"]
+        ent["refresh_token"] = g["refresh_token"]
+        ent["expires_at_ms"] = expires_ms
+        save_token_cache(g["access_token"], "oauth_refresh",
+                         refresh_token=g["refresh_token"], expires_at_ms=expires_ms)
+        return g["access_token"]
 
 
 def _maybe_refresh(name, ent, mode):
     """Bearer 令牌临期（<5 分钟）或无 expires_at_ms 时先续期一次，避免看板红字 401。"""
-    if mode != "bearer" or not clean_env_value(ent.get("refresh_token", "")):
+    if mode != "bearer":
         return False
+    if not clean_env_value(ent.get("refresh_token", "")):
+        # 主凭据里没有 RT（例如被清空过）→ 看 RT 抢救备份里是否还留着存底
+        bak = _load_rt_backup(ent.get("user_id"))
+        if not bak:
+            return False
+        ent["refresh_token"] = bak
     ms = ent.get("expires_at_ms")
     if ms and (float(ms) / 1000.0 - time.time()) > 300:
         return False
@@ -414,12 +541,21 @@ def load_token_cache():
         return ""
 
 
-def save_token_cache(token, source="renewal"):
+def save_token_cache(token, source="renewal", refresh_token="", expires_at_ms=None):
+    """续期缓存（单条，最后刷新的账号胜出）。作为凭据文件之外的兜底副本，
+    可一并携带 refresh_token —— 主文件万一写失败，轮换出来的新 RT 不至于丢失。"""
     if not token:
         return False
     try:
-        with open(CACHE_FILE, "w", encoding="utf-8") as fh:
-            json.dump({"token": token, "source": source, "updated_at": int(time.time())}, fh)
+        payload = {"token": token, "source": source, "updated_at": int(time.time())}
+        if refresh_token:
+            payload["refresh_token"] = refresh_token
+        if expires_at_ms:
+            payload["expires_at_ms"] = int(expires_at_ms)
+        tmp = CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=1)
+        os.replace(tmp, CACHE_FILE)
         return True
     except Exception:
         return False
@@ -869,7 +1005,9 @@ def read_account(name, ent):
         if "invalid timezone_id" in msg:
             msg = "签名 user_id 为空（请重新「从本地客户端导入」）"
         if sc in (401, 403) or "invalid" in msg.lower() and mode == "bearer":
-            msg += "；令牌已失效且自动续期未成功（refresh_token 已被客户端轮换作废）"
+            msg += ("；令牌已失效且自动续期未成功。MiniMax 的 refresh_token 是一次性轮换的"
+                    "（用一次换一把、旧的当场作废，被用掉后无法自行恢复）—— 请在右上角"
+                    "「添加账号」→「MiniMax」里，用「%s」绑定的手机号重发一次验证码登录" % name)
         return {"name": name, "ok": False,
                 "key": ent.get("_key") or name,
                 "error": "登录态查询失败（HTTP %s）：%s" % (sc, msg),
@@ -940,4 +1078,18 @@ def run_task(name, ent, task_key):
                 content += "（已自动续期登录态）"
             except Exception as e:
                 return {"ok": False, "msg": "续期后重试异常：%s" % str(e)[:80]}
+    # ★ 兜底回退：Bearer 仍失败（refresh_token 已轮换作废）时，改用本机客户端的
+    #   长寿命 JWT（同账号）再试一次 —— 与 read_account 的回退策略保持一致。
+    #   否则会出现「状态读得到、签到却失败」这种自相矛盾的表现。
+    if not ok and ("401" in str(content) or "403" in str(content)
+                   or "invalid" in str(content).lower()):
+        jwt, _rg = _local_jwt_for(user_id)
+        if jwt and jwt != token:
+            try:
+                f2, c2 = _try_checkin(user_id, jwt, "env", "token")
+                if f2 in ("SUCCESS", "ALREADY_TODAY"):
+                    return {"ok": True, "flag": f2,
+                            "msg": c2 + "（本次用本机客户端的长寿命登录态完成）"}
+            except Exception:
+                pass
     return {"ok": ok, "msg": content, "flag": flag}

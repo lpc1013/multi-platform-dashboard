@@ -716,8 +716,9 @@ h1{font-size:31px;font-weight:700;letter-spacing:-.4px}
       <div class="hint-sm">读取本机已登录的 <b>CodeArts Agent（码道）桌面端</b>凭据
         （VS Code SecretStorage 里的华为云 STS 临时凭证，<b>以只读方式打开</b>，绝不写入）。<br>
         <b>每日签到 +1000 积分</b>（30 天有效，北京时间 00:00 重置）。<br>
-        <b>注意：</b>临时凭证约 1 小时过期。看板不写入客户端凭据库、也不刷新令牌
-        （避免与桌面端争用一次性 refresh_token），凭证过期时会提示你打开客户端续期。</div>
+        <b>自动续期：</b>看板自建会话（短信登录导入）带 refresh_token，临期 15 分钟自动续、
+        无需人工；客户端导入的票约 <b>16 小时</b>，客户端在线时看板自动跟随其最新会话 ——
+        票过期且无续期材料时才需打开客户端登录一次。</div>
     </div>
 
     <!-- OfficeACE（华为云 AgentArts） -->
@@ -757,10 +758,12 @@ h1{font-size:31px;font-weight:700;letter-spacing:-.4px}
         style="background:linear-gradient(135deg,#c2410c,#fb923c);box-shadow:0 4px 14px rgba(194,65,12,.28)">
         📱 从本地客户端导入（推荐）</button>
       <div class="hint-sm">解密本机已登录的 <b>OfficeACE 桌面端</b>临时凭据
-        （DPAPI 包裹的 AES key + <code>oauth-*.json</code>，只读不改）。<br>
+        （客户端 v1.3.3+ 存于 <code>&lt;安装目录&gt;\data\storage.sqlite</code> 的
+        <code>oc_kv_string</code> 表，看板<b>只读打开</b>，绝不写入）。<br>
         每日登录可领 <b>1000 积分</b>（北京时间 23:59:59 前有效）。<br>
-        <b>注意：</b>华为云 STS 临时凭证约 24 小时过期；过期后请打开 OfficeACE 客户端
-        登录一次即可刷新，再点本按钮导入。</div>
+        <b>自动续期：</b>华为云 STS 临时凭证约 <b>2 小时</b>过期，但看板会<b>无人值守自动续</b> ——
+        临期/失效时自动拉起本地服务，用客户端登录态触发凭据刷新并回读落库，无需手动重导；
+        仅当客户端登录态本身失效（islogin=false）才需打开客户端登录一次。</div>
     </div>
 
     </div><!-- /.tabpanes -->
@@ -876,7 +879,7 @@ const DEMO = {
       id:"qoder", label:"Qoder CN", has_credentials:false,
       tasks:[{key:"checkin",label:"每日领取 100 Credits"}],
       accounts:[
-        {name:"示例用户", ok:true, level:"Qoder CN · personal_standard", signed_today:false,
+        {name:"一只总柴", ok:true, level:"Qoder CN · personal_standard", signed_today:false,
          credits:{remain:1311,total:1500,used:189},
          packages:[{name:"活动赠送额度",amount:200,remain:200,used:0,expire:null,source:"measured",perpetual:false,kind:"Credits"}],
          extra:{can_sign_in:true, today_reward:100, today_kind:"CREDITS", claimable_count:1}}
@@ -895,7 +898,7 @@ const DEMO = {
       id:"codearts", label:"CodeArts Agent", has_credentials:false,
       tasks:[{key:"checkin",label:"每日领取 1000 积分"}],
       accounts:[
-        {name:"示例用户B", ok:true, level:"CodeArts Agent · 华为云", signed_today:true,
+        {name:"yizhizongchai", ok:true, level:"CodeArts Agent · 华为云", signed_today:true,
          credits:{remain:0,total:1000,used:0}, packages:[],
          extra:{can_sign_in:false, today_reward:1000, daily_status:"CONFIRMED", expired:false}}
       ]
@@ -904,7 +907,7 @@ const DEMO = {
       id:"officeace", label:"OfficeACE（华为云）", has_credentials:false,
       tasks:[{key:"checkin",label:"每日登录领取"}],
       accounts:[
-        {name:"示例用户B", ok:true, level:"OfficeACE 会员", signed_today:true,
+        {name:"yizhizongchai", ok:true, level:"OfficeACE 会员", signed_today:true,
          credits:{remain:1000,total:1000,used:0},
          packages:[{name:"每日登录奖励",amount:1000,remain:1000,used:0,expire:null,source:"measured",perpetual:false,kind:"积分"}],
          extra:{can_sign_in:false, today_reward:1000, streak_days:7, expired:false}}

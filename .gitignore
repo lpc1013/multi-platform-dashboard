@@ -1,9 +1,16 @@
 # ── 凭据 / 敏感数据（绝不入库）──────────────────────────────
-*.accounts.json
+# 各平台的账号凭据文件（含 access_token / refresh_token / cookie）
 *_accounts.json
+*.accounts.json
+# 删除墓碑（含账号键名）
+*_deleted.json
 wb_login_result.json
+# 一键签到运行结果（含手机号/账号名）
+last_checkin*.json
+# MiniMax 续期缓存与 refresh_token 轮换备份（含真实令牌）
 .minimax_token.json
-*.token.json
+*_token.json
+*rt_backup.json
 credentials.json
 .env
 .env.*
@@ -25,6 +32,7 @@ env/
 *.log
 backend_run.log
 backend_err.log
+*.zip
 
 # ── AI 工作记忆（含本机隐私，不上传）────────────────────
 .workbuddy/

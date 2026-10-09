@@ -48,6 +48,9 @@ import sys
 import json
 import hmac
 import hashlib
+import time
+import ctypes
+import subprocess
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, quote
 
@@ -169,6 +172,206 @@ def sign_request(method, url, ak, sk, sts, project_id="", body_text="",
 
 
 # ───────────────────────── 凭据 ─────────────────────────
+# ───────────── 无人值守凭据刷新（2026-10-09 全链路实证，勿回退）────────────
+# 链路：① 直启 ServiceHost（**不带 --stop-on-launcher-exit** → 没有 watchdog 自停；
+#          ⚠ ServiceHost 检测到 HTTP_PROXY 环境变量会拒绝启动，必须剥掉代理变量）
+#       ② 带 oc_sid（WebView2 cookie，DPAPI+AES-GCM v10 解密）调 https://127.0.0.1:3004/api/islogin
+#       ③ api 恢复会话时**自动刷新华为 STS（2h）+ 轮换 refresh_token** 并落盘 SQLite
+#       ④ 回读 SQLite 更新看板凭据。全程无需打开 GUI。
+# 实测：GUI launcher 从会话拉起 55s 自死（--stop-on-launcher-exit 连锁），但 api 已在
+#       49s 存活期内完成刷新；直启 ServiceHost 则可常驻。
+_SERVICE_PORT = 3004
+_SERVICE_HOST_EXE = r"E:\OfficeAce\OfficeAceServiceHost.exe"
+_SERVICE_ROOT = r"E:\OfficeAce"
+_WV2_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                        "OfficeAce", "DesktopWebView2", "EBWebView")
+_sid_cache = {"v": None, "t": 0.0}
+
+
+def _service_up():
+    import socket
+    s = socket.socket()
+    s.settimeout(1.0)
+    try:
+        s.connect(("127.0.0.1", _SERVICE_PORT))
+        return True
+    except Exception:
+        return False
+    finally:
+        s.close()
+
+
+def _service_start():
+    """直启 ServiceHeadless（无 GUI）。ServiceHost 检测到 *PROXY* 环境变量会拒绝启动。"""
+    if not os.path.isfile(_SERVICE_HOST_EXE):
+        return False, "未找到 ServiceHost：%s" % _SERVICE_HOST_EXE
+    env = dict(os.environ)
+    for k in list(env):
+        if k.lower() in ("http_proxy", "https_proxy", "all_proxy",
+                         "no_proxy", "ftp_proxy"):
+            env.pop(k, None)
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        subprocess.Popen([_SERVICE_HOST_EXE, "--mode", "serve",
+                          "--enable-native-runtime", "--packaged-production",
+                          "--project-root", _SERVICE_ROOT],
+                         env=env, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=flags,
+                         cwd=_SERVICE_ROOT)
+    except Exception as e:
+        return False, "ServiceHost 启动失败：%s" % str(e)[:120]
+    for _ in range(35):                    # ≤35s 等 api 就绪（实测 ~6s）
+        if _service_up():
+            return True, "ServiceHost 已就绪"
+        time.sleep(1.0)
+    return False, "ServiceHost 35s 内未就绪（查 .office-claw/run/windows/lifecycle.ndjson）"
+
+
+def _oc_sid():
+    """解密 WebView2 cookie 库里的 oc_sid。明文 = 32 字节实例前缀 + 实际值。"""
+    now = time.time()
+    if _sid_cache["v"] and now - _sid_cache["t"] < 300:
+        return _sid_cache["v"]
+    db = os.path.join(_WV2_DIR, "Default", "Network", "Cookies")
+    lsp = os.path.join(_WV2_DIR, "Local State")
+    if not (os.path.isfile(db) and os.path.isfile(lsp)):
+        return None
+    import shutil
+    import sqlite3
+    import tempfile
+    import base64
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from ctypes import wintypes
+
+    class _BLOB(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("pb", ctypes.POINTER(ctypes.c_char))]
+
+    def _dpapi(data):
+        buf = ctypes.create_string_buffer(data, len(data))
+        i = _BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+        o = _BLOB()
+        if not ctypes.windll.crypt32.CryptUnprotectData(
+                ctypes.byref(i), None, None, None, None, 0, ctypes.byref(o)):
+            raise OSError("CryptUnprotectData 失败")
+        out = ctypes.string_at(o.pb, o.cb)
+        ctypes.windll.kernel32.LocalFree(o.pb)
+        return out
+
+    try:
+        ls = json.load(open(lsp, encoding="utf-8"))
+        key = _dpapi(base64.b64decode(ls["os_crypt"]["encrypted_key"])[5:])
+        tmp = os.path.join(tempfile.gettempdir(), "oc_cookies_ro.db")
+        shutil.copyfile(db, tmp)           # 原库可能被客户端锁住 → 复制后读
+        try:
+            con = sqlite3.connect(tmp)
+            try:
+                row = con.execute("select encrypted_value from cookies "
+                                  "where name='oc_sid'").fetchone()
+            finally:
+                con.close()
+        finally:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+        if not row:
+            return None
+        enc = row[0]
+        pt = AESGCM(key).decrypt(enc[3:15], enc[15:], None)
+        sid = pt[32:].decode("utf-8", "replace").strip()
+    except Exception:
+        return None
+    if not sid:
+        return None
+    _sid_cache.update(v=sid, t=now)
+    return sid
+
+
+def _persist_entry(name, ent):
+    """把续期后的凭据写回 officeace_accounts.json（首个存在的文件，否则建在 ROOT）。"""
+    keep = ("ak", "sk", "sts_token", "project_id", "expires_at", "refresh_token",
+            "refresh_expires_at", "user_id", "host", "region", "name")
+    path = None
+    for p in (os.path.join(ROOT, "officeace_accounts.json"),
+              os.path.join(HERE, "officeace_accounts.json")):
+        if os.path.exists(p):
+            path = p
+            break
+    path = path or os.path.join(ROOT, "officeace_accounts.json")
+    try:
+        data = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
+        if not isinstance(data, dict):
+            data = {}
+        data[name] = {k: ent.get(k, "") for k in keep if ent.get(k)}
+        tmp = path + ".tmp"
+        json.dump(data, open(tmp, "w", encoding="utf-8"),
+                  ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def try_refresh(name, ent):
+    """无人值守刷新。成功返回 (True, 提示) 并就地更新 ent + 持久化。"""
+    if not _service_up():
+        ok, msg = _service_start()
+        if not ok:
+            return False, msg
+    sid = _oc_sid()
+    if not sid:
+        return False, "取不到 WebView2 oc_sid（客户端从未登录过？）"
+    import ssl
+    import urllib.request
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    old_exp = (ent.get("expires_at") or "").strip()
+    try:
+        req = urllib.request.Request(
+            "https://127.0.0.1:%d/api/islogin" % _SERVICE_PORT,
+            headers={"Cookie": "oc_sid=%s" % sid})
+        with urllib.request.urlopen(req, timeout=15, context=ctx) as r:
+            j = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:
+        return False, "islogin 调用失败：%s" % str(e)[:120]
+    if not j.get("islogin"):
+        return False, "客户端会话已失效（islogin=false），需重新登录客户端"
+    # 轮询 SQLite 等新凭据落盘（实测 1~5s）
+    try:
+        sys.path.insert(0, ROOT)
+        import local_import
+    except Exception as e:
+        return False, "无法导入 local_import：%s" % str(e)[:80]
+    new = None
+    for _ in range(24):
+        time.sleep(1.0)
+        try:
+            _ok, _m, accs = local_import.read_officeace()
+        except Exception:
+            accs = {}
+        cand = accs.get(name)
+        if not cand and accs:
+            # 键名不同但 user_id 相同 → 视为同账号
+            uid = (ent.get("user_id") or "").split(":")[0]
+            for v in accs.values():
+                if uid and (v.get("user_id") or "").split(":")[0] == uid:
+                    cand = v
+                    break
+        if not cand and accs:
+            cand = next(iter(accs.values()))
+        if cand and (cand.get("expires_at") or "").strip() != old_exp:
+            new = cand
+            break
+    if not new:
+        return False, "刷新未生效（SQLite expires_at 未变化）"
+    for k in ("ak", "sk", "sts_token", "project_id", "expires_at", "refresh_token",
+              "refresh_expires_at", "user_id", "host", "region"):
+        if new.get(k):
+            ent[k] = new[k]
+    _persist_entry(name, ent)
+    return True, "已自动续期至 %s" % (ent.get("expires_at") or "")[:19]
+
+
 def load_accounts():
     """凭据来源（优先级从高到低）：
        1) 环境变量 OFFICEACE_AK / OFFICEACE_SK / OFFICEACE_STS
@@ -195,6 +398,29 @@ def load_accounts():
         for nm, v in items:
             if isinstance(v, dict) and v.get("ak") and v.get("sk") and v.get("sts_token"):
                 accs[nm] = v
+    # ③ SQLite 会话（客户端启动时自动刷新，通常最新）—— 按 user_id/同名覆盖
+    try:
+        sys.path.insert(0, ROOT)
+        import local_import
+        _ok, _m, live = local_import.read_officeace()
+        for k, v in (live or {}).items():
+            uid = (v.get("user_id") or "").split(":")[0]
+            target = k if k in accs else None
+            if target is None and uid:
+                for ek, ev in accs.items():
+                    if (ev.get("user_id") or "").split(":")[0] == uid:
+                        target = ek
+                        break
+            if target is None and len(accs) == 1 and len(live) == 1:
+                target = next(iter(accs))          # 单账号两边键名不一致 → 对齐
+            if target is not None:
+                base = accs[target]
+                base.update({kk: v[kk] for kk in v if v.get(kk)})
+                accs[target] = base
+            else:
+                accs[k] = v
+    except Exception:
+        pass
     return accs
 
 
@@ -234,6 +460,12 @@ def _expired(ent):
         except ValueError:
             return None
     return t < datetime.utcnow()
+
+
+# ⚠ 实测（2026-10-09）：客户端服务端只在凭据【真正到期】后才肯刷新 ——
+#    还剩 1.5h 时调 islogin 返回 true 但 SQLite expires_at 不变。
+#    所以这里不做「临期预续」（预续必然空转，且会让每次读状态白等轮询 24s），
+#    只做过期后自动续（到期实测 1~5s 出新票）。
 
 
 def _today_cst():
@@ -317,16 +549,26 @@ def read_account(name, ent):
         return empty
 
     exp = _expired(ent)
+    if exp:
+        # 已过期 → 无人值守续期（起 ServiceHeadless + oc_sid 调 islogin；实测到期后 1~5s 出新票）
+        ok, _m = try_refresh(name, ent)
+        exp = _expired(ent)
+        if exp is True:
+            empty["error"] = ("OfficeACE 凭据已于 %s 过期且自动续期失败：%s"
+                              % ((ent.get("expires_at") or "")[:19], _m))
+            empty["extra"] = {"expires_at": ent.get("expires_at"), "expired": True}
+            return empty
     st, j = _req(ent, SUB_PATH)
     if st in (401, 403) or (isinstance(j, dict) and "APIG." in str(j.get("error_code", ""))):
-        if exp:
-            empty["error"] = ("OfficeACE 临时凭据已于 %s 过期，请打开 OfficeACE 客户端"
-                              "登录一次以刷新，再点「从本地客户端导入」"
-                              % (ent.get("expires_at") or "")[:19])
-        else:
-            empty["error"] = "华为网关鉴权失败：%s" % str(j)[:110]
-        empty["extra"] = {"expires_at": ent.get("expires_at"), "expired": exp}
-        return empty
+        # 网关拒了 → 续一次再试
+        if try_refresh(name, ent)[0]:
+            st, j = _req(ent, SUB_PATH)
+        exp = _expired(ent)
+        if st in (401, 403) or (isinstance(j, dict) and "APIG." in str(j.get("error_code", ""))):
+            empty["error"] = ("华为网关鉴权失败且续期无效：%s（若持续失败请打开 OfficeACE "
+                              "客户端重新登录）" % str(j)[:110])
+            empty["extra"] = {"expires_at": ent.get("expires_at"), "expired": exp}
+            return empty
     if st != 200:
         empty["error"] = "订阅查询失败（HTTP %s）：%s" % (st, str(j)[:120])
         empty["extra"] = {"expires_at": ent.get("expires_at"), "expired": exp}
@@ -380,9 +622,9 @@ def run_task(name, ent, task_key):
         return {"ok": False, "msg": "未知任务"}
     if not (ent.get("ak") and ent.get("sk") and ent.get("sts_token")):
         return {"ok": False, "msg": "凭据不完整，请先「从本地客户端导入」"}
-    if _expired(ent):
-        return {"ok": False, "msg": ("OfficeACE 临时凭据已于 %s 过期，请打开 OfficeACE 客户端"
-                                     "登录一次刷新后重试" % (ent.get("expires_at") or "")[:19])}
+    if _expired(ent) is True and not try_refresh(name, ent)[0]:
+        return {"ok": False, "msg": ("OfficeACE 临时凭据已于 %s 过期且自动续期失败，"
+                                     "请打开客户端重新登录" % (ent.get("expires_at") or "")[:19])}
 
     # 客户端是带 JSON body 调的；不带 body 时服务端会以 500 + OfficeAce.11020001 应答
     # （那是空 body 的 bug，会被误读成「领取失败」）。所以先带 {} 打，失败再退回无 body。

@@ -2430,12 +2430,88 @@ def _hw_submit_code(page, ctx, job, code):
             except Exception:
                 return False
     page.wait_for_timeout(300)
-    if not _hw_click_visible(page, "登录/注册", "hwid-input-msgcode"):
-        if not _click_text(page, _HW_LOGIN_TEXTS, timeout=2500):
-            _hw_click_visible(page, "登录", "hwid-input-msgcode")
+    # ⚠⚠ 2026-10-09 无头 recon 实测（authui 线上 DOM，勿回退）：
+    #   「登录/注册」= div.hwid-btn.hwid-btn-primary（外层 .hwid-input-msgcode /
+    #   .hwid-reg-btn / .button-base-box 同文本不同层），且按钮带 **hwid-disabled**
+    #   禁用态 —— Vue 表单校验未通过时点击被**静默忽略**（14:46 实拍：验证码已填、
+    #   按钮没点动、15s 后人工点同一按钮立即通过）。所以：①先等按钮脱 disabled
+    #   ②点最内层真实按钮 ③点后**校验页面状态变化**，未变则重试（最多 3 轮）。
+    _BTN_JS = """() => {
+      const norm = s => (s||'').replace(/\\s+/g,'');
+      const vis = e => { const r = e.getBoundingClientRect();
+        return r.width>2 && r.height>2; };
+      let btn = null, ba = 1e9;
+      // ⚠ 只查内层真实按钮：hwid-disabled 只挂在 div.hwid-btn 上，
+      //   外层 .hwid-reg-btn/.normalBtn/.hwid-input-msgcode 永远没有该类（recon 实证）
+      for (const e of document.querySelectorAll('div.hwid-btn,button')) {
+        if (!vis(e) || norm(e.innerText||'') !== '登录/注册') continue;
+        const r = e.getBoundingClientRect();
+        if (r.width*r.height < ba) { ba = r.width*r.height; btn = e; }
+      }
+      if (!btn) return {found: false};
+      return {found: true,
+              disabled: /(^|\\s)hwid-disabled(\\s|$)/.test(btn.className||''),
+              cls: (btn.className||'').slice(0,90)};
+    }"""
+    st_info = {}
+    for _ in range(10):                      # ① 等按钮脱 disabled（≤5s）
+        try:
+            st_info = page.evaluate(_BTN_JS) or {}
+        except Exception:
+            st_info = {}
+        if not st_info.get("found") or not st_info.get("disabled"):
+            break
+        page.wait_for_timeout(500)
+    _codearts_debug("submit", "按钮状态: %s" % str(st_info)[:130])
+    accepted = False
+    for _round in range(3):
+        # ② 首选 Playwright 原生 click（可信输入事件，等价真人）点**内层真实按钮**
+        #    （cls_hint='hwid-btn' → _HW_PICK_JS 精确命中 div.hwid-btn，非外层容器）
+        if not _hw_click_visible(page, "登录/注册", "hwid-btn"):
+            _click_text(page, _HW_LOGIN_TEXTS, timeout=2000)
+        # ③ 校验：3s 内 URL 跳走 / 按钮消失 = 页面已接受
+        for _ in range(6):
+            page.wait_for_timeout(500)
+            try:
+                u2 = page.url or ""
+            except Exception:
+                u2 = ""
+            if u2 and "/authui/login.html" not in u2:
+                accepted = True
+                break
+            try:
+                if not (page.evaluate(_BTN_JS) or {}).get("found"):
+                    accepted = True
+                    break
+            except Exception:
+                pass
+        if accepted:
+            break
+        # ④ 兜底：验证码框上回车提交（部分表单支持 Enter 直提）
+        try:
+            el2 = _hw_visible_input(page, "验证码")
+            if el2 is not None:
+                el2.press("Enter", timeout=1500)
+        except Exception:
+            pass
+        for _ in range(4):
+            page.wait_for_timeout(500)
+            try:
+                u2 = page.url or ""
+            except Exception:
+                u2 = ""
+            if u2 and "/authui/login.html" not in u2:
+                accepted = True
+                break
+        if accepted:
+            break
+    _codearts_debug("submit", "click accepted=%s url=%s"
+                    % (accepted, (page.url or "")[:110]))
     job["code_submitted"] = True
     job["need_code"] = False
-    job["result"] = "已提交验证码，正在登录…"
+    job["result"] = ("已提交验证码，正在登录…"
+                     if accepted else
+                     "已填验证码并尝试点击「登录/注册」，但页面暂无响应，如 15 秒后仍停留请手动点一下。")
     return True
 
 
@@ -2586,7 +2662,7 @@ def _trae_account_full_name():
     ⚠ 2026-10-08 实地取证（本机账户全名**为空**，见下）：
       `net.exe user <USERNAME>` 中文系统输出的是本地化的「全名」标签，
       客户端正则 `/Full Name\\s+(.*)/` 只匹配英文 → **匹配不到 → 走兜底**。
-      因此本机真值 = USERNAME（"<用户名>"），不是账户全名。
+      因此本机真值 = USERNAME（"Pengcheng_Li"），不是账户全名。
       我们按行解析（避免 \\s* 吞换行误匹配到下一行的「注释」）并兼容中英两种标签；
       读不到一律返回 ""（与客户端本机行为一致）。
     """
@@ -2622,7 +2698,7 @@ def _trae_device_suffix():
 
     nls.messages.json(en)      [200] = "'s computer"
     nls.zh-cn.messages.json(zh)[200] = "的电脑"
-    本机实测客户端发的 DeviceName = "<用户名>的电脑" → 中文后缀。
+    本机实测客户端发的 DeviceName = "Pengcheng_Li的电脑" → 中文后缀。
     优先按 Trae 安装目录里是否存在 nls.zh-cn.messages.json 判定语言（与客户端界面一致）。
     """
     for d in _trae_out_dirs():
@@ -2656,7 +2732,7 @@ def _trae_device_name():
       CTe(): win32 → `net.exe user <USERNAME>` 的 Full Name；空 → Electron os.userInfo().username;
              再空 → process.env.USER || USERNAME
       ETe(): CTe() + f(200)  ← f(200) 是 nls i18n 字符串（zh="的电脑" / en="'s computer"）
-    本机真值（客户端成功请求 body 原文）：DeviceName = "<用户名>的电脑"
+    本机真值（客户端成功请求 body 原文）：DeviceName = "Pengcheng_Li的电脑"
     """
     base = _trae_account_full_name()
     if not base:
@@ -2681,7 +2757,7 @@ def _trae_system_facts():
        osName             = process.platform                ("windows"，小写)
        osVersion          = os.version()                    ("Windows 11 Home")
        cpuBrand           = os.cpus()[0].model              ("Intel(R) Core(TM) i7-14650HX")
-       DeviceName         = ETe() = 账户名 + i18n 后缀       ("<用户名>的电脑")
+       DeviceName         = ETe() = 账户名 + i18n 后缀       ("Pengcheng_Li的电脑")
     """
     import platform as _pf
     model = _trae_reg_str(r"HARDWARE\DESCRIPTION\System\BIOS", "SystemProductName")
@@ -2852,7 +2928,7 @@ def _trae_exchange(line, auth_code, verifier, dev, dbg=None):
 
     本机客户端成功请求原文见
       %APPDATA%\\Trae CN\\logs\\20261008T114448\\main.log:150
-    —— 我们的 payload 已逐字段比对为**零差异**（含 DeviceName="<用户名>的电脑"）。
+    —— 我们的 payload 已逐字段比对为**零差异**（含 DeviceName="Pengcheng_Li的电脑"）。
     """
     cfg = _TRAE_LINES[line]
     sysf = _trae_system_facts()
@@ -3407,7 +3483,7 @@ def _run_trae_sms_job(job, phone, name, on_success):
                     grant["device_id"] = dev["device_id"]
                     # ⚠ 铁律（2026-10-08 实测修 bug）：回调 URL 的**顶层 query 没有 UserID**！
                     #   真实身份埋在 `userInfo` 这个 **JSON 字符串**里（客户端回调原文）：
-                    #     userInfo={"AIRegion":"CN",…,"ScreenName":"示例用户",
+                    #     userInfo={"AIRegion":"CN",…,"ScreenName":"一只总柴",
                     #               "UserID":"3999366707165914","NonPlainTextMobile":"186******66"}
                     #   旧实现 `params.get("UserID")` 恒为空 → 登录成功却 user_id 落空。
                     ui = {}
@@ -3469,6 +3545,89 @@ _CODEARTS_STS = "https://sts.cn-north-4.myhuaweicloud.com"
 _CODEARTS_CLIENT_ID = "codearts-agent"     # = product.json urlProtocol（= env.uriScheme）
 _CODEARTS_PLUGIN = "snap_AIIDE"
 _CODEARTS_PLUGIN_VER = "5.4.2"             # huaweicloud.authentication/package.json
+_CODEARTS_SNAP = "https://snap-access.cn-north-4.myhuaweicloud.com/snap-manager"
+
+# 授权确认页代点文案（归一化匹配，命中最内层；「取消/拒绝/不同意」等否定项靠**全等**匹配天然排除）
+_CODEARTS_CONSENT_TEXTS = ["同意并授权", "授权并登录", "授权并继续", "同意授权", "一键授权",
+                           "授权", "同意", "允许", "继续", "确认"]
+
+_CODEARTS_DEBUG_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "codearts_oauth_debug.log")
+
+
+def _codearts_debug(tag, msg):
+    """CodeArts OAuth 关键事件落盘。控制台 stdout 随窗口丢失，文件不会——
+    授权后拿不到令牌时（如 2026-10-09 卡「已提交验证码」），这是唯一能回放的证据。"""
+    try:
+        with open(_CODEARTS_DEBUG_LOG, "a", encoding="utf-8") as fh:
+            fh.write("%s [%s] %s\n" % (time.strftime("%m-%d %H:%M:%S"), tag,
+                                       str(msg)[:400].replace("\n", " ")))
+    except Exception:
+        pass
+
+
+def _codearts_stage(url, port):
+    """按 URL 分类当前阶段：callback（回调） / login（authui 登录页） / portal（授权确认） / other。"""
+    u = url or ""
+    if ("127.0.0.1:%d" % port) in u and "/oauth/callback" in u:
+        return "callback"
+    if "authui" in u or "auth.huaweicloud.com" in u or "login.huaweicloud" in u:
+        return "login"
+    if "codearts.huaweicloud.com" in u or "/portal" in u:
+        return "portal"
+    return "other"
+
+
+def _codearts_click_consent(page):
+    """portal 授权确认页：代点「同意/授权/继续」。返回 "clicked" / "none"。
+
+    ⚠ 页面若有未勾选的协议 checkbox（`input[type=checkbox]`），先勾再点——
+    未勾协议时点「授权」很可能被前端静默 return（MiniMax/Trae 同款坑）。"""
+    try:
+        n = page.evaluate("""() => {
+            const vis = c => { const r = c.getBoundingClientRect();
+                return r.width > 2 && r.height > 2 && !c.disabled; };
+            let n = 0;
+            for (const c of Array.from(document.querySelectorAll('input[type=checkbox]'))) {
+                if (vis(c) && !c.checked) { c.click(); n++; }
+            }
+            return n;
+        }""")
+        if n:
+            _codearts_debug("consent", "勾选了 %d 个协议 checkbox" % n)
+            page.wait_for_timeout(300)
+    except Exception:
+        pass
+    for t in _CODEARTS_CONSENT_TEXTS:
+        if _hw_click_visible(page, t):
+            _codearts_debug("consent", "已点「%s」" % t)
+            return "clicked"
+    # 兜底前先做廉价预检：页面确实存在其中一个文案才走 get_by_text（10 个文案 ×
+    # timeout 的逐个尝试最坏 ~24s，会把 700ms 节奏的主循环拖死）
+    has_txt = False
+    try:
+        has_txt = bool(page.evaluate("""(ts) => {
+            const norm = s => (s || '').replace(/\\s+/g, '');
+            const body = norm(document.body.innerText);
+            return ts.some(t => body.includes(norm(t)));
+        }""", _CODEARTS_CONSENT_TEXTS))
+    except Exception:
+        pass
+    if has_txt and _click_text(page, _CODEARTS_CONSENT_TEXTS, timeout=600):
+        _codearts_debug("consent", "已点（get_by_text 兜底）")
+        return "clicked"
+    return "none"
+
+
+def _codearts_extract_code(loc, port):
+    """从回调 URL（或 302 Location）提取授权码。非本回调端口的 URL 一律不收。"""
+    try:
+        sp = urllib.parse.urlsplit(loc or "")
+        if sp.port != port or not sp.path.endswith("/oauth/callback"):
+            return ""
+        return dict(urllib.parse.parse_qsl(sp.query, keep_blank_values=True)).get("code", "") or ""
+    except Exception:
+        return ""
 
 
 def _codearts_pkce():
@@ -3520,8 +3679,14 @@ def _codearts_token(form, dpop):
 
 
 def _codearts_extract_credentials(j):
-    """token 响应 → (ak, sk, sts_token, expires_at_iso)。credentials 包裹优先，顶层兜底。"""
-    cred = (j or {}).get("credentials") if isinstance(j, dict) else None
+    """token/ticket 响应 → (ak, sk, sts_token, expires_at_iso)。
+    credentials 包裹优先；⚠ ticket 接口（OldLogin）用**单数 credential**（2026-10-09 实测）。"""
+    cred = None
+    if isinstance(j, dict):
+        for k in ("credentials", "credential"):
+            if isinstance(j.get(k), dict):
+                cred = j[k]
+                break
     if not isinstance(cred, dict):
         cred = j if isinstance(j, dict) else {}
 
@@ -3532,8 +3697,8 @@ def _codearts_extract_credentials(j):
                 if isinstance(v, str) and v.strip():
                     return v.strip()
         return ""
-    ak = g("access_key", "accessKey", "ak", "AK")
-    sk = g("secret_key", "secretKey", "sk", "SK")
+    ak = g("access_key", "accessKey", "access", "ak", "AK")
+    sk = g("secret_key", "secretKey", "secret", "sk", "SK")
     sts = g("security_token", "securityToken", "securitytoken", "sts_token")
     exp = g("expires_at", "expiresAt")
     if not exp:
@@ -3547,21 +3712,41 @@ def _codearts_extract_credentials(j):
 
 
 class _CodeArtsCBHandler(http.server.BaseHTTPRequestHandler):
-    """照抄客户端回调服务器：GET /oauth/callback?code=..(&secret=..&redirect=..)
-    → 记 code → 307 到 portal/login?login_succeed=true（页面表现为「登录成功」）。"""
+    """照抄客户端回调服务器（plugin.js 实证 2026-10-09）：
+    ① ?code=..  → NewIamLogin：记 code → 307 portal/login?login_succeed=true
+    ② ?secret=..&redirect=.. → OldLogin：记 secret → 307 到 redirect（portal 登录成功页），
+      随后用 GET snap-manager/v1/login/ticket?ticket_id=&secret= 换凭据（含 refresh_token）。"""
     result = {}
 
     def do_GET(self):
         q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(self.path).query,
                                         keep_blank_values=True))
+        try:
+            _codearts_debug("cb", "回调 %s | referer=%s"
+                            % (self.path[:230],
+                               (self.headers.get("Referer") or "")[:110]))
+        except Exception:
+            pass        # ① NewIamLogin：授权码直换
         if q.get("code"):
             _CodeArtsCBHandler.result["code"] = q.get("code", "")
+            loc = ("%s/login?login_succeed=true&uri_scheme=%s&locale=zh-cn"
+                   % (_CODEARTS_PORTAL, _CODEARTS_CLIENT_ID))
+        # ② OldLogin：portal 只回 secret+redirect，换凭据走 snap-manager ticket 接口
+        elif q.get("secret") and q.get("redirect"):
             _CodeArtsCBHandler.result["secret"] = q.get("secret", "")
-        loc = ("%s/login?login_succeed=%s&uri_scheme=%s&locale=zh-cn"
-               % (_CODEARTS_PORTAL, "true" if q.get("code") else "false",
-                  _CODEARTS_CLIENT_ID)).encode("utf-8")
+            rid = dict(urllib.parse.parse_qsl(
+                urllib.parse.urlsplit(q["redirect"]).query,
+                keep_blank_values=True)).get("ticket_id", "")
+            if rid:
+                _CodeArtsCBHandler.result["ticket_id"] = rid
+            _codearts_debug("oldlogin", "收到 secret（len=%d）ticket_id=%s"
+                            % (len(q.get("secret", "")), rid[:34]))
+            loc = q["redirect"]          # 与客户端一致：307 回 portal 成功页
+        else:
+            loc = ("%s/login?login_succeed=false&uri_scheme=%s&locale=zh-cn"
+                   % (_CODEARTS_PORTAL, _CODEARTS_CLIENT_ID))
         self.send_response(307)
-        self.send_header("Location", loc.decode("ascii"))
+        self.send_header("Location", loc)
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -3632,6 +3817,7 @@ def _run_codearts_sms_job(job, phone, name, on_success):
             job["status"] = "opening"
             job["result"] = "已打开华为云登录窗口，正在进入手机号登录…"
             page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
+            _codearts_debug("open", "窗口已打开，当前 url=%s" % (page.url or "")[:150])
             # portal/authorize 会 302 到 authui/login.html?service=…，等表单出现
             # 注意：authui 是 Angular 渲染，先出 tab 再出 input（实测 t≈2s input 才 2 个），
             # 故轮询要够久（25×800ms=20s）。
@@ -3658,24 +3844,131 @@ def _run_codearts_sms_job(job, phone, name, on_success):
                 _pull_window_front(ctx)
                 job["result"] = "没等到华为云登录页，请在窗口里手动完成登录。"
                 job.update(sms_sent=True, need_code=False)
+            _codearts_debug("form", "form_ok=%s url=%s" % (form_ok, (page.url or "")[:150]))
 
             deadline = time.time() + 620
+            _codearts_debug("open", "开始轮询回调 port=%d" % port)
+            # 网络层兜底：302 Location / 回调响应即使页面导航卡住也能拿到 code
+            # （参照 OfficeAce 取证：Playwright 对导航类事件的捕获不可全信，双保险）
+            net_locs = []
+
+            def _on_response(resp):
+                try:
+                    u = resp.url or ""
+                    sc = resp.status
+                    if 300 <= sc < 400:
+                        loc = (resp.headers or {}).get("location", "") or ""
+                        if loc and ("code=" in loc or "/oauth/callback" in loc):
+                            net_locs.append(loc)
+                            _codearts_debug("net3xx", "HTTP %s %s -> %s" % (sc, u[:110], loc[:180]))
+                    elif "/oauth/callback" in u and "code=" in u:
+                        net_locs.append(u)
+                        _codearts_debug("netCb", "HTTP %s %s" % (sc, u[:200]))
+                except Exception:
+                    pass
+
+            try:
+                page.on("response", _on_response)
+            except Exception:
+                pass
+
+            # 页面发出的每一条回调请求（302 目标 / fetch / 深链）全落盘：
+            # portal 若不带 code 重定向过来，这里能看到原始 URL 与 error 参数。
+            def _on_request(req):
+                try:
+                    u = req.url or ""
+                    if (":%d" % port) in u and ("127.0.0.1" in u or "localhost" in u):
+                        _codearts_debug("reqCb", "%s" % u[:230])
+                        net_locs.append(u)
+                    elif u.startswith("codearts-agent://"):
+                        _codearts_debug("reqScheme", "%s" % u[:230])
+                except Exception:
+                    pass
+
+            try:
+                page.on("request", _on_request)
+            except Exception:
+                pass
+
+            last_stage = ""
+            submit_t = 0.0
+            submit_warned = False
+            consent_n = 0
+            consent_warned = False
+            false_warned = False
             while time.time() < deadline:
+                try:
+                    url = page.url or ""
+                except Exception:
+                    url = ""
+                stg = _codearts_stage(url, port)
+                if stg != last_stage:
+                    _codearts_debug("stage", "%s -> %s (%s)" % (last_stage or "start", stg, url[:150]))
+                    if stg == "portal":
+                        job["result"] = "登录成功，已进入授权确认页，正在代点「同意/授权」…"
+                    elif stg == "callback":
+                        job["result"] = "授权回调已到达，正在换取令牌…"
+                    elif stg == "login" and submit_t:
+                        job["result"] = "已提交验证码，正在登录…"
+                    last_stage = stg
+
+                # ⓪ portal 把浏览器 302 到回调却**不带 code** → 我们 307 到
+                #   login_succeed=false 页（即截图的「登录失败：请返回客户端查看」）。
+                #   完整请求已由 cb/reqCb 日志留痕，这里把状态说清楚，不再傻点按钮。
+                if ("login_succeed=false" in url) and not false_warned:
+                    false_warned = True
+                    _codearts_debug("warn", "portal 授权未下发 code（login_succeed=false）")
+                    _pull_window_front(ctx)
+                    job["result"] = ("华为云 portal 授权未下发授权码（页面显示「登录失败："
+                                     "请返回客户端查看」）。完整回调请求已记录到 "
+                                     "codearts_oauth_debug.log，请关闭本窗口重试一次；"
+                                     "若复现请把日志发来分析。")
+
+                # ① 注入验证码（前端 submit_code 只投递，由这里代填代点）
                 if form_ok and job.get("code") and not job.get("code_submitted"):
                     _hw_submit_code(page, ctx, job, job["code"])
-                code = result.get("code")
-                if not code and page.url.startswith("http://127.0.0.1:%d/oauth/callback"
-                                                     % port):
-                    code = dict(urllib.parse.parse_qsl(
-                        urllib.parse.urlsplit(page.url).query,
-                        keep_blank_values=True)).get("code", "")
+                    submit_t = time.time()
+
+                # ② 提交后 15s 仍停在登录页 → 可能验证码有误/点「登录/注册」没生效，提醒人工（一次）
+                if (submit_t and not submit_warned and stg == "login"
+                        and time.time() - submit_t > 15):
+                    submit_warned = True
+                    _pull_window_front(ctx)
+                    job["result"] = ("验证码已提交但 15 秒后页面仍停在登录页（可能验证码有误或"
+                                     "「登录/注册」没点动），窗口已拉回屏幕，请查看并手动重试。")
+                    _codearts_debug("warn", "提交后 15s 仍在登录页: %s" % url[:150])
+
+                # ③ portal 授权确认页：代点「同意/授权/继续」（点前勾协议，反复试直到跳走）
+                if stg == "portal" and consent_n < 12:
+                    consent_n += 1
+                    if _codearts_click_consent(page) == "none" and consent_n >= 4 \
+                            and not consent_warned:
+                        consent_warned = True
+                        _pull_window_front(ctx)
+                        job["result"] = ("已登录，但授权确认页没找到可点的「同意/授权」按钮，"
+                                         "窗口已拉回屏幕，请手动点一下授权。")
+                        _codearts_debug("warn", "consent 页 4 次未找到按钮: %s" % url[:150])
+
+                # ④ 取授权码：CB handler → 网络层捕获 → 页面 URL，三路兜底
+                code = result.get("code") or ""
+                if not code:
+                    for loc in net_locs:
+                        c = _codearts_extract_code(loc, port)
+                        if c:
+                            code = c
+                            _codearts_debug("code", "从网络层捕获 code（%s…）" % code[:8])
+                            break
+                if not code and url:
+                    code = _codearts_extract_code(url, port)
                 if code:
+                    _codearts_debug("code", "开始换 token")
                     st, j = _codearts_token({
                         "client_id": _CODEARTS_CLIENT_ID, "code": code,
                         "code_verifier": verifier,
                         "grant_type": "authorization_code",
                         "redirect_uri": "http://127.0.0.1:%d/oauth/callback" % port,
                     }, dpop)
+                    _codearts_debug("token", "HTTP %s %s" % (st, str(j)[:260]))
                     ak, sk, sts, exp = _codearts_extract_credentials(j)
                     if st == 200 and ak and sk and sts:
                         grant = {"ak": ak, "sk": sk, "sts_token": sts, "expires_at": exp,
@@ -3695,6 +3988,48 @@ def _run_codearts_sms_job(job, phone, name, on_success):
                     else:
                         job.update(status="done", finished=True, ok=False,
                                    result="换token失败（HTTP %s）：%s" % (st, str(j)[:180]))
+                    break
+                # ④' OldLogin：portal 只回 secret（无 code）→ 照客户端用 ticket 接口换凭据
+                #   GET snap-manager/v1/login/ticket?ticket_id=&secret=（含 refresh_token）
+                sec = result.get("secret") or ""
+                if sec and not job.get("finished"):
+                    tid = result.get("ticket_id") or ticket_id
+                    u = "%s/v1/login/ticket?ticket_id=%s&secret=%s" % (_CODEARTS_SNAP, tid, sec)
+                    _codearts_debug("oldlogin", "ticket 接口请求 tid=%s…" % tid[:12])
+                    job["result"] = "已收到授权回执，正在换取临时凭据…"
+                    st, j = 0, {}
+                    try:
+                        rr = requests.get(u, headers={
+                            "Content-Type": "application/json;charset=UTF-8",
+                            "plugin-name": _CODEARTS_PLUGIN,
+                            "plugin-version": _CODEARTS_PLUGIN_VER,
+                        }, timeout=30)
+                        st = rr.status_code
+                        j = rr.json() if rr.content else {}
+                    except Exception as e:
+                        j = {"__err__": str(e)[:180]}
+                    ak, sk, sts, exp = _codearts_extract_credentials(j)
+                    _codearts_debug("oldlogin", "HTTP %s user=%s expires=%s keys=%s"
+                                    % (st, str((j or {}).get("user_name"))[:24],
+                                       (exp or "")[:19],
+                                       ",".join(sorted((j or {}).keys()))[:120]))
+                    if st == 200 and ak and sk and sts:
+                        grant = {"ak": ak, "sk": sk, "sts_token": sts, "expires_at": exp,
+                                 "refresh_token": str(_trae_find_token(
+                                     j, ("refresh_token", "refreshToken")) or ""),
+                                 "code_verifier": verifier,
+                                 "dpop_priv_pem": dpop["priv_pem"],
+                                 "dpop_pub_jwk": json.dumps(dpop["jwk"]),
+                                 "port": port}
+                        try:
+                            ok2, nm, msg2 = on_success(grant)
+                        except Exception as e:
+                            ok2, nm, msg2 = False, "", "保存登录态异常：%s" % str(e)[:150]
+                        job.update(status="done", finished=True, ok=bool(ok2),
+                                   result=msg2 or ("已保存 %s" % nm), name=nm or "")
+                    else:
+                        job.update(status="done", finished=True, ok=False,
+                                   result="凭据换取失败（HTTP %s）：%s" % (st, str(j)[:180]))
                     break
                 page.wait_for_timeout(700)
             if not ok_saved and not job.get("finished"):
@@ -3803,61 +4138,78 @@ def _officeace_probe(timeout=5):
 
 
 def _officeace_autostart(wait=75):
-    """客户端没在跑时拉起 OfficeAce.exe，并轮询等本地 API 就绪。
+    """确保本地 API 就绪：probe 优先 → 直启 ServiceHost（无 watchdog）→ launcher 兜底。
     返回 (ok, base_url, note)。
 
-    ⚠⚠ 2026-10-08 实测（勿回退）：
-      `OfficeAce.exe` 是**桌面壳（WinForms + WebView2）**，不是纯后台服务：
-        · 它 spawn `OfficeAceServiceHost.exe --mode serve --enable-native-runtime
-          --packaged-production --project-root <root> --launcher-pid <pid>
-          --launcher-started-at <ts> --stop-on-launcher-exit`
-          （见 logs/desktop-launcher.log），由 host 再拉起 redis + node api + web。
-        · **无桌面会话/被沙箱限制时**，`OfficeAce.exe` **~0.5s 内 exit 0 秒退**（不写日志、不留痕）
-          → 此时本地 API 永远不会起来。
-      旧实现只 Popen 后**死等 wait 秒**（默认 75s！前端另有 wait=60）→ 用户看到
-      「正在打开 OfficeACE 登录窗口…」卡半天才有结果。**这就是「打开半天没反应」的真因。**
-      改进：Popen 后**先探测进程是否存活**（秒退即立刻失败，附明确指引），再进入轮询。
+    ⚠⚠ 2026-10-09 架构（勿回退）：
+      · `OfficeAce.exe`（桌面壳 launcher）spawn ServiceHost 时带 `--stop-on-launcher-exit`
+        → launcher 一死（沙箱/无桌面会话 ~0.5s exit 0）整个栈连锁自停。
+      · **正确姿势 = 直启 `OfficeAceServiceHost.exe`（不带 stop 标志，剥掉代理环境变量，
+        检测到 HTTP_PROXY 会秒拒）**，与看板进程解耦，可常驻。
+      · 第二实例问题：服务已在跑时再拉 OfficeAce.exe 会因单实例锁秒退 exit=0 ——
+        **这不是失败**，必须先 probe、秒退后复查 probe。
     """
     import subprocess
+    # ⓪ 入口先 probe：服务已在跑就直接用（第二实例锁会让 launcher 秒退，先避免误判）
+    ok, base, _ = _officeace_probe(timeout=4)
+    if ok:
+        return True, base, "本地 API 已就绪（服务本就在跑）"
+
+    # ① 直启 ServiceHost（detached，剥代理变量）
+    sh = None
+    sh_exe = os.path.join(os.path.dirname(_officeace_exe_path()
+                          or r"E:\OfficeAce\OfficeAce.exe"),
+                          "OfficeAceServiceHost.exe")
+    if os.path.isfile(sh_exe):
+        env = dict(os.environ)
+        for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+                  "ALL_PROXY", "all_proxy"):
+            env.pop(k, None)
+        try:
+            flags = 0
+            if hasattr(subprocess, "DETACHED_PROCESS"):
+                flags = (subprocess.DETACHED_PROCESS
+                         | subprocess.CREATE_NEW_PROCESS_GROUP)
+            sh = subprocess.Popen(
+                [sh_exe, "--mode", "serve", "--enable-native-runtime",
+                 "--packaged-production",
+                 "--project-root", os.path.dirname(sh_exe)],
+                cwd=os.path.dirname(sh_exe), env=env,
+                creationflags=flags, close_fds=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            sh = None
+
+    # ② 兜底拉 launcher（真实桌面会话下可用）
     exe = _officeace_exe_path()
-    if not exe:
-        return False, _OFFICEACE_API, "未找到 OfficeAce.exe（不在默认安装目录），无法自动拉起"
     proc = None
-    try:
-        # detached：让 App 独立于看板进程存活（关闭看板不影响客户端）
-        flags = 0
-        if hasattr(subprocess, "DETACHED_PROCESS"):
-            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-        proc = subprocess.Popen([exe], cwd=os.path.dirname(exe),
-                                creationflags=flags, close_fds=True)
-    except Exception as e:
-        return False, _OFFICEACE_API, "拉起 OfficeAce.exe 失败：%s" % str(e)[:100]
+    if exe:
+        try:
+            flags = 0
+            if hasattr(subprocess, "DETACHED_PROCESS"):
+                flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            proc = subprocess.Popen([exe], cwd=os.path.dirname(exe),
+                                    creationflags=flags, close_fds=True)
+        except Exception:
+            proc = None
 
-    # 先给 ~6s：正常启动时进程会持续存活（拉起 service host 需数秒）；
-    # 若此时已退出 → 桌面壳根本没起来（无桌面会话/被限制），立刻失败，不傻等。
-    for _ in range(6):
-        time.sleep(1.0)
-        if proc.poll() is not None:
-            return (False, _OFFICEACE_API,
-                    "OfficeAce.exe 启动后立即退出（exit=%s），当前环境无法拉起桌面客户端。"
-                    "请在**真实桌面会话**里手动双击 OfficeAce.exe（托盘出现图标即可），"
-                    "再回看板点「📩 发送验证码」。" % proc.returncode)
-        # 顺手探一次：有些情况 host 起得很快
-        ok, base, _ = _officeace_probe(timeout=2)
-        if ok:
-            return True, base, "已自动启动 OfficeACE 客户端（用时约 %ds）" % 6
-
+    # ③ 轮询等 API 就绪（无论哪个路径拉起的，API 起来就算成功）
     t0 = time.time()
     while time.time() - t0 < wait:
         ok, base, _ = _officeace_probe(timeout=3)
         if ok:
-            return True, base, "已自动启动 OfficeACE 客户端（用时 %.0fs）" % (time.time() - t0)
-        # 轮询期间也监控进程：中途退出即判定失败
-        if proc.poll() is not None:
-            return (False, _OFFICEACE_API,
-                    "OfficeAce.exe 中途退出（exit=%s），本地 API 未就绪。" % proc.returncode)
+            how = "ServiceHost" if sh else "客户端"
+            return True, base, "已自动启动 OfficeACE 服务（%s，用时 %.0fs）" % (how, time.time() - t0)
         time.sleep(2)
-    return False, _OFFICEACE_API, "已尝试启动 OfficeACE，但 %ds 内本地 API 仍未就绪" % wait
+    why = []
+    if sh is not None and sh.poll() is not None:
+        why.append("ServiceHost 退出(exit=%s)" % sh.returncode)
+    if proc is not None and proc.poll() is not None:
+        why.append("launcher 退出(exit=%s)" % proc.returncode)
+    return (False, _OFFICEACE_API,
+            "已尝试自动启动（直启 ServiceHost + 客户端）但 %ds 内本地 API 仍未就绪%s。"
+            "请在真实桌面会话里手动双击 OfficeAce.exe 后重试。"
+            % (wait, ("（%s）" % "；".join(why)) if why else ""))
 
 
 def start_officeace_sms_job(phone, name, on_success):
