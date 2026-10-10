@@ -9,6 +9,7 @@ WorkBuddy · 看板平台适配器
 凭据：WORKBUDDY_REFRESH_TOKEN 环境变量，或 ../WorkBuddy-Daily/wb_refresh_tokens.json、
       wb_login_result.json（fetch_state.load_accounts 已兼容 dict/list 两种格式）。
 """
+import hashlib
 import json, os, sys, time, uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -157,10 +158,127 @@ def do_chat(s, text=None, model="glm-5.2"):
                 break
         r.close()
         if srv_mid:
-            return {"ok": True, "msg": "已发送「%s」，AI 已回复（%s…）" % (text, txt.strip()[:24]), "message_id": srv_mid}
+            desk_ok, desk_msg = report_desktop_chat(s, conv_id, srv_mid)
+            return {"ok": True,
+                    "msg": "已发送「%s」，AI 已回复（%s…）；%s" % (text, txt.strip()[:24], desk_msg),
+                    "message_id": srv_mid, "desktop_reported": desk_ok}
         return {"ok": bool(txt), "msg": ("已发送消息「%s」（未取到服务端 id）" % text) if txt else "消息已发送但无响应内容"}
     except Exception as e:
         return {"ok": False, "msg": "对话异常：%s" % str(e)[:50]}
+
+
+# ─────────────── 桌面域遥测（点亮活跃地图「桌面端对话」记分）───────────────
+# 逆向自 L0NE-6/WorkBuddy-Daily（workbuddy_daily.py，2026-10-10）。
+# 原理：服务端活跃地图只认「桌面端成功对话」，判定依据是桌面域遥测里的
+# 6 连事件链（agent_task_created → chat_message_send → chat_request_send →
+# chat_message_response → chat_message_status → chat_request_response），
+# 且必须挂在【真实对话】的 conversationId / 服务端消息 id（cmb- 形态）上——
+# 自造 uuid 不计数。上报端点与 web 域不同：copilot.tencent.com/v2/report，
+# body 为裸数组、桌面 UA + X-Domain/X-Product 头。
+_WB_DESKTOP_BASE = "https://copilot.tencent.com"
+_WB_DESKTOP_UA = "WorkBuddy/5.5.6 WorkBuddy/5.5.6 CLI/2.137.1"
+
+
+def _jwt_claim(tok, key, default=""):
+    try:
+        seg = (tok or "").split(".")
+        pad = "=" * (4 - len(seg[1]) % 4)
+        return json.loads(__import__("base64").urlsafe_b64decode(seg[1] + pad)).get(key, default) or default
+    except Exception:
+        return default
+
+
+def _derive_id(uid, salt):
+    """由 uid 稳定派生设备标识（sha256[:36]，幂等，对齐上游 deriveID）。"""
+    return hashlib.sha256(("%s:%s" % (salt, uid)).encode()).hexdigest()[:36]
+
+
+def _desktop_fingerprint(uid, nick):
+    now = int(time.time() * 1000)
+    return {
+        "timezone": "Asia/Shanghai", "reportDelay": 2000,
+        "userId": uid, "username": nick, "userNickname": nick,
+        "product": "SaaS", "releaseDate": 1789036585355,
+        "commit": "5f9692923c93033111c51ad7b003eb80204a9b75",
+        "ideName": "WorkBuddy", "ideType": "WorkBuddy", "ideVersion": "5.5.6",
+        "machineId": _derive_id(uid, "machine"), "sessionId": _derive_id(uid, "session"),
+        "extName": "workbuddy-desktop", "extVersion": "5.5.6",
+        "os": "win32", "arch": "x64", "osVersion": "10.0.26220",
+        "cpuCores": 20, "memorySize": 24,
+        "timestamp": now, "presentAt": now,
+    }
+
+
+def report_desktop_chat(s, conv_id, srv_mid):
+    """对话成功后上报 6 连「桌面端成功对话」事件链。返回 (ok, msg)。"""
+    tok = (s.headers.get("Authorization") or "").replace("Bearer ", "").strip()
+    uid = _jwt_claim(tok, "sub")
+    if not (uid and conv_id and srv_mid):
+        return False, "缺少 uid/conversationId/messageId，跳过桌面链"
+    nick = _jwt_claim(tok, "nickname", "用户")
+    now = int(time.time() * 1000)
+    rid, mid = srv_mid, srv_mid
+    events = [
+        {"eventCode": "agent_task_created", "source": "LOCAL", "name": "working",
+         "task_target": "local", "mode": "craft", "requestModelId": "fast-model",
+         "requestModelName": "fast-model", "has_repo": False, "repo_type": "none",
+         "workspace_type": "empty", "has_connector": False, "connector_types": [],
+         "has_mention": False, "mention_types": [], "has_template": False,
+         "action": "", "template_name": "", "has_expert": False, "expert_id": "",
+         "expert_name": "", "expert_industry_id": "", "has_skill": False,
+         "skill_names": [], "conversationId": conv_id, "messageId": mid,
+         "buddyId": "", "buddyName": ""},
+        {"eventCode": "chat_message_send", "messageId": mid + "-assistant",
+         "historyCount": 0, "isContextTruncated": False, "currentStepCount": 1,
+         "traceId": rid, "rootRequestId": rid, "parentConversationId": conv_id,
+         "agentName": "cli", "agentType": "main"},
+        {"eventCode": "chat_request_send", "inputLength": 24, "isPlan": False,
+         "isAutoExecuteTerminal": False, "isAutoModify": False, "codebaseEnable": False,
+         "maxToken": 0, "maxSteps": 500, "temperature": 0, "maxRetries": 0,
+         "mentionContexts": [], "knowledgeId": [], "knowledgeName": [],
+         "codebaseId": "", "mentionContextCount": 0, "command": "",
+         "recommendId": "", "skillId": "", "skillCount": 0, "totalCount": 0,
+         "traceId": rid, "rootRequestId": rid, "parentConversationId": conv_id,
+         "agentName": "cli", "agentType": "main"},
+        {"eventCode": "chat_message_response", "messageId": mid + "-assistant",
+         "responseModelId": "fast-model", "inputToken": 120, "outputToken": 80,
+         "totalToken": 200, "cachedTokens": 0, "cachedWriteTokens": 0,
+         "cachedMissTokens": 0, "isSuccessful": True, "messageErrorCode": "",
+         "finishReason": "stop", "firstTokenAt": now, "traceId": rid,
+         "conversationId": conv_id, "rootRequestId": rid,
+         "parentConversationId": conv_id, "agentName": "cli", "agentType": "main"},
+        {"eventCode": "chat_message_status", "messageId": mid + "-assistant",
+         "messageErrorCode": "0", "traceId": rid, "rootRequestId": rid,
+         "parentConversationId": conv_id, "agentName": "cli", "agentType": "main"},
+        {"eventCode": "chat_request_response", "mode": "craft", "toolCallCount": 0,
+         "inputToken": 120, "outputToken": 80, "totalToken": 200, "cachedTokens": 0,
+         "cachedWriteTokens": 0, "cachedMissTokens": 0, "isSuccessful": True,
+         "messageErrorCode": "", "finishReason": "stop", "rootRequestId": rid,
+         "parentConversationId": conv_id, "agentName": "cli", "agentType": "main"},
+    ]
+    fp = _desktop_fingerprint(uid, nick)
+    arr = []
+    for e in events:
+        m = dict(fp)
+        m.update(e)
+        arr.append(m)
+    hdr = {"Authorization": s.headers.get("Authorization", ""),
+           "Accept": "application/json, text/plain, */*",
+           "Content-Type": "application/json;charset=UTF-8",
+           "User-Agent": _WB_DESKTOP_UA,
+           "X-Domain": _WB_DESKTOP_BASE, "X-Product": "SaaS",
+           "X-Request-ID": _derive_id(uid, "req") + str(now % 1000000),
+           "X-User-Id": uid}
+    try:
+        s2 = requests.Session()
+        s2.trust_env = False  # 绕系统代理
+        r = s2.post(_WB_DESKTOP_BASE + "/v2/report", json=arr, headers=hdr,
+                    timeout=20, verify=False)
+        if r.status_code == 200:
+            return True, "桌面链已上报"
+        return False, "上报 HTTP %s" % r.status_code
+    except Exception as e:
+        return False, "上报异常：%s" % str(e)[:60]
 
 
 # ───────────────────────── 统一接口 ─────────────────────────
