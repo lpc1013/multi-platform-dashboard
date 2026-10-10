@@ -300,14 +300,24 @@ def _loc_name(loc):
     return str(loc or "")
 
 
+def _phone_of(ent, at=""):
+    """账号手机号：优先凭据文件里的 phone，兑底 JWT preferred_username（续期预填用）。"""
+    p = str((ent or {}).get("phone") or "").strip()
+    if p:
+        return p
+    return str(_jwt_claim(at, "preferred_username") or "").strip()
+
+
 def read_account(name, ent):
     at = _ensure_token(ent)
+    phone = _phone_of(ent, at)
     if not at:
         return {"name": name, "ok": False,
                 "error": "凭据缺失或已失效，请重新运行 workbuddy_login.py 登录",
                 "level": "?", "energy": None, "streak_days": None,
                 "signed_today": False, "credits": {"remain": 0, "total": 0, "used": 0},
-                "packages": [], "buddy": {"state": "unknown"}}
+                "packages": [], "buddy": {"state": "unknown"},
+                "extra": {"phone": phone}}
 
     s = fs.sess(at)
     resource = fs.getj(s, "/v2/billing/meter/get-user-resource", "POST")
@@ -346,6 +356,7 @@ def read_account(name, ent):
         "signed_today": bool(sd.get("today_checked_in")),
         "credits": {"remain": remain, "total": total, "used": max(0, total - remain)},
         "packages": pkgs,
+        "extra": {"phone": phone},
         "buddy": {"state": state, "arrive_in_min": arrive_in,
                   "location": _loc_name(td.get("location")),
                   "daily_limit_reached": limit_reached,

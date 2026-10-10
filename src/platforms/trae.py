@@ -141,10 +141,13 @@ def _usage(ent):
 
 # ───────────────────────── 读取 ─────────────────────────
 def read_account(name, ent):
+    # 续期按钮预填用：Trae 落盘字段是 mobile；键名是 11 位手机号时兑底
+    _phone = str(ent.get("phone") or ent.get("mobile")
+                 or (name if name.isdigit() and len(name) == 11 else "") or "")
     empty = {"name": name, "ok": False, "error": None, "level": "?",
              "signed_today": False,
              "credits": {"remain": 0, "total": 0, "used": 0},
-             "packages": [], "extra": {}}
+             "packages": [], "extra": {"phone": _phone}}
     if not (ent.get("token") or "").strip():
         empty["error"] = "未配置 token（请点「从本地客户端导入」）"
         return empty
@@ -216,6 +219,7 @@ def read_account(name, ent):
         "credits": {"remain": round(remain), "total": round(total), "used": round(used)},
         "packages": packages,
         "extra": {
+            "phone": _phone,
             "can_sign_in": bool(enable and not signed),
             "today_reward": int(day_credits or extra_credits or 0),
             "user_id": ent.get("user_id"),

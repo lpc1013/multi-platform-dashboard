@@ -1144,6 +1144,12 @@ function render(){
       startRename(b);
     });
   });
+  $("#list").querySelectorAll("[data-renewc]").forEach(b=>{
+    b.addEventListener("click", ev=>{
+      ev.stopPropagation();
+      startRenew(b.dataset.renewc, b.dataset.phone, b.dataset.name);
+    });
+  });
 }
 
 function buddyTag(b){
@@ -1270,6 +1276,12 @@ function cardHTML(a, pid){
 
 function detailHTML(a, pid){
   const c = a.credits||{};
+  // 续期凭据：账号有手机号且该平台在添加弹窗里有手机号输入框时可用（预填手机号，只输验证码）
+  var renewBtnHTML = function(a, pid){
+    const ph = String((a.extra||{}).phone||"").trim();
+    if(!ph || !PHONE_INPUT[pid]) return "";
+    return `<button class="btn-ren2" data-renewc="${pid}" data-phone="${esc(ph)}" data-name="${esc(a.name)}" title="手机号已预填，只需输入验证码">🔄 续期凭据</button>`;
+  };
   const pkgs = (a.packages||[]).slice().sort((x,y)=>{
     if(x.perpetual) return 1;
     if(y.perpetual) return -1;
@@ -1453,6 +1465,7 @@ function detailHTML(a, pid){
       <div class="dtitle">💠 积分与到期 <span class="cnt">${groups.length?("共 "+pkgs.length+" 个积分包"):"本平台积分"}</span></div>
       ${pkgHTML}
       <div class="acts">${acts}
+        ${STATE.demo?'':renewBtnHTML(a,pid)}
         ${STATE.demo?'':`<button class="btn-ren2" data-ren="${pid}" data-name="${esc(a.name)}" data-key="${esc(a.key||a.name)}">✏ 改备注名</button>`}
       </div>
       ${STATE.demo?'':`<button class="btn-del" data-del="${pid}" data-name="${esc(a.name)}" data-key="${esc(a.key||a.name)}">🗑 删除此账号</button>`}
@@ -1569,7 +1582,25 @@ async function runOne(task, platform, name){
 }
 
 /* ── 添加账号弹窗 ── */
-function openAdd(){ $("#addMask").style.display="flex"; setTab("workbuddy"); clearAddMsg(); }
+const PHONE_INPUT = {workbuddy:"wbPhone",minimax:"mmPhone",baidu_dumate:"dmPhone",lingxi:"lxPhone",
+  trae:"trPhone",qoder:"qdPhone",zcode:"zcPhone",codearts:"caPhone",officeace:"oaPhone"};
+function openAdd(){
+  $("#addMask").style.display="flex"; setTab("workbuddy"); clearAddMsg();
+  document.querySelector("#addMask .mtitle").textContent = "➕ 添加账号";
+}
+function startRenew(pid, phone, name){
+  /* 续期 = 复用同平台短信登录，手机号预填；登录成功后服务端按手机号/身份原地覆盖旧凭据，备注名保留 */
+  $("#addMask").style.display="flex"; setTab(pid); clearAddMsg();
+  document.querySelector("#addMask .mtitle").textContent = "🔄 续期凭据 · " + name;
+  const inp = document.getElementById(PHONE_INPUT[pid]);
+  if(inp){ inp.value = phone; }
+  addMsg("🔄 续期「"+name+"」：手机号已预填 "+phone+"，直接点「发送验证码」，收码后「登录并保存」即可（自动覆盖该账号旧凭据，备注名保留）", true);
+  const pane = document.querySelector('.tabpane[data-pane="'+pid+'"]');
+  if(pane){
+    const nums = pane.querySelectorAll('input[inputmode="numeric"]');
+    if(nums.length > 1){ nums[nums.length-1].focus(); }  // 焦点直落验证码框
+  }
+}
 function closeAdd(){ $("#addMask").style.display="none"; }
 function setTab(pid){
   document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("on", t.dataset.tab===pid));

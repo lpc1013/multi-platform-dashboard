@@ -135,10 +135,12 @@ def _find_daily(tasks_data):
 
 # ───────────────────────── 读取 ─────────────────────────
 def read_account(name, ent):
+    # 续期按钮预填用：ent.phone 优先，键名本身是 11 位手机号时兑底（本地导入的条目常以手机号命名）
+    _phone = str(ent.get("phone") or (name if name.isdigit() and len(name) == 11 else "") or "")
     empty = {"name": name, "ok": False, "error": None, "level": "?",
              "signed_today": False,
              "credits": {"remain": 0, "total": 0, "used": 0},
-             "packages": [], "extra": {}}
+             "packages": [], "extra": {"phone": _phone}}
     if not (ent.get("wps_sid") or "").strip():
         empty["error"] = "未配置 wps_sid（请点「从本地客户端导入」）"
         return empty
@@ -218,6 +220,7 @@ def read_account(name, ent):
         "credits": {"remain": round(remain), "total": round(total), "used": round(used)},
         "packages": packages,
         "extra": {
+            "phone": _phone,
             "can_sign_in": can_sign,
             "today_day": today_day,
             "streak_days": len(days),

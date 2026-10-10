@@ -133,12 +133,18 @@ def load_accounts():
         if isinstance(data, dict):
             for k, v in data.items():
                 if isinstance(v, dict) and v.get("cookie"):
-                    accs[str(k)] = {"cookie": v["cookie"].strip()}
+                    ent = dict(v)                      # 透传 phone/user_id/source 等字段（续期预填要用）
+                    ent["cookie"] = v["cookie"].strip()
+                    ent.setdefault("_key", str(k))
+                    accs[str(k)] = ent
         elif isinstance(data, list):
             for i, it in enumerate(data):
                 if isinstance(it, dict) and it.get("cookie"):
                     nm = str(it.get("name") or "DuMate%d" % (i + 1))
-                    accs[nm] = {"cookie": it["cookie"].strip()}
+                    ent = dict(it)
+                    ent["cookie"] = it["cookie"].strip()
+                    ent.setdefault("_key", nm)
+                    accs[nm] = ent
     return accs
 
 
@@ -232,12 +238,14 @@ def _build_win_records(name, ds):
 
 
 def read_account(name, ent):
+    # 续期按钮预填用：ent.phone 优先，键名是 11 位手机号时兑底
+    _phone = str(ent.get("phone") or (name if name.isdigit() and len(name) == 11 else "") or "")
     cookie = (ent.get("cookie") or "").strip()
     if not cookie:
         return {"name": name, "ok": False, "error": "未配置 DuMate Cookie",
                 "level": "?", "signed_today": False,
                 "credits": {"remain": 0, "total": 0, "used": 0}, "packages": [],
-                "extra": {"remaining_draws": 0, "win_records": []}}
+                "extra": {"phone": _phone, "remaining_draws": 0, "win_records": []}}
     # 签到信息
     bi, bi_err = _login_bonus_info(cookie)
     signed = bool(bi and bi.get("has_issued"))
@@ -248,7 +256,7 @@ def read_account(name, ent):
                 "error": q_err or "积分查询失败",
                 "level": "?", "signed_today": signed,
                 "credits": {"remain": 0, "total": 0, "used": 0}, "packages": [],
-                "extra": {"remaining_draws": 0, "win_records": []}}
+                "extra": {"phone": _phone, "remaining_draws": 0, "win_records": []}}
     # 抽奖状态
     ds, _ = _draw_status(cookie)
     remaining = (ds or {}).get("remaining_draws", 0)
@@ -261,7 +269,8 @@ def read_account(name, ent):
         "signed_today": signed,
         "credits": {"remain": q["left"], "total": q["total"], "used": q["used"]},
         "packages": q["packages"],
-        "extra": {"remaining_draws": remaining,
+        "extra": {"phone": _phone,
+                  "remaining_draws": remaining,
                   "sign_in_days": (bi or {}).get("sign_in_days", []),
                   "win_records": win_records,
                   "last_draw": last_draw},

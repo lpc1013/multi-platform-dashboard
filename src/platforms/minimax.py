@@ -996,7 +996,8 @@ def read_account(name, ent):
                 "key": ent.get("_key") or name,
                 "level": "?", "signed_today": False,
                 "credits": {"remain": 0, "total": 0, "used": 0}, "packages": [],
-                "extra": {"exp_days": round((exp - time.time()) / 86400, 1) if exp else None}}
+                "extra": {"phone": ent.get("phone"),
+                          "exp_days": round((exp - time.time()) / 86400, 1) if exp else None}}
     if not api_succeeded(sb):
         br = (sb or {}).get("base_resp") or {}
         msg = (str((sb or {}).get("message") or (sb or {}).get("msg")
@@ -1013,7 +1014,8 @@ def read_account(name, ent):
                 "error": "登录态查询失败（HTTP %s）：%s" % (sc, msg),
                 "level": "?", "signed_today": False,
                 "credits": {"remain": 0, "total": 0, "used": 0}, "packages": [],
-                "extra": {"exp_days": round((exp - time.time()) / 86400, 1) if exp else None}}
+                "extra": {"phone": ent.get("phone"),
+                          "exp_days": round((exp - time.time()) / 86400, 1) if exp else None}}
     days = (((sb or {}).get("data") or {}).get("days")) or []
     today = next((d for d in days if d.get("is_today")), None)
     signed = bool(today and today.get("status") == 3)

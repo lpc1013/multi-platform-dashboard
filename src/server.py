@@ -398,6 +398,7 @@ def _codearts_oauth_save(name, grant):
            "dpop_pub_jwk": (grant or {}).get("dpop_pub_jwk") or "",
            "port": str((grant or {}).get("port") or ""),
            "user_id": uid, "user_name": uname,
+           "phone": (grant or {}).get("phone") or "",
            "via_oauth": True, "source": "看板短信登录（自建会话·可自动续期）"}
     ideal = (name or uname or ("CodeArts·" + (uid or rec["ak"])[:4]))
     use = _save_cred("codearts", rec, ideal)
@@ -981,7 +982,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         use = _save_cred("zcode",
                                          {"token": tok,
                                           "secret": (body.get("secret") or "").strip(),
-                                          "user_id": (body.get("user_id") or "").strip()}, name)
+                                          "user_id": (body.get("user_id") or "").strip(),
+                                          "phone": (body.get("phone") or "").strip()}, name)
                         _invalidate_state()
                         self._send(200, {"ok": True, "msg": "已保存 %s" % use, "name": use})
                 elif platform == "officeace":

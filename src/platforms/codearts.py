@@ -451,10 +451,11 @@ def fetch_credits(ent):
 
 
 def read_account(name, ent):
+    _phone = str(ent.get("phone") or "")   # 续期按钮预填用（短信登录时落盘）
     empty = {"name": name, "ok": False, "error": None, "level": "CodeArts Agent",
              "signed_today": False,
              "credits": {"remain": 0, "total": 0, "used": 0},
-             "packages": [], "extra": {}}
+             "packages": [], "extra": {"phone": _phone}}
     if not (ent.get("ak") and ent.get("sk") and ent.get("sts_token")):
         empty["error"] = "凭据不完整（缺 AK/SK/STS），请点「从本地客户端导入」"
         return empty
@@ -464,8 +465,8 @@ def read_account(name, ent):
         empty["error"] = ("CodeArts 凭证已于 %s 过期且自动续期失败。"
                           "看板自建会话请重新短信登录；客户端会话请打开客户端续期。"
                           % (ent.get("expires_at") or "")[:19])
-        empty["extra"] = {"expires_at": ent.get("expires_at"), "expired": True,
-                          "can_refresh": bool(ent.get("refresh_token"))}
+        empty["extra"] = {"phone": _phone, "expires_at": ent.get("expires_at"),
+                          "expired": True, "can_refresh": bool(ent.get("refresh_token"))}
         return empty
     exp = expired(ent)   # 续期后可能已更新
     st, j = _req(ent, DELIVERY_PATH, query=[("channel", CHANNEL)])
@@ -476,11 +477,12 @@ def read_account(name, ent):
         if st in (401, 403) or (isinstance(j, dict) and "APIG." in str(j.get("error_code", ""))):
             empty["error"] = ("华为网关鉴权失败且续期无效。看板自建会话请重新短信登录；"
                               "客户端会话请打开 CodeArts Agent 客户端续期。")
-            empty["extra"] = {"expires_at": ent.get("expires_at"), "expired": expired(ent)}
+            empty["extra"] = {"phone": _phone, "expires_at": ent.get("expires_at"),
+                              "expired": expired(ent)}
             return empty
     if st != 200:
         empty["error"] = "福利列表查询失败（HTTP %s）：%s" % (st, str(j)[:120])
-        empty["extra"] = {"expires_at": ent.get("expires_at"), "expired": exp}
+        empty["extra"] = {"phone": _phone, "expires_at": ent.get("expires_at"), "expired": exp}
         return empty
 
     items = _items(j)
@@ -518,6 +520,7 @@ def read_account(name, ent):
         credits = {"remain": 0, "total": 0, "used": 0}
 
     extra = {
+        "phone": _phone,
         "can_sign_in": daily_claimable,
         "today_reward": amount,
         "today_kind": "积分",

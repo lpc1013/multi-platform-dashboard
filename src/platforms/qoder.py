@@ -162,10 +162,12 @@ def _benefit_of(c):
 
 # ───────────────────────── 读取 ─────────────────────────
 def read_account(name, ent):
+    # 续期按钮预填用：ent.phone 优先，键名是 11 位手机号时兑底
+    _phone = str(ent.get("phone") or (name if name.isdigit() and len(name) == 11 else "") or "")
     empty = {"name": name, "ok": False, "error": None, "level": "Qoder",
              "signed_today": False,
              "credits": {"remain": 0, "total": 0, "used": 0},
-             "packages": [], "extra": {}}
+             "packages": [], "extra": {"phone": _phone}}
     token = (ent.get("token") or "").strip()
     if not token:
         empty["error"] = "未配置 token（请点「从本地客户端导入」）"
@@ -217,7 +219,7 @@ def read_account(name, ent):
             "campaign_count": len(camps.get("campaigns") or []),
             "claimable_count": len(avail),
             "user_id": camps.get("uid"),
-            "phone": ent.get("phone"),
+            "phone": _phone,
             "expires_at": ent.get("expires_at"),
         },
     }

@@ -131,10 +131,12 @@ def load_accounts():
 
 # ───────────────────────── 读取 ─────────────────────────
 def read_account(name, ent):
+    # 续期按钮预填用：ZCode 凭据无手机号，键名是 11 位手机号时兑底（用户以手机号备注命名）
+    _phone = str(ent.get("phone") or (name if name.isdigit() and len(name) == 11 else "") or "")
     empty = {"name": name, "ok": False, "error": None, "level": "ZCode",
              "signed_today": False,
              "credits": {"remain": 0, "total": 0, "used": 0},
-             "packages": [], "extra": {}}
+             "packages": [], "extra": {"phone": _phone}}
     token = (ent.get("token") or "").strip()
     if not token:
         empty["error"] = "未配置 token（请点「从本地客户端导入」）"
@@ -168,6 +170,7 @@ def read_account(name, ent):
 
     today = claimable[0] if claimable else None
     extra = {
+        "phone": _phone,
         "can_sign_in": bool(claimable) or bool(deliveries),
         "plan_count": len(plans),
         "claimable_count": len(claimable),
