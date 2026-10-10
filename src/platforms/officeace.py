@@ -540,10 +540,12 @@ def _parse_subscription(d):
 
 
 def read_account(name, ent):
+    # 续期按钮预填用：ent.phone 优先（短信登录时落盘），键名是 11 位手机号时兑底
+    _phone = str(ent.get("phone") or (name if name.isdigit() and len(name) == 11 else "") or "")
     empty = {"name": name, "ok": False, "error": None, "level": "OfficeACE",
              "signed_today": False,
              "credits": {"remain": 0, "total": 0, "used": 0},
-             "packages": [], "extra": {}}
+             "packages": [], "extra": {"phone": _phone}}
     if not (ent.get("ak") and ent.get("sk") and ent.get("sts_token")):
         empty["error"] = "凭据不完整（缺 AK/SK/STS），请点「从本地客户端导入」"
         return empty
@@ -556,7 +558,8 @@ def read_account(name, ent):
         if exp is True:
             empty["error"] = ("OfficeACE 凭据已于 %s 过期且自动续期失败：%s"
                               % ((ent.get("expires_at") or "")[:19], _m))
-            empty["extra"] = {"expires_at": ent.get("expires_at"), "expired": True}
+            empty["extra"] = {"phone": _phone, "expires_at": ent.get("expires_at"),
+                              "expired": True}
             return empty
     st, j = _req(ent, SUB_PATH)
     if st in (401, 403) or (isinstance(j, dict) and "APIG." in str(j.get("error_code", ""))):
@@ -567,11 +570,12 @@ def read_account(name, ent):
         if st in (401, 403) or (isinstance(j, dict) and "APIG." in str(j.get("error_code", ""))):
             empty["error"] = ("华为网关鉴权失败且续期无效：%s（若持续失败请打开 OfficeACE "
                               "客户端重新登录）" % str(j)[:110])
-            empty["extra"] = {"expires_at": ent.get("expires_at"), "expired": exp}
+            empty["extra"] = {"phone": _phone, "expires_at": ent.get("expires_at"),
+                              "expired": exp}
             return empty
     if st != 200:
         empty["error"] = "订阅查询失败（HTTP %s）：%s" % (st, str(j)[:120])
-        empty["extra"] = {"expires_at": ent.get("expires_at"), "expired": exp}
+        empty["extra"] = {"phone": _phone, "expires_at": ent.get("expires_at"), "expired": exp}
         return empty
 
     d = (j.get("data") if isinstance(j, dict) else None) or j or {}
@@ -603,6 +607,7 @@ def read_account(name, ent):
                     "used": round(info["used"])},
         "packages": info["packages"],
         "extra": {
+            "phone": _phone,
             "can_sign_in": not claimed,
             "today_reward": 1000,
             "today_kind": "积分",

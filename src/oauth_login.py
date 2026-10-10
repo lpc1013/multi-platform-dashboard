@@ -4353,6 +4353,7 @@ def _run_officeace_sms_job(job, phone, name, on_success):
                     if (j2 or {}).get("success") and uid:
                         grant = {"user_id": str(uid),
                                  "user_name": (j2 or {}).get("userName") or "",
+                                 "phone": phone,
                                  "via_oauth": True}
                         try:
                             ok2, nm, msg2 = on_success(grant)

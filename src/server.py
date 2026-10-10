@@ -433,6 +433,7 @@ def _officeace_login_save(name, grant):
     """OfficeACE 登录落盘：App 本地 API 已交换并持久化新凭据，这里存身份 + 顺手重导入。"""
     uid = str((grant or {}).get("user_id") or "")
     rec = {"user_id": uid, "user_name": (grant or {}).get("user_name") or "",
+           "phone": (grant or {}).get("phone") or "",
            "via_oauth": True, "source": "看板短信登录（App 本地 API 交换，App 已存新凭据）"}
     ideal = (name or (grant or {}).get("user_name")
              or ("OfficeACE·" + (uid or "0000")[-4:]))
