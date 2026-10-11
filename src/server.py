@@ -148,7 +148,10 @@ IDENT_FIELDS = {
     "qoder": ("user_id", "token"),
     "zcode": ("user_id", "token"),
     "officeace": ("ak", "user_id"),
-    "codearts": ("user_id", "ak"),   # user_id=华为云 domain_id（续期换 AK 后身份不变）
+    # ⚠ phone 兜底（2026-10-12）：caller-identity 取 domain_id 曾因解析错位永远为空，
+    #   身份回退 ak，而 STS 每次续期都换新 AK → 同一账号续期后另开新卡。
+    #   phone 是登录时落盘的稳定字段，排在 ak 之前挡住这种情况。
+    "codearts": ("user_id", "phone", "ak"),   # user_id=华为云 domain_id（续期换 AK 后身份不变）
 }
 
 # 「粘贴添加」时若用户没填备注名，用这个前缀 + 手机号/ID 尾号 自动起名，
@@ -368,7 +371,12 @@ def _oauth_save(platform, name, grant):
 
 
 def _codearts_identity(ak, sk, sts):
-    """用换到的临时凭据签 GET /v5/caller-identity，取稳定身份（domain_id）。"""
+    """用换到的临时凭据签 GET /v5/caller-identity，取稳定身份（domain_id）。
+    ⚠ 2026-10-12 实测响应为**扁平三键**：{"account_id","principal_urn","principal_id"}，
+    没有 "identity" 包裹层（旧解析按 j["identity"]["domain_id"] 取值 → 永远拿空 →
+    身份回退 ak → 每次续期换新 AK 就另开新卡，两张 CodeArts 卡片即此根因）。
+    domain_id = account_id；user_name 从 principal_urn 尾段取（iam::…:user:<name>）。
+    identity 包裹层解析保留做兼容。"""
     try:
         import requests as _rq
         import platforms.codearts as cap
@@ -376,8 +384,13 @@ def _codearts_identity(ak, sk, sts):
         hdr = cap.sign_headers(ak, sk, sts, "GET", url)
         j = _rq.get(url, headers=hdr, timeout=15, verify=False).json()
         ident = (j or {}).get("identity") or {}
-        return (str(ident.get("domain_id") or ident.get("id") or ""),
-                str(ident.get("user_name") or ident.get("name") or ""))
+        uid = str(ident.get("domain_id") or ident.get("id")
+                  or (j or {}).get("account_id") or "")
+        uname = str(ident.get("user_name") or ident.get("name") or "")
+        if not uname:
+            urn = str((j or {}).get("principal_urn") or "")
+            uname = urn.rsplit(":", 1)[-1] if ":" in urn else ""
+        return uid, uname
     except Exception:
         return "", ""
 
