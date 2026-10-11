@@ -386,10 +386,67 @@ def _expiring_soon(ent, margin_s=900):
     return (t - datetime.now(timezone.utc)).total_seconds() <= margin_s
 
 
+def _caller_identity(ent):
+    """续期后回填稳定身份。⚠ 实测 /v5/caller-identity 响应是**扁平三键**
+    {account_id, principal_urn, principal_id}——没有 identity 包裹层
+    （2026-10-12「续期另开新卡」排障实证，解析别再按猜测写）。"""
+    url = "https://sts.cn-north-4.myhuaweicloud.com/v5/caller-identity"
+    try:
+        hdr = sign_headers(ent["ak"], ent["sk"], ent["sts_token"], "GET", url)
+        r = requests.get(url, headers=hdr, timeout=15, verify=False,
+                         proxies={"http": None, "https": None})
+        j = r.json() if r.content else {}
+        urn = str(j.get("principal_urn") or "")
+        return str(j.get("account_id") or ""), urn.rsplit("/", 1)[-1]
+    except Exception:
+        return "", ""
+
+
+_SILENT_STATE = {"t": 0.0, "msg": ""}
+
+
+def _silent_renew_via_browser(name, ent):
+    """无 refresh_token 材料时的保活：复用持久浏览器会话静默续登。
+    ⚠ 5 分钟冷却——失败不反复拉起浏览器；profile 不存在（从未短信登录过）直接跳过。
+    返回凭据当前是否可用。"""
+    now = time.time()
+    if now - _SILENT_STATE["t"] < 300:
+        return expired(ent) is not True
+    _SILENT_STATE["t"] = now
+    try:
+        import oauth_login
+    except Exception as e:
+        _SILENT_STATE["msg"] = "oauth_login 加载失败：%s" % str(e)[:80]
+        return expired(ent) is not True
+
+    def _save(grant):
+        for k in ("ak", "sk", "sts_token", "expires_at", "refresh_token",
+                  "code_verifier", "dpop_priv_pem", "dpop_pub_jwk"):
+            if grant.get(k):
+                ent[k] = grant[k]
+        uid, uname = _caller_identity(ent)
+        if uid:
+            ent["user_id"] = uid
+        if uname and not (ent.get("user_name") or "").strip():
+            ent["user_name"] = uname
+        _persist_entry(name, ent)
+        return True, "已静默续期至 %s" % (ent.get("expires_at") or "")[:19]
+
+    try:
+        ok, msg = oauth_login.codearts_silent_renew(_save)
+    except Exception as e:
+        ok, msg = False, "静默续登异常：%s" % str(e)[:120]
+    _SILENT_STATE["msg"] = msg
+    return bool(ok)
+
+
 def _refresh_if_needed(name, ent):
     """临期（≤15 分钟）即预刷新保活（不等真过期，避免链路断档）。
-       返回凭据当前是否可用：刷新成功/票还活着 → True。"""
+    无 refresh_token 材料（OldLogin 票据响应里没有）→ 改用持久浏览器会话静默续登。
+    返回凭据当前是否可用：刷新成功/票还活着 → True。"""
     if not (ent.get("refresh_token") or "").strip():
+        if expired(ent) is True or _expiring_soon(ent) is True:
+            return _silent_renew_via_browser(name, ent)
         return expired(ent) is not True
     if expired(ent) is True or _expiring_soon(ent) is True:
         ok, _msg = try_refresh(name, ent)
@@ -581,9 +638,11 @@ def run_task(name, ent, task_key):
     if not (ent.get("ak") and ent.get("sk") and ent.get("sts_token")):
         return {"ok": False, "msg": "凭据不完整，请先「从本地客户端导入」"}
     if expired(ent) is True and not _refresh_if_needed(name, ent):
-        return {"ok": False, "msg": ("CodeArts 凭证已于 %s 过期且自动续期失败；"
-                                     "看板自建会话请重新短信登录，客户端会话请打开客户端续期"
-                                     % (ent.get("expires_at") or "")[:19])}
+        extra = _SILENT_STATE.get("msg") or ""
+        return {"ok": False, "msg": ("CodeArts 凭证已于 %s 过期且自动续期失败%s；"
+                                     "请点「续期凭据」重新短信登录一次（会重建浏览器会话）"
+                                     % ((ent.get("expires_at") or "")[:19],
+                                        ("（%s）" % extra) if extra else ""))}
 
     st, j = _req(ent, DELIVERY_PATH, query=[("channel", CHANNEL)])
     if st in (401, 403) and ent.get("refresh_token") and try_refresh(name, ent)[0]:

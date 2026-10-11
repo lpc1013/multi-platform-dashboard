@@ -3546,6 +3546,9 @@ _CODEARTS_CLIENT_ID = "codearts-agent"     # = product.json urlProtocol（= env.
 _CODEARTS_PLUGIN = "snap_AIIDE"
 _CODEARTS_PLUGIN_VER = "5.4.2"             # huaweicloud.authentication/package.json
 _CODEARTS_SNAP = "https://snap-access.cn-north-4.myhuaweicloud.com/snap-manager"
+# 持久浏览器 profile：登录态 cookie 落盘 → 之后 run_task 可静默续登（无需人工）
+_CODEARTS_PROFILE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     ".codearts_profile")
 
 # 授权确认页代点文案（归一化匹配，命中最内层；「取消/拒绝/不同意」等否定项靠**全等**匹配天然排除）
 _CODEARTS_CONSENT_TEXTS = ["同意并授权", "授权并登录", "授权并继续", "同意授权", "一键授权",
@@ -3716,6 +3719,53 @@ def _codearts_extract_credentials(j):
     return ak, sk, sts, exp
 
 
+def _codearts_secret_exchange(tid, sec, verifier, dpop, port, phone,
+                              job=None, sleep_fn=None):
+    """OldLogin：portal 只回 secret → 照客户端轮询 ticket 接口换 STS 凭据。
+    ⚠ 轮询语义照抄客户端 plugin.js（2026-10-12「无效ticketId」实证修复）：
+    doGetAuthenticationTaskByTicketId 是 setInterval 轮询，10 次、失败间隔 6s——
+    票据在 snap 后端是**异步登记**的，portal 放行与后端可查之间存在秒级窗口。
+    返回 (grant, msg)。grant=None 表示失败。sms 流程与静默续登共用。"""
+    u = "%s/v1/login/ticket?ticket_id=%s&secret=%s" % (_CODEARTS_SNAP, tid, sec)
+    _codearts_debug("oldlogin", "ticket 接口请求 tid=%s…" % str(tid)[:12])
+    grant, st, j = None, 0, {}
+    for attempt in range(1, 11):
+        try:
+            rr = requests.get(u, headers={
+                "Content-Type": "application/json;charset=UTF-8",
+                "plugin-name": _CODEARTS_PLUGIN,
+                "plugin-version": _CODEARTS_PLUGIN_VER,
+            }, timeout=30)
+            st = rr.status_code
+            j = rr.json() if rr.content else {}
+        except Exception as e:
+            st, j = 0, {"__err__": str(e)[:180]}
+        ak, sk, sts, exp = _codearts_extract_credentials(j)
+        _codearts_debug("oldlogin", "#%d/10 HTTP %s user=%s expires=%s keys=%s"
+                        % (attempt, st, str((j or {}).get("user_name"))[:24],
+                           (exp or "")[:19],
+                           ",".join(sorted((j or {}).keys()))[:120]))
+        if st == 200 and ak and sk and sts:
+            grant = {"ak": ak, "sk": sk, "sts_token": sts, "expires_at": exp,
+                     "refresh_token": str(_trae_find_token(
+                         j, ("refresh_token", "refreshToken")) or ""),
+                     "code_verifier": verifier,
+                     "dpop_priv_pem": dpop["priv_pem"],
+                     "dpop_pub_jwk": json.dumps(dpop["jwk"]),
+                     "port": port, "phone": phone}
+            break
+        if attempt < 10:
+            if job is not None and attempt == 1:
+                job["result"] = ("票据同步中（portal 已放行、后端登记稍延迟），"
+                                 "自动重试中…")
+            try:
+                (sleep_fn or time.sleep)(6)
+            except Exception:
+                time.sleep(6)
+    return grant, ("凭据换取失败（HTTP %s）：%s（已按客户端语义重试 10 次，票据始终未登记）"
+                   % (st, str(j)[:160]))
+
+
 class _CodeArtsCBHandler(http.server.BaseHTTPRequestHandler):
     """照抄客户端回调服务器（plugin.js 实证 2026-10-09）：
     ① ?code=..  → NewIamLogin：记 code → 307 portal/login?login_succeed=true
@@ -3818,10 +3868,13 @@ def _run_codearts_sms_job(job, phone, name, on_success):
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False, args=_OFFSCREEN_ARGS)
-            ctx = browser.new_context(locale="zh-CN",
-                                      viewport={"width": 520, "height": 800})
-            page = ctx.new_page()
+            # 持久 profile：登录态 cookie 落盘，之后 run_task 可静默续登
+            os.makedirs(_CODEARTS_PROFILE_DIR, exist_ok=True)
+            ctx = p.chromium.launch_persistent_context(
+                _CODEARTS_PROFILE_DIR, headless=False, args=_OFFSCREEN_ARGS,
+                locale="zh-CN", viewport={"width": 520, "height": 800})
+            browser = ctx   # persistent ctx 自身可 close，收尾统一走 browser.close()
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
             job["status"] = "opening"
             job["result"] = "已打开华为云登录窗口，正在进入手机号登录…"
             page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
@@ -3997,51 +4050,15 @@ def _run_codearts_sms_job(job, phone, name, on_success):
                         job.update(status="done", finished=True, ok=False,
                                    result="换token失败（HTTP %s）：%s" % (st, str(j)[:180]))
                     break
-                # ④' OldLogin：portal 只回 secret（无 code）→ 照客户端用 ticket 接口换凭据
-                #   GET snap-manager/v1/login/ticket?ticket_id=&secret=（含 refresh_token）
+                # ④' OldLogin：portal 只回 secret（无 code）→ ticket 接口换凭据
+                #   （轮询语义在 _codearts_secret_exchange 内，与静默续登共用）
                 sec = result.get("secret") or ""
                 if sec and not job.get("finished"):
-                    tid = result.get("ticket_id") or ticket_id
-                    u = "%s/v1/login/ticket?ticket_id=%s&secret=%s" % (_CODEARTS_SNAP, tid, sec)
                     job["result"] = "已收到授权回执，正在换取临时凭据…"
-                    # ⚠ 照抄客户端 plugin.js 的轮询语义（2026-10-12「无效ticketId」实证修复）：
-                    # 客户端 doGetAuthenticationTaskByTicketId 是 setInterval 轮询，
-                    # MAX_TIMES_OF_TRYING_TO_GET_LOGIN_STATE=10 次、失败间隔
-                    # INTERVAL_WHEN_LAST_TIME_FAILED=6s。票据在 snap 后端是**异步登记**的：
-                    # portal 放行（回 redirect+secret）与 snap 后端可查之间存在秒级窗口，
-                    # 一次性调用会撞上 TM.00001001「无效ticketId」。逐次重试直到成功或用尽。
-                    grant = None
-                    st, j = 0, {}
-                    for attempt in range(1, 11):
-                        try:
-                            rr = requests.get(u, headers={
-                                "Content-Type": "application/json;charset=UTF-8",
-                                "plugin-name": _CODEARTS_PLUGIN,
-                                "plugin-version": _CODEARTS_PLUGIN_VER,
-                            }, timeout=30)
-                            st = rr.status_code
-                            j = rr.json() if rr.content else {}
-                        except Exception as e:
-                            st, j = 0, {"__err__": str(e)[:180]}
-                        ak, sk, sts, exp = _codearts_extract_credentials(j)
-                        _codearts_debug("oldlogin", "#%d/10 HTTP %s user=%s expires=%s keys=%s"
-                                        % (attempt, st, str((j or {}).get("user_name"))[:24],
-                                           (exp or "")[:19],
-                                           ",".join(sorted((j or {}).keys()))[:120]))
-                        if st == 200 and ak and sk and sts:
-                            grant = {"ak": ak, "sk": sk, "sts_token": sts, "expires_at": exp,
-                                     "refresh_token": str(_trae_find_token(
-                                         j, ("refresh_token", "refreshToken")) or ""),
-                                     "code_verifier": verifier,
-                                     "dpop_priv_pem": dpop["priv_pem"],
-                                     "dpop_pub_jwk": json.dumps(dpop["jwk"]),
-                                     "port": port, "phone": phone}
-                            break
-                        if attempt < 10:
-                            if attempt == 1:
-                                job["result"] = ("票据同步中（portal 已放行、后端登记稍延迟），"
-                                                 "自动重试中…")
-                            page.wait_for_timeout(6000)
+                    grant, msg2 = _codearts_secret_exchange(
+                        result.get("ticket_id") or ticket_id, sec,
+                        verifier, dpop, port, phone, job=job,
+                        sleep_fn=page.wait_for_timeout)
                     if grant:
                         try:
                             ok2, nm, msg2 = on_success(grant)
@@ -4050,10 +4067,7 @@ def _run_codearts_sms_job(job, phone, name, on_success):
                         job.update(status="done", finished=True, ok=bool(ok2),
                                    result=msg2 or ("已保存 %s" % nm), name=nm or "")
                     else:
-                        job.update(status="done", finished=True, ok=False,
-                                   result="凭据换取失败（HTTP %s）：%s"
-                                          "（已按客户端语义重试 10 次，票据始终未登记）"
-                                          % (st, str(j)[:160]))
+                        job.update(status="done", finished=True, ok=False, result=msg2)
                     break
                 page.wait_for_timeout(700)
             if not ok_saved and not job.get("finished"):
@@ -4072,6 +4086,122 @@ def _run_codearts_sms_job(job, phone, name, on_success):
                 browser.close()
         except Exception:
             pass
+
+
+def codearts_silent_renew(on_success):
+    """CodeArts 静默续登（无 refresh_token 材料时的保活替代路径）。
+
+    原理：短信登录用持久 profile（.codearts_profile/），登录态 cookie 落盘。
+    续期时重开 authorize URL——会话仍活着则 portal 自动 302 回调（无需人工），
+    走 OldLogin secret → ticket 换新 STS 凭据。会话失效（被送回登录页）→
+    立即放弃并说明，绝不弹人工流程。返回 (ok, msg)。
+    on_success(grant) → (ok, msg)。"""
+    if not os.path.isdir(_CODEARTS_PROFILE_DIR) or not os.listdir(_CODEARTS_PROFILE_DIR):
+        return False, "无浏览器会话存档，请先短信登录一次"
+    verifier, challenge = _codearts_pkce()
+    dpop = _codearts_dpop_keypair()
+    ticket_id = secrets.token_hex(16)
+    srv, port = None, 0
+    for _ in range(6):
+        try:
+            s = http.server.HTTPServer(("127.0.0.1", 0), _CodeArtsCBHandler)
+            p_ = s.server_address[1]
+            if p_ >= 10000:
+                srv, port = s, p_
+                break
+            s.close()
+        except OSError:
+            continue
+    if srv is None:
+        return False, "本地回调端口分配失败"
+    _CodeArtsCBHandler.result = {}
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    auth_url = ("%s/authorize?theme=2&locale=zh-cn&uri_scheme=%s&client_id=%s"
+                "&port=%d&code_challenge=%s&code_challenge_method=S256"
+                "&ticket_id=%s&plugin-name=%s&plugin-version=%s"
+                % (_CODEARTS_PORTAL, _CODEARTS_CLIENT_ID, _CODEARTS_CLIENT_ID,
+                   port, challenge, ticket_id, _CODEARTS_PLUGIN, _CODEARTS_PLUGIN_VER))
+    _codearts_debug("silent", "静默续登开始 ticket_id=%s port=%d" % (ticket_id, port))
+    ok, msg = False, "静默续登超时（40 秒内未见回调，会话可能已失效）"
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            ctx = p.chromium.launch_persistent_context(
+                _CODEARTS_PROFILE_DIR, headless=False, args=_OFFSCREEN_ARGS,
+                locale="zh-CN", viewport={"width": 520, "height": 800})
+            try:
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
+                _codearts_debug("silent", "已打开 authorize url=%s" % (page.url or "")[:150])
+                deadline = time.time() + 40
+                while time.time() < deadline:
+                    url = ""
+                    try:
+                        url = page.url or ""
+                    except Exception:
+                        pass
+                    stg = _codearts_stage(url, port)
+                    if stg == "login":
+                        _codearts_debug("silent", "会话已失效（回到登录页）url=%s" % url[:150])
+                        msg = "浏览器登录会话已失效，请手动短信登录一次以重建"
+                        break
+                    if stg == "portal":
+                        # 会话活着但要求再授权 → 代点（与短信流程同款）
+                        _codearts_click_consent(page)
+                    res = _CodeArtsCBHandler.result
+                    sec, code = res.get("secret") or "", res.get("code") or ""
+                    if sec:
+                        grant, msg = _codearts_secret_exchange(
+                            res.get("ticket_id") or ticket_id, sec,
+                            verifier, dpop, port, "")
+                        if grant:
+                            try:
+                                ok, msg = on_success(grant)
+                            except Exception as e:
+                                ok, msg = False, "保存登录态异常：%s" % str(e)[:150]
+                        _codearts_debug("silent", "结果 ok=%s msg=%s" % (ok, str(msg)[:120]))
+                        break
+                    if code:
+                        _codearts_debug("silent", "回调带 code（NewIamLogin），直接换 token")
+                        st, j = _codearts_token({
+                            "client_id": _CODEARTS_CLIENT_ID, "code": code,
+                            "code_verifier": verifier,
+                            "grant_type": "authorization_code",
+                            "redirect_uri": "http://127.0.0.1:%d/oauth/callback" % port,
+                        }, dpop)
+                        ak, sk, sts, exp = _codearts_extract_credentials(j)
+                        if st == 200 and ak and sk and sts:
+                            grant = {"ak": ak, "sk": sk, "sts_token": sts, "expires_at": exp,
+                                     "refresh_token": str(_trae_find_token(
+                                         j, ("refresh_token", "refreshToken")) or ""),
+                                     "code_verifier": verifier,
+                                     "dpop_priv_pem": dpop["priv_pem"],
+                                     "dpop_pub_jwk": json.dumps(dpop["jwk"]),
+                                     "port": port, "phone": ""}
+                            try:
+                                ok, msg = on_success(grant)
+                            except Exception as e:
+                                ok, msg = False, "保存登录态异常：%s" % str(e)[:150]
+                        else:
+                            msg = "换token失败（HTTP %s）：%s" % (st, str(j)[:160])
+                        _codearts_debug("silent", "结果 ok=%s msg=%s" % (ok, str(msg)[:120]))
+                        break
+                    page.wait_for_timeout(800)
+            finally:
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
+    except Exception as e:
+        ok, msg = False, "静默续登异常：%s" % str(e)[:160]
+        _codearts_debug("silent", "异常 %s" % str(e)[:200])
+    finally:
+        try:
+            srv.shutdown()
+        except Exception:
+            pass
+    return ok, msg
 
 
 # ────────────────────────────── OfficeACE ──────────────────────────────

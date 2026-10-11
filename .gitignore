@@ -45,3 +45,4 @@ backend_err.log
 .DS_Store
 Thumbs.db
 desktop.ini
+.codearts_profile/
