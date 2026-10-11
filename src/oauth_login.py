@@ -3555,13 +3555,18 @@ _CODEARTS_DEBUG_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                    "codearts_oauth_debug.log")
 
 
+_CODEARTS_DEBUG_LOCK = threading.Lock()
+
+
 def _codearts_debug(tag, msg):
     """CodeArts OAuth 关键事件落盘。控制台 stdout 随窗口丢失，文件不会——
-    授权后拿不到令牌时（如 2026-10-09 卡「已提交验证码」），这是唯一能回放的证据。"""
+    授权后拿不到令牌时（如 2026-10-09 卡「已提交验证码」），这是唯一能回放的证据。
+    ⚠ 回调服务器线程与轮询线程都会写这里，必须持锁（否则行内交叉断行，2026-10-12 实证）。"""
     try:
-        with open(_CODEARTS_DEBUG_LOG, "a", encoding="utf-8") as fh:
-            fh.write("%s [%s] %s\n" % (time.strftime("%m-%d %H:%M:%S"), tag,
-                                       str(msg)[:400].replace("\n", " ")))
+        with _CODEARTS_DEBUG_LOCK:
+            with open(_CODEARTS_DEBUG_LOG, "a", encoding="utf-8") as fh:
+                fh.write("%s [%s] %s\n" % (time.strftime("%m-%d %H:%M:%S"), tag,
+                                           str(msg)[:400].replace("\n", " ")))
     except Exception:
         pass
 
@@ -3804,6 +3809,9 @@ def _run_codearts_sms_job(job, phone, name, on_success):
                 "&ticket_id=%s&plugin-name=%s&plugin-version=%s"
                 % (_CODEARTS_PORTAL, _CODEARTS_CLIENT_ID, _CODEARTS_CLIENT_ID,
                    port, challenge, ticket_id, _CODEARTS_PLUGIN, _CODEARTS_PLUGIN_VER))
+    # 记录本地生成的 ticket_id：回调 redirect 里回传的应与此一致，
+    # 不一致 = portal 侧重开了新票（2026-10-12「无效ticketId」排障新增取证点）
+    _codearts_debug("open", "authorize ticket_id=%s port=%d" % (ticket_id, port))
 
     browser = None
     ok_saved = False
@@ -3995,32 +4003,46 @@ def _run_codearts_sms_job(job, phone, name, on_success):
                 if sec and not job.get("finished"):
                     tid = result.get("ticket_id") or ticket_id
                     u = "%s/v1/login/ticket?ticket_id=%s&secret=%s" % (_CODEARTS_SNAP, tid, sec)
-                    _codearts_debug("oldlogin", "ticket 接口请求 tid=%s…" % tid[:12])
                     job["result"] = "已收到授权回执，正在换取临时凭据…"
+                    # ⚠ 照抄客户端 plugin.js 的轮询语义（2026-10-12「无效ticketId」实证修复）：
+                    # 客户端 doGetAuthenticationTaskByTicketId 是 setInterval 轮询，
+                    # MAX_TIMES_OF_TRYING_TO_GET_LOGIN_STATE=10 次、失败间隔
+                    # INTERVAL_WHEN_LAST_TIME_FAILED=6s。票据在 snap 后端是**异步登记**的：
+                    # portal 放行（回 redirect+secret）与 snap 后端可查之间存在秒级窗口，
+                    # 一次性调用会撞上 TM.00001001「无效ticketId」。逐次重试直到成功或用尽。
+                    grant = None
                     st, j = 0, {}
-                    try:
-                        rr = requests.get(u, headers={
-                            "Content-Type": "application/json;charset=UTF-8",
-                            "plugin-name": _CODEARTS_PLUGIN,
-                            "plugin-version": _CODEARTS_PLUGIN_VER,
-                        }, timeout=30)
-                        st = rr.status_code
-                        j = rr.json() if rr.content else {}
-                    except Exception as e:
-                        j = {"__err__": str(e)[:180]}
-                    ak, sk, sts, exp = _codearts_extract_credentials(j)
-                    _codearts_debug("oldlogin", "HTTP %s user=%s expires=%s keys=%s"
-                                    % (st, str((j or {}).get("user_name"))[:24],
-                                       (exp or "")[:19],
-                                       ",".join(sorted((j or {}).keys()))[:120]))
-                    if st == 200 and ak and sk and sts:
-                        grant = {"ak": ak, "sk": sk, "sts_token": sts, "expires_at": exp,
-                                 "refresh_token": str(_trae_find_token(
-                                     j, ("refresh_token", "refreshToken")) or ""),
-                                 "code_verifier": verifier,
-                                 "dpop_priv_pem": dpop["priv_pem"],
-                                 "dpop_pub_jwk": json.dumps(dpop["jwk"]),
-                                 "port": port, "phone": phone}
+                    for attempt in range(1, 11):
+                        try:
+                            rr = requests.get(u, headers={
+                                "Content-Type": "application/json;charset=UTF-8",
+                                "plugin-name": _CODEARTS_PLUGIN,
+                                "plugin-version": _CODEARTS_PLUGIN_VER,
+                            }, timeout=30)
+                            st = rr.status_code
+                            j = rr.json() if rr.content else {}
+                        except Exception as e:
+                            st, j = 0, {"__err__": str(e)[:180]}
+                        ak, sk, sts, exp = _codearts_extract_credentials(j)
+                        _codearts_debug("oldlogin", "#%d/10 HTTP %s user=%s expires=%s keys=%s"
+                                        % (attempt, st, str((j or {}).get("user_name"))[:24],
+                                           (exp or "")[:19],
+                                           ",".join(sorted((j or {}).keys()))[:120]))
+                        if st == 200 and ak and sk and sts:
+                            grant = {"ak": ak, "sk": sk, "sts_token": sts, "expires_at": exp,
+                                     "refresh_token": str(_trae_find_token(
+                                         j, ("refresh_token", "refreshToken")) or ""),
+                                     "code_verifier": verifier,
+                                     "dpop_priv_pem": dpop["priv_pem"],
+                                     "dpop_pub_jwk": json.dumps(dpop["jwk"]),
+                                     "port": port, "phone": phone}
+                            break
+                        if attempt < 10:
+                            if attempt == 1:
+                                job["result"] = ("票据同步中（portal 已放行、后端登记稍延迟），"
+                                                 "自动重试中…")
+                            page.wait_for_timeout(6000)
+                    if grant:
                         try:
                             ok2, nm, msg2 = on_success(grant)
                         except Exception as e:
@@ -4029,7 +4051,9 @@ def _run_codearts_sms_job(job, phone, name, on_success):
                                    result=msg2 or ("已保存 %s" % nm), name=nm or "")
                     else:
                         job.update(status="done", finished=True, ok=False,
-                                   result="凭据换取失败（HTTP %s）：%s" % (st, str(j)[:180]))
+                                   result="凭据换取失败（HTTP %s）：%s"
+                                          "（已按客户端语义重试 10 次，票据始终未登记）"
+                                          % (st, str(j)[:160]))
                     break
                 page.wait_for_timeout(700)
             if not ok_saved and not job.get("finished"):
