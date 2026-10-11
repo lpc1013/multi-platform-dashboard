@@ -484,6 +484,24 @@ _state_cache = {"at": 0, "data": None}
 _lock = threading.Lock()
 LOG = []
 
+# 运行日志落盘：重启后仍可追溯（内存 LOG 重启即丢）。backend_run.log 已在 .gitignore。
+LOG_FILE = os.path.join(HERE, "backend_run.log")
+LOG_MAX_BYTES = 1 * 1024 * 1024          # 超过 1MB 轮转为 .old，只保留一代
+_log_lock = threading.Lock()
+
+
+def _log_to_file(line):
+    try:
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > LOG_MAX_BYTES:
+            try:
+                os.replace(LOG_FILE, LOG_FILE + ".old")
+            except Exception:
+                pass                      # 轮转失败（如被占用）就继续追加，不丢日志
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass                              # 日志是辅助设施，任何失败都不影响主流程
+
 
 def log(msg):
     line = "[%s] %s" % (datetime.now().strftime("%H:%M:%S"), msg)
@@ -494,6 +512,8 @@ def log(msg):
         print(line)
     except Exception:
         pass
+    with _log_lock:
+        _log_to_file(line)
 
 
 # ────────────────────────── 状态读取 ──────────────────────────
@@ -736,7 +756,46 @@ def _run_blogin(jid, platform, name):
 
 
 # ────────────────────────── HTTP 服务 ──────────────────────────
+def _allowed_hosts():
+    return ("127.0.0.1:%d" % PORT, "localhost:%d" % PORT)
+
+
+def _check_host_origin(headers):
+    """本地 API 的跨站防护（防 DNS rebinding + 防浏览器 CSRF）。
+
+    背景：服务只监听 127.0.0.1，但**你浏览器里打开的任意网页**都可以向
+    http://127.0.0.1:8799 发跨域请求——读状态是因 CORS 被浏览器拦住，
+    但「发 POST 触发任务/改凭据」拦不住（简单请求不预检），DNS rebinding
+    还能让恶意域名整体接管本端口。两层校验：
+      ① Host 头必须为本机（DNS rebinding 时 Host=恶意域名 → 直接拒）
+      ② POST 的 Origin/Referer（浏览器必带其一）必须为本机；
+         都不带 = 非浏览器客户端（curl / 脚本），放行，不影响命令行用法。
+    """
+    host = str(headers.get("Host") or "").strip().lower()
+    if host not in _allowed_hosts():
+        return False
+    if headers.get("Origin"):
+        origin = str(headers.get("Origin")).strip().lower()
+        ok = origin in ("http://127.0.0.1:%d" % PORT, "http://localhost:%d" % PORT)
+        return ok
+    if headers.get("Referer"):
+        ref = str(headers.get("Referer")).strip().lower()
+        ok = ref.startswith(("http://127.0.0.1:%d/" % PORT, "http://127.0.0.1:%d" % PORT,
+                             "http://localhost:%d/" % PORT, "http://localhost:%d" % PORT))
+        return ok
+    return True
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
+    def _guard(self):
+        if _check_host_origin(self.headers):
+            return True
+        try:
+            self._send(403, {"error": "已拒绝非本机来源的请求（防 DNS rebinding / CSRF）"})
+        except Exception:
+            pass
+        return False
+
     def _send(self, code, body, ctype="application/json; charset=utf-8"):
         if isinstance(body, (dict, list)):
             body = json.dumps(body, ensure_ascii=False)
@@ -752,6 +811,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if not self._guard():
+            return
         p = urllib.parse.urlparse(self.path).path
         if p in ("/", "/index.html", "/dashboard"):
             fp = os.path.join(HERE, "index.html")
@@ -823,6 +884,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        if not self._guard():
+            return
         p = urllib.parse.urlparse(self.path).path
         ln = int(self.headers.get("Content-Length") or 0)
         try:
@@ -1341,9 +1404,35 @@ class Server(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
+def _already_running():
+    """探测端口上是否已有看板实例在跑。
+
+    必须主动探测：Server.allow_reuse_address=True 在 Windows 下允许多进程
+    同时 bind 同一端口（与 Linux 不同），不探测就会出现两个后端并存、
+    跨进程刷新竞争的诡异状态。"""
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:%d/api/ping" % PORT, timeout=1.5) as r:
+            data = json.loads(r.read().decode("utf-8") or "{}")
+            return bool(data.get("ok")) and int(data.get("port") or 0) == PORT
+    except Exception:
+        return False
+
+
 def main():
     os.chdir(HERE)
     url = "http://127.0.0.1:%d" % PORT
+    if _already_running():
+        print("=" * 62)
+        print(" 端口 %d 已有看板后端在运行，不再启动第二个实例。" % PORT)
+        print(" 直接打开浏览器即可：%s" % url)
+        print("=" * 62)
+        try:
+            import webbrowser
+            webbrowser.open(url)
+        except Exception:
+            pass
+        return
     print("=" * 62)
     print(" 多平台账号看板后端已启动：%s" % url)
     print(" 平台：%s" % "、".join(PLATFORMS.keys()))
@@ -1362,6 +1451,9 @@ def main():
         Server(("127.0.0.1", PORT), Handler).serve_forever()
     except KeyboardInterrupt:
         print("\n已停止。")
+    except OSError as e:
+        print("\n⚠ 端口 %d 绑定失败：%s" % (PORT, e))
+        print("  可能是另一进程占用了端口（netstat -ano | findstr :%d 查看 PID）。" % PORT)
 
 
 if __name__ == "__main__":

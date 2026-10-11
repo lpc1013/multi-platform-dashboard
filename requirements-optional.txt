@@ -1,0 +1,10 @@
+# ── 多平台账号看板 · 可选依赖 ──────────────────────────────
+# 核心运行只依赖 requests（见 requirements.txt）。
+# 以下为可选功能依赖，按需安装：
+
+# 浏览器登录 / 短信直登（后端拉起受控 Chromium 代填代点）
+playwright>=1.40.0
+# 安装浏览器内核：playwright install chromium
+
+# 部分平台本地凭据解密（DuMate cookie / Trae 设备身份 / OfficeAce WebView2 会话）
+cryptography>=42.0.0
