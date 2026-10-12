@@ -75,6 +75,21 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
+try:                       # 凭据数据目录（2026-10-12 外移到 %LOCALAPPDATA%）
+    from .. import data_dir as _dd
+except ImportError:        # platforms 被当顶层包导入（server.py 方式）→ 平铺导入
+    try:
+        import data_dir as _dd
+    except ImportError:
+        _dd = None
+
+
+def _acc_paths(name):
+    """凭据文件读点候选：DATA_DIR → ROOT → HERE。"""
+    if _dd is not None:
+        return _dd.candidates(name)
+    return [os.path.join(ROOT, name), os.path.join(HERE, name)]
+
 PLATFORM = "officeace"
 LABEL = "OfficeACE（华为云）"
 TASKS = [{"key": "checkin", "label": "每日登录领取", "daily": True}]
@@ -288,16 +303,15 @@ def _oc_sid():
 
 
 def _persist_entry(name, ent):
-    """把续期后的凭据写回 officeace_accounts.json（首个存在的文件，否则建在 ROOT）。"""
+    """把续期后的凭据写回 officeace_accounts.json（首个存在的文件，否则建在 DATA_DIR）。"""
     keep = ("ak", "sk", "sts_token", "project_id", "expires_at", "refresh_token",
             "refresh_expires_at", "user_id", "host", "region", "name")
     path = None
-    for p in (os.path.join(ROOT, "officeace_accounts.json"),
-              os.path.join(HERE, "officeace_accounts.json")):
+    for p in _acc_paths("officeace_accounts.json"):
         if os.path.exists(p):
             path = p
             break
-    path = path or os.path.join(ROOT, "officeace_accounts.json")
+    path = path or _acc_paths("officeace_accounts.json")[0]
     try:
         data = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
         if not isinstance(data, dict):
@@ -385,8 +399,7 @@ def load_accounts():
     if ak and sk and sts:
         accs["OfficeACE"] = {"ak": ak, "sk": sk, "sts_token": sts,
                              "project_id": (os.environ.get("OFFICEACE_PROJECT") or "").strip()}
-    for path in (os.path.join(ROOT, "officeace_accounts.json"),
-                 os.path.join(HERE, "officeace_accounts.json")):
+    for path in _acc_paths("officeace_accounts.json"):
         if not os.path.exists(path):
             continue
         try:

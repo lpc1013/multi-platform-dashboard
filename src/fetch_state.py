@@ -32,11 +32,18 @@ UA = "WorkBuddy/5.5.2 WorkBuddy AI/5.5.2 CLI/2.137.1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.dirname(HERE)
-# 凭据候选文件（两种来源都要认，避免"登录成功却读不到"）：
+# 凭据候选文件（三种来源都要认，避免"登录成功却读不到"）：
 #   1) wb_refresh_tokens.json —— L0NE-6 主脚本维护，dict 格式
 #   2) wb_login_result.json   —— workbuddy_login.py 登录工具写出，list 格式
+#   3) 2026-10-12 起看板登录结果落 %LOCALAPPDATA%\dashboard_analysis\（data_dir）
 STORE = os.path.join(TOOLS, "WorkBuddy-Daily", "wb_refresh_tokens.json")
 LOGIN_STORE = os.path.join(TOOLS, "WorkBuddy-Daily", "wb_login_result.json")
+try:
+    import data_dir as _dd
+    _WB_LOGIN_CANDIDATES = [_dd.path("wb_login_result.json"),
+                            os.path.join(HERE, "wb_login_result.json")]
+except ImportError:
+    _WB_LOGIN_CANDIDATES = [os.path.join(HERE, "wb_login_result.json")]
 OUT = os.path.join(HERE, "dashboard_data.json")
 
 
@@ -90,8 +97,8 @@ def _store_candidates():
       扁平布局：凭据文件直接放在 dashboard/ 本目录（便于分发后独立使用）
     """
     return [STORE, LOGIN_STORE,
-            os.path.join(HERE, "wb_refresh_tokens.json"),
-            os.path.join(HERE, "wb_login_result.json")]
+            os.path.join(HERE, "wb_refresh_tokens.json")
+            ] + _WB_LOGIN_CANDIDATES
 
 
 def load_accounts():

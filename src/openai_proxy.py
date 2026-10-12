@@ -194,8 +194,13 @@ def _usage_str(u):
 
 
 # ── 用量聚合（看板「今日 token 消耗」卡片数据源）─────────────
-USAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "proxy_usage.json")
+# 2026-10-12 落数据目录（%LOCALAPPDATA%\dashboard_analysis\，与看板 /api/proxy_usage 一致）
+try:
+    import data_dir as _dd
+    USAGE_FILE = _dd.path("proxy_usage.json")
+except ImportError:
+    USAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "proxy_usage.json")
 USAGE_KEEP_DAYS = 30
 _usage_lock = threading.Lock()
 

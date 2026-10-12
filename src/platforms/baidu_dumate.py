@@ -32,6 +32,21 @@ except ImportError:
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
+try:                       # 凭据数据目录（2026-10-12 外移到 %LOCALAPPDATA%）
+    from .. import data_dir as _dd
+except ImportError:        # platforms 被当顶层包导入（server.py 方式）→ 平铺导入
+    try:
+        import data_dir as _dd
+    except ImportError:
+        _dd = None
+
+
+def _acc_paths(name):
+    """凭据文件读点候选：DATA_DIR → ROOT → HERE。"""
+    if _dd is not None:
+        return _dd.candidates(name)
+    return [os.path.join(ROOT, name), os.path.join(HERE, name)]
+
 BASE = os.environ.get("DUMATE_WEB_BASE", "https://www.dumate.cn").rstrip("/")
 TIMEOUT = int(os.environ.get("DUMATE_WEB_TIMEOUT", "20000"))
 
@@ -122,8 +137,7 @@ def load_accounts():
     ck = (os.environ.get("DUMATE_COOKIE", "") or "").strip()
     if ck:
         accs["DuMate"] = {"cookie": ck}
-    for path in (os.path.join(ROOT, "dumate_accounts.json"),
-                 os.path.join(HERE, "dumate_accounts.json")):
+    for path in _acc_paths("dumate_accounts.json"):
         if not os.path.exists(path):
             continue
         try:

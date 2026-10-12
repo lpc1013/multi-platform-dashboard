@@ -181,13 +181,25 @@ def main():
 
     result = {"phone": phone, "access_token": at, "refresh_token": rt,
               "env_line": env_line, "login_at": time.strftime("%Y-%m-%d %H:%M:%S")}
-    save_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wb_login_result.json")
+    # 2026-10-12 起优先落数据目录（%LOCALAPPDATA%\dashboard_analysis\，与看板读点一致）
+    _here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        import data_dir
+        save_file = data_dir.path("wb_login_result.json")
+        read_candidates = [save_file, os.path.join(_here, "wb_login_result.json")]
+    except ImportError:
+        save_file = os.path.join(_here, "wb_login_result.json")
+        read_candidates = [save_file]
     results = []
-    if os.path.exists(save_file):
-        try:
-            results = json.load(open(save_file, encoding="utf-8"))
-        except Exception:
-            results = []
+    # 读旧结果：数据目录优先，src/ 旧位置兜底（合并，避免外移初期丢历史）
+    for rf in read_candidates:
+        if os.path.exists(rf):
+            try:
+                old = json.load(open(rf, encoding="utf-8"))
+                if isinstance(old, list) and len(old) > len(results):
+                    results = old
+            except Exception:
+                pass
     results.append(result)
     with open(save_file, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=1)

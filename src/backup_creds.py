@@ -26,6 +26,12 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+try:
+    import data_dir as _dd
+    _SCAN_DIRS = [_dd.DATA_DIR, HERE]      # 2026-10-12 数据外移后两个位置都扫
+except ImportError:
+    _SCAN_DIRS = [HERE]
+
 # 收集范围：与 .gitignore 的敏感条目一一对应，新增平台凭据文件时同步这里
 PATTERNS = [
     "*_accounts.json",      # 各平台凭据
@@ -39,12 +45,13 @@ MAGIC = "dash-creds-v1"
 
 
 def _collect_files():
-    """枚举待备份的敏感文件（去重、只保留存在的）。"""
+    """枚举待备份的敏感文件（去重、只保留存在的；扫 DATA_DIR + src 两处）。"""
     out = []
-    for pat in PATTERNS:
-        for p in sorted(glob.glob(os.path.join(HERE, pat))):
-            if p not in out:
-                out.append(p)
+    for d in _SCAN_DIRS:
+        for pat in PATTERNS:
+            for p in sorted(glob.glob(os.path.join(d, pat))):
+                if p not in out:
+                    out.append(p)
     return out
 
 
@@ -113,7 +120,8 @@ def cmd_load(args):
     print("备份创建于 %s，含 %d 个文件：" % (payload.get("created"), len(names)))
     targets = []
     for n in names:
-        dst = os.path.join(HERE, n)
+        # 2026-10-12 起恢复到数据目录（读点首候选）；src/ 旧位置仅兜底读
+        dst = (_dd.path(n) if _dd else os.path.join(HERE, n))
         flag = ""
         if os.path.exists(dst) and not args.force:
             flag = "  [已存在，跳过——加 --force 覆盖]"

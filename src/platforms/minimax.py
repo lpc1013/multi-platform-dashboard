@@ -29,6 +29,21 @@ except ImportError:
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
+try:                       # 凭据数据目录（2026-10-12 外移到 %LOCALAPPDATA%）
+    from .. import data_dir as _dd
+except ImportError:        # platforms 被当顶层包导入（server.py 方式）→ 平铺导入
+    try:
+        import data_dir as _dd
+    except ImportError:
+        _dd = None
+
+
+def _acc_paths(name):
+    """凭据文件读点候选：DATA_DIR → ROOT → HERE。"""
+    if _dd is not None:
+        return _dd.candidates(name)
+    return [os.path.join(ROOT, name), os.path.join(HERE, name)]
+
 # ── 域名回退顺序（实测）─────────────────────────────────────────────
 # 国内账号走 agent.minimax.cn：本机实测 ~0.2s 即响应，签到接口完全可用；
 # agent.minimax.io 的 DNS 优先返回 IPv6（Akamai），而本机 IPv6 不可达，
@@ -58,12 +73,12 @@ PLATFORM = "minimax"
 LABEL = "MiniMax Code"
 TASKS = [{"key": "checkin", "label": "每日签到", "daily": True}]
 
-CACHE_FILE = os.path.join(HERE, ".minimax_token.json")
+CACHE_FILE = _acc_paths(".minimax_token.json")[0]
 # refresh_token 轮换备份（多账号，防单点丢失）：
 # MiniMax 的 RT 用一次换一把、旧的当场作废，一旦「刷新成功但新 RT 没落盘」，
 # 这个账号就永久断链（只能重新走网页授权）。所以每次刷新成功都额外双写一份到这里，
 # 主凭据文件若写失败/被清空，还能从这里把 RT 捞回来。
-RT_BACKUP_FILE = os.path.join(HERE, ".minimax_rt_backup.json")
+RT_BACKUP_FILE = _acc_paths(".minimax_rt_backup.json")[0]
 # 刷新互斥：refresh_token 是一次性的，并发刷新必然有一方拿到 invalid_grant。
 # 同一账号被「/api/state 的并发读取」与「/api/run 的签到」同时刷新是真实存在的场景。
 _REFRESH_LOCK = threading.Lock()
@@ -341,11 +356,10 @@ def _token_alive(token):
 # 看板侧用同一条 OAuth 接口（oauth_login.refresh_grant）自动续期，
 # 把新令牌写回凭据文件，用户不必再手动「重新导入」。
 def _cred_file_path():
-    for p in (os.path.join(ROOT, "minimax_accounts.json"),
-              os.path.join(HERE, "minimax_accounts.json")):
+    for p in _acc_paths("minimax_accounts.json"):
         if os.path.exists(p):
             return p
-    return os.path.join(HERE, "minimax_accounts.json")
+    return _acc_paths("minimax_accounts.json")[0]
 
 
 def _load_rt_backup(uid):
@@ -566,8 +580,7 @@ def _cred_file_items():
     """读看板凭据文件（ROOT 优先，其次 HERE），返回 [(备注名, 条目)]。
     键名就是用户在「修改备注名」里设的名字，必须比客户端自动派生名优先。"""
     out = []
-    for path in (os.path.join(ROOT, "minimax_accounts.json"),
-                 os.path.join(HERE, "minimax_accounts.json")):
+    for path in _acc_paths("minimax_accounts.json"):
         if not os.path.exists(path):
             continue
         try:

@@ -3165,8 +3165,10 @@ _CODEARTS_PLUGIN = "snap_AIIDE"
 _CODEARTS_PLUGIN_VER = "5.4.2"             # huaweicloud.authentication/package.json
 _CODEARTS_SNAP = "https://snap-access.cn-north-4.myhuaweicloud.com/snap-manager"
 # 持久浏览器 profile：登录态 cookie 落盘 → 之后 run_task 可静默续登（无需人工）
-_CODEARTS_PROFILE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     ".codearts_profile")
+# 2026-10-12 起落数据目录（%LOCALAPPDATA%\dashboard_analysis\），src/ 旧目录若有则自动搬迁
+import data_dir as _dd
+_CODEARTS_PROFILE_DIR = _dd.path(".codearts_profile")
+_dd.migrate_profile_dir(".codearts_profile")
 
 # 授权确认页代点文案（归一化匹配，命中最内层；「取消/拒绝/不同意」等否定项靠**全等**匹配天然排除）
 _CODEARTS_CONSENT_TEXTS = ["同意并授权", "授权并登录", "授权并继续", "同意授权", "一键授权",

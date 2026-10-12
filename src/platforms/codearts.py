@@ -146,15 +146,29 @@ def expired(ent):
 
 
 # ───────────────────────── 凭据 ─────────────────────────
-_ACC_FILES = (os.path.join(ROOT, "codearts_accounts.json"),
-              os.path.join(HERE, "codearts_accounts.json"))
+try:                       # 凭据数据目录（2026-10-12 外移到 %LOCALAPPDATA%）
+    from .. import data_dir as _dd
+except ImportError:        # platforms 被当顶层包导入（server.py 方式）→ 平铺导入
+    try:
+        import data_dir as _dd
+    except ImportError:
+        _dd = None
+
+
+def _acc_paths(name):
+    """凭据文件读点候选：DATA_DIR → ROOT → HERE。"""
+    if _dd is not None:
+        return _dd.candidates(name)
+    return [os.path.join(ROOT, name), os.path.join(HERE, name)]
+
+
+_ACC_FILES = tuple(_acc_paths("codearts_accounts.json"))
 STS_TOKEN_URL = "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens"
 
 # ── 删除墓碑（2026-10-09）：删除只删凭据文件还不够 —— load_accounts 每次都会从
 #    客户端 state.vscdb 重新导入同名账号（「删完又冒出来；第二次删报未找到」）。
 #    墓碑按账号键名记录；文件里真实存在同键名条目时自动解除（新登录即复活）。
-_TOMB_FILES = (os.path.join(ROOT, "codearts_deleted.json"),
-               os.path.join(HERE, "codearts_deleted.json"))
+_TOMB_FILES = tuple(_acc_paths("codearts_deleted.json"))
 
 
 def _load_tombs():

@@ -28,6 +28,8 @@ from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import data_dir   # 凭据/运行产物外移到 %LOCALAPPDATA%\dashboard_analysis（import 即自动迁移）
+
 try:
     import requests
 except ImportError:
@@ -48,19 +50,18 @@ except Exception as _e:
     print("⚠ 未加载 oauth_login，网页授权（手机号）登录将不可用：%s" % _e)
 
 # ── 网页端「添加账号」凭据落盘 ──
-# 落盘位置与各适配器 load_accounts 读取的候选文件一致，写后即被看板识别：
-#   WorkBuddy  → HERE/wb_login_result.json          （fetch_state 候选路径之一）
-#   MiniMax    → HERE/minimax_accounts.json         （ROUND之一）
-#   DuMate     → HERE/dumate_accounts.json         （ROOT之一）
-WB_LOGIN_FILE = os.path.join(HERE, "wb_login_result.json")
-MINIMAX_ACCOUNTS_FILE = os.path.join(HERE, "minimax_accounts.json")
-DUMATE_ACCOUNTS_FILE = os.path.join(HERE, "dumate_accounts.json")
-LINGXI_ACCOUNTS_FILE = os.path.join(HERE, "lingxi_accounts.json")
-TRAE_ACCOUNTS_FILE = os.path.join(HERE, "trae_accounts.json")
-QODER_ACCOUNTS_FILE = os.path.join(HERE, "qoder_accounts.json")
-ZCODE_ACCOUNTS_FILE = os.path.join(HERE, "zcode_accounts.json")
-OFFICEACE_ACCOUNTS_FILE = os.path.join(HERE, "officeace_accounts.json")
-CODEARTS_ACCOUNTS_FILE = os.path.join(HERE, "codearts_accounts.json")
+# 2026-10-12 起统一落 %LOCALAPPDATA%\dashboard_analysis\（data_dir.path），
+# 各适配器 load_accounts 的读点候选同样以 DATA_DIR 优先，写后即被看板识别。
+# data_dir import 时已把 src/ 下的旧文件自动迁移过去。
+WB_LOGIN_FILE         = data_dir.path("wb_login_result.json")
+MINIMAX_ACCOUNTS_FILE = data_dir.path("minimax_accounts.json")
+DUMATE_ACCOUNTS_FILE  = data_dir.path("dumate_accounts.json")
+LINGXI_ACCOUNTS_FILE  = data_dir.path("lingxi_accounts.json")
+TRAE_ACCOUNTS_FILE    = data_dir.path("trae_accounts.json")
+QODER_ACCOUNTS_FILE   = data_dir.path("qoder_accounts.json")
+ZCODE_ACCOUNTS_FILE   = data_dir.path("zcode_accounts.json")
+OFFICEACE_ACCOUNTS_FILE = data_dir.path("officeace_accounts.json")
+CODEARTS_ACCOUNTS_FILE  = data_dir.path("codearts_accounts.json")
 
 # 各平台的凭据文件（供「添加 / 删除 / 本地导入」统一寻址）
 CRED_FILES = {
@@ -876,7 +877,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send(502, {"error": {"message": str(e)[:200]}})
         elif p == "/api/proxy_usage":
             # 反代用量聚合（openai_proxy._record_usage 写入，按日/按模型）
-            uf = os.path.join(HERE, "proxy_usage.json")
+            uf = data_dir.path("proxy_usage.json")
             d = _read_json(uf, {})
             self._send(200, d)
 
@@ -1497,6 +1498,9 @@ def main():
     print("=" * 62)
     print(" 多平台账号看板后端已启动：%s" % url)
     print(" 平台：%s" % "、".join(PLATFORMS.keys()))
+    print(" 数据目录：%s" % data_dir.DATA_DIR)
+    if data_dir.MIGRATED:
+        print(" 已自动外移：%s" % "、".join(data_dir.MIGRATED))
     print(" 仅监听本机回环，凭据不出本机。关闭此窗口即停止。")
     print("=" * 62)
     for pid, mod in PLATFORMS.items():

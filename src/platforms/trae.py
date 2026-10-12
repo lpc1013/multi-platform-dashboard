@@ -34,6 +34,21 @@ except ImportError:        # 直接以脚本运行（python platforms/trae.py）
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
+try:                       # 凭据数据目录（2026-10-12 外移到 %LOCALAPPDATA%）
+    from .. import data_dir as _dd
+except ImportError:        # platforms 被当顶层包导入（server.py 方式）→ 平铺导入
+    try:
+        import data_dir as _dd
+    except ImportError:
+        _dd = None
+
+
+def _acc_paths(name):
+    """凭据文件读点候选：DATA_DIR → ROOT → HERE。"""
+    if _dd is not None:
+        return _dd.candidates(name)
+    return [os.path.join(ROOT, name), os.path.join(HERE, name)]
+
 LABEL = "Trae"
 TASKS = [{"key": "checkin", "label": "每日签到"}]
 
@@ -62,8 +77,7 @@ def load_accounts():
                         "user_id": (os.environ.get("TRAE_USER_ID", "") or "").strip(),
                         "region": (os.environ.get("TRAE_REGION", "") or "CN").strip(),
                         "host": DEFAULT_HOST}
-    for path in (os.path.join(ROOT, "trae_accounts.json"),
-                 os.path.join(HERE, "trae_accounts.json")):
+    for path in _acc_paths("trae_accounts.json"):
         if not os.path.exists(path):
             continue
         try:
