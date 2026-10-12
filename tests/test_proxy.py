@@ -1,0 +1,198 @@
+# -*- coding: utf-8 -*-
+"""openai_proxy 纯函数单测（不发起任何网络请求）。
+
+覆盖：
+  - _upstream_body：上游不支持字段剥离 / 强制 stream / 默认模型 / 附加字段
+  - _session_id / _usage_str / _sse_error：确定性输出
+  - catalog：缓存命中不重发请求、失败回退种子（mock _get）
+  - relay 非流式聚合：mock _chat_stream，验证 OpenAI 响应形状与 usage 记账
+运行：python -m unittest tests.test_proxy   （用 pythoncore-3.14-64）
+"""
+import json
+import os
+import sys
+import unittest
+from unittest import mock
+
+sys.argv = [sys.argv[0]]  # server/openai_proxy 导入链会把 argv[1] 当端口读
+SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
+sys.path.insert(0, SRC)
+
+import openai_proxy as ox   # noqa: E402  （导入即建缓存/锁，无网络副作用）
+
+_ENT = {"ak": "ak-test", "sk": "sk-test", "sts_token": "sts-test"}
+
+
+class TestUpstreamBody(unittest.TestCase):
+    def test_strips_unsupported_fields(self):
+        b = ox._upstream_body({
+            "model": "deepseek-v4.1-flash", "messages": [],
+            "stream_options": {"include_usage": True}, "user": "u",
+            "logit_bias": {}, "logprobs": True, "top_logprobs": 3, "n": 2,
+            "presence_penalty": 0.1, "frequency_penalty": 0.2,
+            "seed": 42, "response_format": {"type": "json_object"},
+            "stop": ["END"], "temperature": 0.7,
+        }, "chatid1")
+        for k in ("stream_options", "user", "logit_bias", "logprobs",
+                  "top_logprobs", "n", "presence_penalty", "frequency_penalty",
+                  "seed", "response_format", "stop"):
+            self.assertNotIn(k, b)
+        self.assertEqual(b["temperature"], 0.7)          # 有用字段保留
+        self.assertTrue(b["stream"])                     # 上游恒 SSE
+        self.assertEqual(b["chat_id"], "chatid1")
+        self.assertEqual(b["prompt_cache_key"], "chatid1")
+        self.assertEqual(b["tool_stream"], True)
+
+    def test_default_model_and_keeps_given(self):
+        b = ox._upstream_body({"messages": []}, "c")
+        self.assertEqual(b["model"], "deepseek-v4.1-flash")   # 缺省 → 免费额度最大
+        b2 = ox._upstream_body({"model": "glm-5.3-flash", "messages": []}, "c")
+        self.assertEqual(b2["model"], "glm-5.3-flash")        # 指定 → 保留
+
+
+class TestSmallHelpers(unittest.TestCase):
+    def test_session_id_deterministic(self):
+        self.assertEqual(ox._session_id("abc"), ox._session_id("abc"))
+        self.assertEqual(len(ox._session_id("abc")), 32)
+        self.assertNotEqual(ox._session_id("abc"), ox._session_id("abd"))
+
+    def test_usage_str(self):
+        self.assertEqual(ox._usage_str({"prompt_tokens": 10, "completion_tokens": 5}),
+                         " tokens=10/5/15")
+        self.assertEqual(ox._usage_str({"prompt_tokens": 1, "completion_tokens": 2,
+                                        "total_tokens": 9}), " tokens=1/2/9")
+        self.assertEqual(ox._usage_str(None), "")
+        self.assertEqual(ox._usage_str("junk"), "")
+
+    def test_sse_error_shape(self):
+        j = json.loads(ox._sse_error(404, "无此模型"))
+        self.assertEqual(j["error"]["code"], 404)
+        self.assertEqual(j["error"]["message"], "无此模型")
+        self.assertEqual(j["error"]["type"], "upstream_error")
+
+
+class TestCatalog(unittest.TestCase):
+    def setUp(self):
+        ox._catalog.update(ts=0.0, builtin=[], benefit=set())
+
+    def test_cache_hit_no_refetch(self):
+        ox._catalog.update(ts=__import__("time").time(),
+                           builtin=["m1"], benefit={"b1"})
+        with mock.patch.object(ox, "_get") as g:
+            builtin, benefit = ox.catalog(_ENT)
+        g.assert_not_called()                       # 缓存有效期内不发请求
+        self.assertEqual(builtin, ["m1"])
+        self.assertIn("b1", benefit)
+
+    def test_failure_falls_back_to_seed(self):
+        with mock.patch.object(ox, "_get", side_effect=Exception("network down")):
+            builtin, benefit = ox.catalog(_ENT, force=True)
+        self.assertEqual(builtin, [])               # 内置拿不到 → 空
+        self.assertTrue({"deepseek-v4.1-flash", "glm-5.3-flash"} <= benefit,
+                        "种子福利模型必须在兜底集合里")
+
+    def test_success_populates(self):
+        def fake_get(ent, url):
+            if "model/builtin" in url:
+                return {"builtinModels": [
+                    {"model_id": "GLM-5.2", "enable": True},
+                    {"model_id": "dead-model", "enable": False},
+                ]}
+            return {"result": {"models": [{"model_id": "deepseek-v4.1-flash"}]}}
+        with mock.patch.object(ox, "_get", side_effect=fake_get):
+            builtin, benefit = ox.catalog(_ENT, force=True)
+        self.assertEqual(builtin, ["GLM-5.2"])       # disable 的不进目录
+        self.assertIn("deepseek-v4.1-flash", benefit)
+
+
+class _FakeHandler:
+    """收集 _send/_begin_stream/_write_chunk 调用的假 handler。"""
+    def __init__(self):
+        self.sent, self.chunks = [], []
+
+    def _send(self, code, body, ctype="application/json; charset=utf-8"):
+        self.sent.append((code, body))
+
+    def _begin_stream(self, status=200, ctype="text/event-stream; charset=utf-8"):
+        self.chunks.append(("HEAD", status))
+
+    def _write_chunk(self, data):
+        self.chunks.append(data)
+
+
+def _sse(*chunks):
+    """造上游 SSE 行迭代器（OpenAI chunk 形状）。"""
+    lines = []
+    for i, c in enumerate(chunks):
+        lines.append(json.dumps({
+            "id": "resp1", "created": 1700000000, "object": "chat.completion.chunk",
+            "choices": [{"index": 0, "delta": c,
+                         "finish_reason": "stop" if i == len(chunks) - 1 else None}],
+            **({"usage": {"prompt_tokens": 7, "completion_tokens": 3,
+                          "total_tokens": 10}} if i == len(chunks) - 1 else {}),
+        }))
+    lines.append("data:[DONE]")
+    return ["data:" + l for l in lines]
+
+
+class TestRelayAggregate(unittest.TestCase):
+    def setUp(self):
+        ox._catalog.update(ts=0.0, builtin=[], benefit=set())
+
+    def test_non_stream_aggregates(self):
+        h = _FakeHandler()
+        body = {"model": "deepseek-v4.1-flash", "stream": False,
+                "messages": [{"role": "user", "content": "hi"}]}
+        with mock.patch.object(ox, "_load_ent", return_value=("acct", _ENT)), \
+             mock.patch.object(ox, "_chat_stream", return_value=iter(_sse(
+                 {"content": "你"}, {"content": "好"}))), \
+             mock.patch("server.log") as mlog:
+            ox.relay(h, body)
+        self.assertEqual(len(h.sent), 1)
+        code, out = h.sent[0]
+        self.assertEqual(code, 200)
+        self.assertEqual(out["choices"][0]["message"]["content"], "你好")
+        self.assertEqual(out["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(out["usage"]["total_tokens"], 10)
+        self.assertEqual(out["model"], "deepseek-v4.1-flash")
+        mlog.assert_called_once()                    # 记账必须落一条
+        self.assertIn("tokens=7/3/10", mlog.call_args[0][0])
+
+    def test_zero_usage_placeholder_skipped(self):
+        """上游首个 chunk 发全 0 usage 占位——记账必须取尾部的真实值。"""
+        h = _FakeHandler()
+        lines = [
+            "data:" + json.dumps({"id": "r", "created": 1, "object": "chat.completion.chunk",
+                                  "choices": [{"index": 0, "delta": {"content": "你"}, "finish_reason": None}],
+                                  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}),
+            "data:" + json.dumps({"id": "r", "created": 1, "object": "chat.completion.chunk",
+                                  "choices": [{"index": 0, "delta": {"content": "好"}, "finish_reason": "stop"}],
+                                  "usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}}),
+            "data:[DONE]",
+        ]
+        with mock.patch.object(ox, "_load_ent", return_value=("acct", _ENT)), \
+             mock.patch.object(ox, "_chat_stream", return_value=iter(lines)), \
+             mock.patch("server.log") as mlog:
+            ox.relay(h, {"model": "x", "stream": True, "messages": []})
+        self.assertIn("tokens=7/3/10", mlog.call_args[0][0])   # 不能是 0/0/0
+
+    def test_upstream_error_passthrough(self):
+        h = _FakeHandler()
+        with mock.patch.object(ox, "_load_ent", return_value=("acct", _ENT)), \
+             mock.patch.object(ox, "_chat_stream",
+                               side_effect=ox.UpstreamError(429, "额度用尽")):
+            ox.relay(h, {"model": "x", "messages": []})
+        self.assertEqual(h.sent[0][0], 429)
+        self.assertIn("额度用尽", h.sent[0][1]["error"]["message"])
+
+    def test_load_ent_error_no_network(self):
+        h = _FakeHandler()
+        with mock.patch.object(ox, "_load_ent",
+                               side_effect=ox.UpstreamError(503, "凭证已过期")):
+            ox.relay(h, {"model": "x", "messages": []})
+        self.assertEqual(h.sent[0][0], 503)          # 503 原样透传给客户端
+        self.assertEqual(h.chunks, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

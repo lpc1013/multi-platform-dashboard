@@ -859,8 +859,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send(500, {"error": str(e)[:200]})
         elif p == "/v1/models":
             # OpenAI 兼容：CodeArts 模型目录（内置 + 福利免费额度）
+            # import 在 try 外：若放 try 内，import 失败时 except ox.UpstreamError
+            # 会因 ox 未定义抛 NameError，把真实错误搅成 500 迷雾
+            import openai_proxy as ox
             try:
-                import openai_proxy as ox
                 _, ent = ox._load_ent()
                 builtin, benefit = ox.catalog(ent)
                 ids = list(dict.fromkeys((builtin or []) + sorted(benefit)))

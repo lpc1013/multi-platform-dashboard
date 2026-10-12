@@ -33,6 +33,7 @@ dashboard_analysis/
 │   ├── oauth_login.py      # 统一登录框架（设备码 / 短信直登 / 浏览器代填）
 │   ├── browser_login.py    # 受控 Chromium 登录
 │   ├── fetch_state.py      # 状态抓取
+│   ├── openai_proxy.py     # OpenAI 兼容反代（CodeArts 免费模型额度本机暴露）
 │   ├── workbuddy_login.py  # WorkBuddy 登录
 │   └── platforms/          # 平台适配器（每个平台一个文件）
 │       ├── minimax.py
@@ -108,6 +109,49 @@ python server.py 9000     # 指定端口
 - **前端单文件**：`index.html` 每次请求实时读盘，改动刷新即生效，无需重启
 - **多账号不覆盖**：落盘按**身份指纹**分配键名（而非显示名），同人不同源不会互相覆盖
 - **令牌续期**：部分平台（CodeArts / MiniMax）支持自动刷新临时凭据
+
+---
+
+## OpenAI 兼容反代（CodeArts 免费额度）
+
+后端内置一个 OpenAI 兼容端点，把 CodeArts Agent 的模型额度（含**每日免费福利额度**）暴露为本机 API。任何支持自定义 OpenAI `base_url` 的客户端（Cherry Studio、ChatBox、openai sdk 等）都可直接接入。
+
+### 端点
+
+```
+GET  http://127.0.0.1:8799/v1/models            # 模型列表（内置 + 福利）
+POST http://127.0.0.1:8799/v1/chat/completions  # 流式透传 / 非流式聚合
+```
+
+### 客户端配置
+
+| 项 | 值 |
+|---|---|
+| Base URL | `http://127.0.0.1:8799/v1` |
+| API Key | 任意非空字符串（本机代理不校验 key，鉴权走本机凭据） |
+| Model | 见下表 |
+
+### 模型清单
+
+**福利模型（每日免费额度）**：`deepseek-v4.1-flash`（1M 上下文）、`deepseek-v4-flash-0731`、`deepseek-v4-pro-0813`、`glm-5.3-flash` —— 走 `maas_type: benefit` 头，代理自动处理。
+
+**内置模型（消耗积分）**：`GLM-5.2`、`openpangu-2.0-flash`、`openpangu-2.0-pro`、`glm-5.2-sft-harmony`、`Qwen3-VL-235B`、`kimi-k2.6-vl`。
+
+### 行为与限制
+
+- **鉴权**：请求复用看板里 CodeArts 账号的 AK/SK 签名 + STS 临时令牌，无需额外配置
+- **审计**：每次调用落一条 `[proxy]` 日志（模型/账号/耗时/token 用量），看板日志区可见
+- **续期边界**：代理**不触发**浏览器静默续登（避免客户端启动拉模型列表时随机弹窗）；凭据过期返回 503 并提示到看板续期，签到/续期按钮会自动续
+- **上游限制**：`tool_choice` 对象形态上游报参数错；超限返回 429 原样透传；每日额度按账号计
+
+```python
+# Python 验证
+from openai import OpenAI
+c = OpenAI(base_url="http://127.0.0.1:8799/v1", api_key="sk-local")
+print(c.chat.completions.create(
+    model="deepseek-v4.1-flash",
+    messages=[{"role": "user", "content": "你好"}]).choices[0].message.content)
+```
 
 ---
 
