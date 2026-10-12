@@ -105,6 +105,27 @@ class TestCatalog(unittest.TestCase):
         self.assertIn("deepseek-v4.1-flash", benefit)
 
 
+class TestPickFreshest(unittest.TestCase):
+    def test_latest_expiry_wins(self):
+        d = {"A": {"expires_at": "2026-10-12T10:00:00Z"},
+             "B": {"expires_at": "2026-10-12T23:00:00Z"},
+             "C": {"expires_at": "2026-10-11T23:00:00Z"}}
+        name, _ = ox._pick_freshest(d)
+        self.assertEqual(name, "B")
+
+    def test_missing_expiry_ranks_last(self):
+        d = {"A": {}, "B": {"expires_at": "2026-01-01T00:00:00Z"}}
+        name, _ = ox._pick_freshest(d)
+        self.assertEqual(name, "B")
+        name2, _ = ox._pick_freshest({"A": {}, "X": {}})
+        self.assertEqual(name2, "A")       # 都没有 → 取 max（字典序兜底，不崩）
+
+    def test_single_account(self):
+        name, ent = ox._pick_freshest({"only": {"expires_at": "x", "ak": "a"}})
+        self.assertEqual(name, "only")
+        self.assertEqual(ent["ak"], "a")
+
+
 class _FakeHandler:
     """收集 _send/_begin_stream/_write_chunk 调用的假 handler。"""
     def __init__(self):

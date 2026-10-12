@@ -382,7 +382,7 @@ def _codearts_identity(ak, sk, sts):
         import platforms.codearts as cap
         url = "https://sts.cn-north-4.myhuaweicloud.com/v5/caller-identity"
         hdr = cap.sign_headers(ak, sk, sts, "GET", url)
-        j = _rq.get(url, headers=hdr, timeout=15, verify=False).json()
+        j = _rq.get(url, headers=hdr, timeout=15, verify=True).json()
         ident = (j or {}).get("identity") or {}
         uid = str(ident.get("domain_id") or ident.get("id")
                   or (j or {}).get("account_id") or "")
@@ -874,6 +874,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send(e.status, {"error": {"message": e.message}})
             except Exception as e:
                 self._send(502, {"error": {"message": str(e)[:200]}})
+        elif p == "/api/proxy_usage":
+            # 反代用量聚合（openai_proxy._record_usage 写入，按日/按模型）
+            uf = os.path.join(HERE, "proxy_usage.json")
+            d = _read_json(uf, {})
+            self._send(200, d)
+
         elif p == "/api/progress":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             jid = (q.get("job") or [""])[0]

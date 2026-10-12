@@ -122,7 +122,7 @@ def _req(ent, path, method="GET", query=None, body=None, timeout=25, base=None):
                        method, url, body_text)
     try:
         r = requests.request(method.upper(), url, headers=hdr,
-                             data=(body_text or None), timeout=timeout, verify=False)
+                             data=(body_text or None), timeout=timeout, verify=True)
     except Exception as e:
         return 0, {"error": str(e)[:160]}
     try:
@@ -356,7 +356,7 @@ def try_refresh(name, ent):
         "client_id": "codearts-agent", "code_verifier": cv,
         "grant_type": "refresh_token", "refresh_token": rt})
     try:
-        r = requests.post(STS_TOKEN_URL, data=body, headers=hdr, timeout=25, verify=False)
+        r = requests.post(STS_TOKEN_URL, data=body, headers=hdr, timeout=25, verify=True)
         try:
             j = r.json()
         except Exception:
@@ -393,7 +393,7 @@ def _caller_identity(ent):
     url = "https://sts.cn-north-4.myhuaweicloud.com/v5/caller-identity"
     try:
         hdr = sign_headers(ent["ak"], ent["sk"], ent["sts_token"], "GET", url)
-        r = requests.get(url, headers=hdr, timeout=15, verify=False,
+        r = requests.get(url, headers=hdr, timeout=15, verify=True,
                          proxies={"http": None, "https": None})
         j = r.json() if r.content else {}
         urn = str(j.get("principal_urn") or "")

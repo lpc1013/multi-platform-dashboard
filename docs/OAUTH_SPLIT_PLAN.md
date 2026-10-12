@@ -1,6 +1,13 @@
 # oauth_login.py 拆分评估（2026-10-11）
 
-## 现状
+> **进度（2026-10-12）：✅ 第一期已完成**——22 个纯基建符号（常量 + job 调度 +
+> PKCE/表单 + 浏览器助手）已抽至 `src/oauth_common.py`（22KB），oauth_login.py
+> 减至 203KB，头部显式 `from oauth_common import (...)` 保命名空间。
+> 验证：146 个原顶层符号全部可达、`_JOBS` 对象同一、34 单测全绿、
+> server 完整加载链路冒烟 200。**`_run_job` 留守**（内部引用 device_poll
+> 平台分发，不满足封闭性）。二三期待逐平台真机回归。
+
+## 现状（一期完成前存档：原 222KB / 4552 行 / 146 个顶层符号）
 `src/oauth_login.py` ~214KB / 4061 行 / 113 个顶层函数，混合四类内容：
 1. 共享 job 基建：`JOBS` 字典、`_new_job`/`_run_job`、`get_job`、`submit_code`
 2. 共享浏览器助手：`_click_text`/`_pull_window_front`/`_has_captcha`/`_consent_checked` 等

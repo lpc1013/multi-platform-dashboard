@@ -60,17 +60,27 @@ class UpstreamError(Exception):
         self.message = message
 
 
+def _pick_freshest(d):
+    """多账号时选 expires_at 最晚的一个（凭据最新鲜、可用窗口最长）。
+    返回 (name, ent)；无有效过期时间的账号排最后。"""
+    def key(item):
+        exp = str((item[1] or {}).get("expires_at") or "")
+        return exp   # ISO 时间字符串字典序即时间序
+    name, ent = max(d.items(), key=key)
+    return name, ent
+
+
 def _load_ent():
-    """取第一个有凭据的 codearts 账号，只判断凭据是否可用——
-    ⚠ 不触发续期/预刷新：代理是热路径（客户端启动就会打 /v1/models），
-    在这里拉起浏览器续登会随机弹窗打断人工。续期只留给 run_task（签到时）
-    与看板「续期凭据」按钮；过期直接 503 引导用户。"""
+    """取凭据可用的 codearts 账号（多账号取 expires_at 最晚者），只判断
+    凭据是否可用——⚠ 不触发续期/预刷新：代理是热路径（客户端启动就会打
+    /v1/models），在这里拉起浏览器续登会随机弹窗打断人工。续期只留给
+    run_task（签到时）与看板「续期凭据」按钮；过期直接 503 引导用户。"""
     import server as srv   # 延迟导入：取账号文件路径
     path = srv.CRED_FILES.get("codearts")
     d = srv._read_json(path, {}) if path else {}
     if not d:
         raise UpstreamError(503, "CodeArts 账号不存在，请先在看板登录 CodeArts")
-    name, ent = next(iter(d.items()))
+    name, ent = _pick_freshest(d)
     if not (ent.get("ak") and ent.get("sk") and ent.get("sts_token")):
         raise UpstreamError(503, "CodeArts 凭据不完整，请先在看板完成登录")
     if cap.expired(ent) is True:
@@ -82,7 +92,7 @@ def _load_ent():
 
 def _get(ent, url):
     hdr = cap.sign_headers(ent["ak"], ent["sk"], ent["sts_token"], "GET", url)
-    r = requests.get(url, headers=hdr, timeout=30, verify=False,
+    r = requests.get(url, headers=hdr, timeout=30, verify=True,
                      proxies={"http": None, "https": None})
     if r.status_code != 200:
         raise UpstreamError(r.status_code, "上游 %s 失败：%s"
@@ -158,7 +168,7 @@ def _chat_stream(ent, openai_body):
                                **({"maas_type": "benefit"} if is_benefit else {}),
                            })
     r = requests.post(url, headers=hdr, data=body.encode("utf-8"),
-                      timeout=CHAT_TIMEOUT, verify=False, stream=True,
+                      timeout=CHAT_TIMEOUT, verify=True, stream=True,
                       proxies={"http": None, "https": None})
     if r.status_code >= 400:
         raise UpstreamError(r.status_code, r.text[:300])
@@ -181,6 +191,42 @@ def _usage_str(u):
     ct = u.get("completion_tokens") or 0
     tt = u.get("total_tokens") or (pt + ct)
     return " tokens=%s/%s/%s" % (pt, ct, tt)
+
+
+# ── 用量聚合（看板「今日 token 消耗」卡片数据源）─────────────
+USAGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "proxy_usage.json")
+USAGE_KEEP_DAYS = 30
+_usage_lock = threading.Lock()
+
+
+def _record_usage(model, u):
+    """按日/按模型聚合 token 用量，原子写 proxy_usage.json。
+    结构：{"2026-10-12": {model: {calls, prompt_tokens, completion_tokens}}}
+    只含模型名与数字，不含任何凭据/账号信息；写失败静默（不影响对话）。"""
+    try:
+        pt = (u or {}).get("prompt_tokens") or 0
+        ct = (u or {}).get("completion_tokens") or 0
+        day = time.strftime("%Y-%m-%d")
+        with _usage_lock:
+            try:
+                d = json.load(open(USAGE_FILE, encoding="utf-8"))
+            except Exception:
+                d = {}
+            m = d.setdefault(day, {}).setdefault(
+                model, {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
+            m["calls"] += 1
+            m["prompt_tokens"] += pt
+            m["completion_tokens"] += ct
+            for k in [k for k in d if k < time.strftime(
+                    "%Y-%m-%d", time.localtime(time.time() - USAGE_KEEP_DAYS * 86400))]:
+                del d[k]                     # 裁掉 30 天前的旧数据
+            tmp = USAGE_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(d, fh, ensure_ascii=False)
+            os.replace(tmp, USAGE_FILE)      # Windows 原子替换
+    except Exception:
+        pass
 
 
 def relay(handler, openai_body):
@@ -228,6 +274,7 @@ def relay(handler, openai_body):
         finally:
             srv.log("[proxy] %s acct=%s stream %.1fs lines=%d%s"
                     % (model, name, time.time() - t0, n_lines, _usage_str(usage)))
+            _record_usage(model, usage)
         return
 
     # 非流式：聚合 SSE → 单个 OpenAI 响应
@@ -284,3 +331,4 @@ def relay(handler, openai_body):
     handler._send(200, out)
     srv.log("[proxy] %s acct=%s %.1fs%s" % (model, name, time.time() - t0,
                                             _usage_str(usage)))
+    _record_usage(model, usage)

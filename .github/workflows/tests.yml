@@ -1,0 +1,27 @@
+# 多平台账号看板 · 单元测试 CI
+# 每次 push / PR 自动跑 tests/（31+ 例，不发起任何网络请求）
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install deps
+        run: pip install requests cryptography
+      - name: Run tests
+        # cwd=仓库根：tests/*.py 自行把 src/ 插入 sys.path
+        run: python -m unittest discover -s tests -v

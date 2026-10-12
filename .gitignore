@@ -46,3 +46,7 @@ backend_err.log
 Thumbs.db
 desktop.ini
 .codearts_profile/
+# 反代用量聚合（运行产物）
+proxy_usage.json
+# 凭据备份输出
+backups/

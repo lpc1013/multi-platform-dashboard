@@ -237,6 +237,14 @@ h1{font-size:31px;font-weight:700;letter-spacing:-.4px}
 .logbox{margin-top:26px;background:#0a2540;border-radius:14px;padding:16px 18px;color:#c3d0e0;
   font:12px/1.75 ui-monospace,SFMono-Regular,Consolas,monospace;max-height:230px;overflow:auto;white-space:pre-wrap}
 .logbox:empty{display:none}
+.proxybox{margin-top:26px;background:#0a2540;border-radius:14px;padding:14px 18px;color:#c3d0e0}
+.proxybox:empty{display:none}
+.proxybox .ptitle{font-size:12px;font-weight:700;color:#8ab4d8;letter-spacing:.04em;margin-bottom:8px}
+.proxybox table{width:100%;border-collapse:collapse;font:12px/1.9 ui-monospace,SFMono-Regular,Consolas,monospace}
+.proxybox td{padding:0 8px 0 0;white-space:nowrap}
+.proxybox td.num{text-align:right;color:#fff;font-weight:600}
+.proxybox td.dim{color:#7e93aa}
+.proxybox .sum{margin-top:6px;font-size:12px;color:#fff;font-weight:600}
 .toast{
   position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(18px);
   background:#0a2540;color:#fff;padding:13px 22px;border-radius:12px;font-size:14px;font-weight:560;
@@ -398,6 +406,7 @@ h1{font-size:31px;font-weight:700;letter-spacing:-.4px}
 
   <div class="stats" id="stats"></div>
   <div class="list" id="list"></div>
+  <div class="proxybox" id="proxybox"></div>
   <div class="logbox" id="logbox"></div>
 </div>
 
@@ -1000,6 +1009,7 @@ async function load(force, scope){
     syncTaskBar();
     render();
     renderLog(STATE.log);
+    loadProxyUsage();
   }catch(e){
     BACKEND_OK = false;
     STATE = DEMO;
@@ -1482,6 +1492,37 @@ function renderLog(lines){
   if(!lines || !lines.length){ $("#logbox").textContent=""; return; }
   $("#logbox").textContent = lines.join("\n");
   $("#logbox").scrollTop = 1e9;
+}
+
+/* ── 反代用量卡片（/api/proxy_usage，按日/按模型聚合）── */
+async function loadProxyUsage(){
+  try{
+    const r = await fetch("/api/proxy_usage", {cache:"no-store"});
+    if(!r.ok) return;
+    const d = await r.json();
+    const now = new Date();   // 本地日期（后端 strftime 也是本地时区，勿用 toISOString 的 UTC）
+    const today = now.getFullYear()+"-"+String(now.getMonth()+1).padStart(2,"0")+"-"+String(now.getDate()).padStart(2,"0");
+    const td = d[today] || {};
+    const models = Object.keys(td);
+    const box = $("#proxybox");
+    if(!models.length){ box.innerHTML=""; return; }
+    let allN=0, allT=0;
+    for(const day in d) for(const m in d[day]){
+      allN += d[day][m].calls||0;
+      allT += (d[day][m].prompt_tokens||0)+(d[day][m].completion_tokens||0);
+    }
+    models.sort((a,b)=>((td[b].prompt_tokens||0)+(td[b].completion_tokens||0))-((td[a].prompt_tokens||0)+(td[a].completion_tokens||0)));
+    let sumN=0, sumT=0, rows="";
+    for(const m of models){
+      const u = td[m], t = (u.prompt_tokens||0)+(u.completion_tokens||0);
+      sumN += u.calls||0; sumT += t;
+      rows += `<tr><td>${m}</td><td class="dim">${u.calls||0} 次</td><td class="num">${t.toLocaleString()} tok</td></tr>`;
+    }
+    const fmt = x => x>=1e6 ? (x/1e6).toFixed(1)+"M" : x>=1000 ? (x/1000).toFixed(1)+"k" : String(x);
+    box.innerHTML = `<div class="ptitle">⚡ CodeArts 反代 · 今日 token 消耗</div>
+      <table>${rows}</table>
+      <div class="sum">今日 ${sumN} 次 · ${fmt(sumT)} tokens　<span class="dim">｜ 30 天累计 ${allN} 次 · ${fmt(allT)} tokens</span></div>`;
+  }catch(e){ /* 用量卡片失败静默，不影响主流程 */ }
 }
 
 /* ── 执行 ── */

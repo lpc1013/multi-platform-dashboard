@@ -31,6 +31,8 @@ dashboard_analysis/
 │   ├── server.py           # 本地后端（标准库 http.server，127.0.0.1:8799）
 │   ├── local_import.py     # 各平台本地凭据读取与解密
 │   ├── oauth_login.py      # 统一登录框架（设备码 / 短信直登 / 浏览器代填）
+│   ├── oauth_common.py     # 登录共享基建（job 调度 / PKCE / 浏览器助手）
+│   ├── backup_creds.py     # 凭据加密备份/恢复（PBKDF2 + Fernet 单文件）
 │   ├── browser_login.py    # 受控 Chromium 登录
 │   ├── fetch_state.py      # 状态抓取
 │   ├── openai_proxy.py     # OpenAI 兼容反代（CodeArts 免费模型额度本机暴露）
@@ -101,6 +103,19 @@ python server.py 9000     # 指定端口
 - 本地回环请求**绕过系统代理**，避免凭据流向代理
 - 本仓库**不含任何真实凭据、手机号或账号信息**，所有示例数据均为占位符
 
+### 凭据加密备份（防磁盘损坏/误删）
+
+```bash
+cd src
+python backup_creds.py save              # 备份 → src/backups/*.creds（默认，已 gitignore）
+python backup_creds.py save D:/mybk      # 指定输出目录
+python backup_creds.py load <文件>.creds # 恢复（默认不覆盖已有文件，--force 覆盖）
+```
+
+- PBKDF2（600k 迭代）+ Fernet 加密，密码不落盘；**忘了密码 = 备份作废**
+- 打包全部 `*_accounts.json`、删除墓碑、MiniMax RT 备份等敏感文件
+- 备份文件请复制到本机之外（网盘/U盘）才算真备份
+
 ---
 
 ## 技术要点
@@ -140,8 +155,9 @@ POST http://127.0.0.1:8799/v1/chat/completions  # 流式透传 / 非流式聚合
 ### 行为与限制
 
 - **鉴权**：请求复用看板里 CodeArts 账号的 AK/SK 签名 + STS 临时令牌，无需额外配置
-- **审计**：每次调用落一条 `[proxy]` 日志（模型/账号/耗时/token 用量），看板日志区可见
+- **审计**：每次调用落一条 `[proxy]` 日志（模型/账号/耗时/token 用量），看板日志区可见；按日/按模型聚合写入 `proxy_usage.json`，看板显示「今日 token 消耗」卡片
 - **续期边界**：代理**不触发**浏览器静默续登（避免客户端启动拉模型列表时随机弹窗）；凭据过期返回 503 并提示到看板续期，签到/续期按钮会自动续
+- **多账号**：取 `expires_at` 最晚（最新鲜）的账号
 - **上游限制**：`tool_choice` 对象形态上游报参数错；超限返回 429 原样透传；每日额度按账号计
 
 ```python
