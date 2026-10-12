@@ -820,6 +820,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _begin_stream(self, status=200, ctype="text/event-stream; charset=utf-8"):
+        """SSE 响应头（openai_proxy 用）。ThreadingTCPServer 每请求一线程，
+        长流式不阻塞看板其它请求。"""
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+    def _write_chunk(self, data):
+        try:
+            self.wfile.write(data)
+            self.wfile.flush()
+        except Exception:
+            raise
+
     def log_message(self, fmt, *a):
         pass
 
@@ -841,6 +857,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send(200, collect_state(force=force, scope=scope))
             except Exception as e:
                 self._send(500, {"error": str(e)[:200]})
+        elif p == "/v1/models":
+            # OpenAI 兼容：CodeArts 模型目录（内置 + 福利免费额度）
+            try:
+                import openai_proxy as ox
+                _, ent = ox._load_ent()
+                builtin, benefit = ox.catalog(ent)
+                ids = list(dict.fromkeys((builtin or []) + sorted(benefit)))
+                self._send(200, {"object": "list", "data": [
+                    {"id": i, "object": "model",
+                     "owned_by": "codearts-benefit" if i in benefit else "codearts"}
+                    for i in ids]})
+            except ox.UpstreamError as e:
+                self._send(e.status, {"error": {"message": e.message}})
+            except Exception as e:
+                self._send(502, {"error": {"message": str(e)[:200]}})
         elif p == "/api/progress":
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             jid = (q.get("job") or [""])[0]
@@ -906,7 +937,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception:
             body = {}
         try:
-            if p == "/api/run":
+            if p == "/v1/chat/completions":
+                # OpenAI 兼容反代：CodeArts 免费额度模型（详见 openai_proxy.py）
+                import openai_proxy as ox
+                try:
+                    ox.relay(self, body)
+                except ox.UpstreamError as e:
+                    self._send(e.status, {"error": {"message": e.message}})
+                except Exception as e:
+                    self._send(502, {"error": {"message": str(e)[:200]}})
+            elif p == "/api/run":
                 platform = body.get("platform")
                 names = body.get("names")
                 tasks = tuple(body.get("tasks") or ["checkin"])
