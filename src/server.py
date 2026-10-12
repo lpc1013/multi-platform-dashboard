@@ -148,10 +148,11 @@ IDENT_FIELDS = {
     "trae": ("user_id", "token"),
     "qoder": ("user_id", "token"),
     "zcode": ("user_id", "token"),
-    "officeace": ("ak", "user_id"),
-    # ⚠ phone 兜底（2026-10-12）：caller-identity 取 domain_id 曾因解析错位永远为空，
-    #   身份回退 ak，而 STS 每次续期都换新 AK → 同一账号续期后另开新卡。
-    #   phone 是登录时落盘的稳定字段，排在 ak 之前挡住这种情况。
+    # ⚠ user_id 优先（2026-10-12 修复）：原来 ak 排最前，而 STS 每次续期/重新导入都换新
+    #   AK → 同一账号每次导入都被判成新身份，追加 ·1d5e#2 这类重复卡
+    #   （实测：同一 user_id 01a080ec...165be 一次导入一张 ·1d5e、再导入一张 ·1d5e#2）。
+    #   user_id 是 IAM 身份主键，稳定不变；phone 是短信登录落盘的稳定字段。
+    "officeace": ("user_id", "phone", "ak"),
     "codearts": ("user_id", "phone", "ak"),   # user_id=华为云 domain_id（续期换 AK 后身份不变）
 }
 

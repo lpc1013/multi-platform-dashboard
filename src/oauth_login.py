@@ -38,6 +38,7 @@ import base64
 import hashlib
 import secrets
 import threading
+import subprocess
 import urllib.parse
 
 try:
@@ -3837,6 +3838,9 @@ _OFFICEACE_EXE_CANDIDATES = [
 ]
 _OFFICEACE_INSTALL_HINTS = [r"E:\OfficeAce", r"C:\Program Files\OfficeAce"]
 
+# 本进程是否直启过 ServiceHost（2026-10-12）：流程结束时要回收（见 _officeace_maybe_teardown）
+_OFFICEACE_SPAWNED = False
+
 
 def _officeace_runtime_state_paths():
     """按 App 自己的 runtimeStateCandidates 顺序给出 runtime-state.json 候选路径。
@@ -3850,6 +3854,44 @@ def _officeace_runtime_state_paths():
         cands.append(os.path.join(root, "run", "windows", "runtime-state.json"))
         cands.append(os.path.join(root, "run", "runtime-state.json"))
     return cands
+
+
+def _officeace_gui_running():
+    """GUI 壳（OfficeAce.exe）是否在跑：在跑说明服务可能正被它共用，绝不回收。
+    注意 tasklist 输出是 GBK（中文 Windows），不能用 text=True（UTF-8 解码会炸）——
+    按字节匹配进程名（纯 ASCII），对任何代码页都稳。"""
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq OfficeAce.exe"],
+                             capture_output=True, timeout=10)
+        return b"OfficeAce.exe" in (out.stdout or b"")
+    except Exception:
+        return False
+
+
+def _officeace_maybe_teardown():
+    """回收本流程直启的 ServiceHost（幂等：只有本进程 spawn 过才动手）。
+    ⚠ 2026-10-12 实测教训：无头实例常驻会独占 runtime-state 的 HostPid 归属，
+    用户之后打开 GUI 客户端时报 NATIVE_SERVICE_STATE_INVALID 拒绝启动
+    （expected pid=25208, actual pid=44892）。用完必须还。"""
+    global _OFFICEACE_SPAWNED
+    if not _OFFICEACE_SPAWNED:
+        return False
+    _OFFICEACE_SPAWNED = False
+    if _officeace_gui_running():
+        return False                       # GUI 在共用这套服务，不能杀
+    try:
+        for st in _officeace_runtime_state_paths():
+            try:
+                pid = int(json.load(open(st, encoding="utf-8")).get("HostPid") or 0)
+            except Exception:
+                continue
+            if pid:
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                               capture_output=True)
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def _officeace_resolve_api():
@@ -3972,6 +4014,9 @@ def _officeace_autostart(wait=75):
     while time.time() - t0 < wait:
         ok, base, _ = _officeace_probe(timeout=3)
         if ok:
+            if sh is not None:
+                # 直启 ServiceHost 成功 → 标记为本流程所有，结束后 _officeace_maybe_teardown 回收
+                globals()["_OFFICEACE_SPAWNED"] = True
             how = "ServiceHost" if sh else "客户端"
             return True, base, "已自动启动 OfficeACE 服务（%s，用时 %.0fs）" % (how, time.time() - t0)
         time.sleep(2)
@@ -3989,6 +4034,7 @@ def _officeace_autostart(wait=75):
 def start_officeace_sms_job(phone, name, on_success):
     """OfficeACE 手机号+短信直登：驱动桌面端本地 API 完成华为云 OAuth（App 落盘凭据）。
     客户端没在跑时**自动拉起**（用户 2026-10-08 选定的行为）。"""
+    _officeace_maybe_teardown()   # 清掉上一次流程可能残留的直启实例（幂等，非本流程拉起则no-op）
     phone = "".join(ch for ch in str(phone or "") if ch.isdigit())
     if len(phone) != 11:
         return False, "请填写 11 位手机号（当前：%s）" % (phone or "空"), None
@@ -4049,6 +4095,14 @@ def _officeace_scan_captured(cdp, captured):
 
 
 def _run_officeace_sms_job(job, phone, name, on_success):
+    try:
+        return _run_officeace_sms_job_inner(job, phone, name, on_success)
+    finally:
+        # 无论成功/失败/用户中途放弃，本流程直启的服务都回收（GUI 在跑时自动跳过）
+        _officeace_maybe_teardown()
+
+
+def _run_officeace_sms_job_inner(job, phone, name, on_success):
     base = job.get("api") or _OFFICEACE_API
     st, j = _officeace_api("/api/login/authorize", "POST", {"persist": True},
                            timeout=12, base=base)

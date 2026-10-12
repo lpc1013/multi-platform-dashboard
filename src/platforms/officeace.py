@@ -242,6 +242,36 @@ def _service_start():
     return False, "ServiceHost 35s 内未就绪（查 .office-claw/run/windows/lifecycle.ndjson）"
 
 
+def _runtime_host_pid():
+    """读 runtime-state.json 的 HostPid（服务没在跑/读不到返回 None）。"""
+    st = os.path.join(_SERVICE_ROOT, ".office-claw", "run", "windows",
+                      "runtime-state.json")
+    try:
+        with open(st, encoding="utf-8") as f:
+            pid = int(json.load(f).get("HostPid") or 0)
+        return pid or None
+    except Exception:
+        return None
+
+
+def _service_stop():
+    """结束直启的 ServiceHost 进程树（taskkill /T 连 node/web 子进程一起）。
+    ⚠ 2026-10-12 新增，勿回退：无头实例常驻会独占 runtime-state 的 HostPid 归属，
+    用户之后打开 GUI 客户端时其服务（新 pid）校验状态归属失败 →
+    NATIVE_SERVICE_STATE_INVALID 弹窗拒绝启动（实测 21:31 复现）。
+    所以看板自己拉起的服务，用完必须回收；用户/客户端自己启动的绝不动。"""
+    pid = _runtime_host_pid()
+    if not pid:
+        return False
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                       capture_output=True,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        return True
+    except Exception:
+        return False
+
+
 def _oc_sid():
     """解密 WebView2 cookie 库里的 oc_sid。明文 = 32 字节实例前缀 + 实际值。"""
     now = time.time()
@@ -326,11 +356,24 @@ def _persist_entry(name, ent):
 
 
 def try_refresh(name, ent):
-    """无人值守刷新。成功返回 (True, 提示) 并就地更新 ent + 持久化。"""
+    """无人值守刷新。成功返回 (True, 提示) 并就地更新 ent + 持久化。
+    本函数直启的 ServiceHost 在结束时回收（见 _service_stop 的 NATIVE_SERVICE_STATE_INVALID 教训）。"""
+    spawned = False
+    try:
+        if not _service_up():
+            ok, msg = _service_start()
+            if not ok:
+                return False, msg
+            spawned = True
+        return _try_refresh_inner(name, ent)
+    finally:
+        if spawned:
+            _service_stop()
+
+
+def _try_refresh_inner(name, ent):
     if not _service_up():
-        ok, msg = _service_start()
-        if not ok:
-            return False, msg
+        return False, "服务未就绪"
     sid = _oc_sid()
     if not sid:
         return False, "取不到 WebView2 oc_sid（客户端从未登录过？）"

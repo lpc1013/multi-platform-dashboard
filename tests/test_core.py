@@ -210,5 +210,26 @@ class TestCodeArtsPreserveMerge(unittest.TestCase):
         self.assertEqual(accs["测试号"]["refresh_token"], "RT-KEEP")
 
 
+class TestOfficeaceIdentity(unittest.TestCase):
+    """2026-10-12 回归：officeace 身份指纹必须 user_id 优先。
+    原来 ak 排最前，STS 每次续期/重新导入都换新 AK → 同一账号被判成新身份，
+    追加 ·1d5e#2 重复卡（实测复现）。"""
+
+    def test_user_id_beats_rotating_ak(self):
+        f, v = server._ident_of("officeace", {"ak": "HST3-NEW", "user_id": "01a080ec165be"})
+        self.assertEqual((f, v), ("user_id", "01a080ec165be"))
+
+    def test_phone_used_when_no_user_id(self):
+        f, v = server._ident_of("officeace", {"ak": "HST3-X", "phone": "18685898566"})
+        self.assertEqual((f, v), ("phone", "18685898566"))
+
+    def test_same_user_id_different_ak_is_same_identity(self):
+        """同 user_id、AK 已轮换（重新导入场景）→ 必须视为同一身份。"""
+        old = {"ak": "HST3-OLD", "user_id": "01a080ec165be"}
+        new = {"ak": "HST3-NEW", "user_id": "01a080ec165be"}
+        self.assertEqual(server._ident_of("officeace", old),
+                         server._ident_of("officeace", new))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
