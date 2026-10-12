@@ -603,6 +603,7 @@ def collect_state(force=False, scope=None):
         any_cred = any(p.get("has_credentials") for p in out["platforms"].values())
         out["demo"] = not any_cred
         out["backend"] = True   # 本条响应来自真实后端；与「有无凭据」相互独立
+        out["data_dir"] = data_dir.DATA_DIR   # 凭据/数据存放目录（外移后可见可核对）
         if any_cred:
             out.pop("hint", None)
         else:

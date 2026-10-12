@@ -1003,7 +1003,8 @@ async function load(force, scope){
     }else{
       const nPlat = Object.keys(STATE.platforms).length;
       const nAcc = Object.values(STATE.platforms).reduce((s,p)=>s+(p.accounts?p.accounts.length:0),0);
-      conn(true, "后端已连接 · " + (STATE.generated_at||"—") + " · " + nPlat + " 个平台 · 共 " + nAcc + " 个账号");
+      conn(true, "后端已连接 · " + (STATE.generated_at||"—") + " · " + nPlat + " 个平台 · 共 " + nAcc + " 个账号" +
+        (STATE.data_dir ? " · 数据目录 " + STATE.data_dir : ""));
       $("#banner").style.display = "none";
     }
     syncTaskBar();
