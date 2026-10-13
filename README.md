@@ -29,6 +29,7 @@ dashboard_analysis/
 ├── src/
 │   ├── index.html          # 单文件前端（Stripe 风格，实时读盘，改完刷新即生效）
 │   ├── server.py           # 本地后端（标准库 http.server，127.0.0.1:8799）
+│   ├── cred_store.py       # 凭据存储层（原子写 + 进程内/跨进程双重锁 + 身份指纹键名分配）
 │   ├── local_import.py     # 各平台本地凭据读取与解密
 │   ├── oauth_login.py      # 统一登录框架（设备码 / 短信直登 / 浏览器代填）
 │   ├── oauth_common.py     # 登录共享基建（job 调度 / PKCE / 浏览器助手）
@@ -123,6 +124,8 @@ python backup_creds.py load <文件>.creds # 恢复（默认不覆盖已有文�
 ## 技术要点
 
 - **无第三方 Web 框架**：后端仅用 Python 标准库 `http.server`
+- **凭据存储加固**（`cred_store.py`）：临时文件 + `os.replace` 原子写（崩溃不产生半截 JSON）、
+  进程内互斥 + 跨进程文件锁（多线程/多实例并发不丢写）、损坏 JSON 自动隔离为 `*.corrupt-*` 留痕
 - **前端单文件**：`index.html` 每次请求实时读盘，改动刷新即生效，无需重启
 - **多账号不覆盖**：落盘按**身份指纹**分配键名（而非显示名），同人不同源不会互相覆盖
 - **令牌续期**：部分平台（CodeArts / MiniMax）支持自动刷新临时凭据

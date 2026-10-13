@@ -20,7 +20,7 @@
   python server.py            # 默认 http://127.0.0.1:8799
   python server.py 9000       # 指定端口
 """
-import os, sys, json, time, itertools, threading, hashlib
+import os, sys, json, time, itertools, threading
 import concurrent.futures as cf
 import http.server, socketserver, urllib.parse
 from datetime import datetime
@@ -29,6 +29,20 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import data_dir   # 凭据/运行产物外移到 %LOCALAPPDATA%\dashboard_analysis（import 即自动迁移）
+
+# ── 凭据存储层（2026-10-13 从本文件抽出，含原子写 + 双重锁加固）──
+# 薄壳 re-export：保持 _read_json/_save_cred/CRED_FILES 等原符号在本模块可达，
+# tests/test_core.py 与 openai_proxy.py（srv.CRED_FILES / srv._read_json）零改动。
+import cred_store
+from cred_store import (
+    CRED_FILES, IDENT_FIELDS, DEFAULT_LABEL,
+    read_json as _read_json, write_json as _write_json,
+    cred_store_set as _cred_store_set, cred_store_remove as _cred_store_remove,
+    ident_of as _ident_of, wb_match as _wb_match,
+    dedupe_store as _dedupe_store, name_tail as _name_tail,
+    alloc_account_name as _alloc_account_name, save_cred as _save_cred,
+    locked as _cred_locked, WB_LOGIN_FILE,
+)
 
 try:
     import requests
@@ -53,45 +67,11 @@ except Exception as _e:
 # 2026-10-12 起统一落 %LOCALAPPDATA%\dashboard_analysis\（data_dir.path），
 # 各适配器 load_accounts 的读点候选同样以 DATA_DIR 优先，写后即被看板识别。
 # data_dir import 时已把 src/ 下的旧文件自动迁移过去。
-WB_LOGIN_FILE         = data_dir.path("wb_login_result.json")
-MINIMAX_ACCOUNTS_FILE = data_dir.path("minimax_accounts.json")
-DUMATE_ACCOUNTS_FILE  = data_dir.path("dumate_accounts.json")
-LINGXI_ACCOUNTS_FILE  = data_dir.path("lingxi_accounts.json")
-TRAE_ACCOUNTS_FILE    = data_dir.path("trae_accounts.json")
-QODER_ACCOUNTS_FILE   = data_dir.path("qoder_accounts.json")
-ZCODE_ACCOUNTS_FILE   = data_dir.path("zcode_accounts.json")
-OFFICEACE_ACCOUNTS_FILE = data_dir.path("officeace_accounts.json")
-CODEARTS_ACCOUNTS_FILE  = data_dir.path("codearts_accounts.json")
+# 2026-10-13：各平台凭据文件路径与 WB_LOGIN_FILE 的定义收编至 cred_store（上方已导入）。
 
-# 各平台的凭据文件（供「添加 / 删除 / 本地导入」统一寻址）
-CRED_FILES = {
-    "minimax": MINIMAX_ACCOUNTS_FILE,
-    "baidu_dumate": DUMATE_ACCOUNTS_FILE,
-    "lingxi": LINGXI_ACCOUNTS_FILE,
-    "trae": TRAE_ACCOUNTS_FILE,
-    "qoder": QODER_ACCOUNTS_FILE,
-    "zcode": ZCODE_ACCOUNTS_FILE,
-    "officeace": OFFICEACE_ACCOUNTS_FILE,
-    "codearts": CODEARTS_ACCOUNTS_FILE,
-}
 # 支持「从本地客户端导入」的平台
 LOCAL_IMPORT_PLATFORMS = ("baidu_dumate", "minimax", "lingxi", "trae",
                           "qoder", "zcode", "officeace", "codearts")
-
-
-def _read_json(path, default):
-    try:
-        if os.path.exists(path):
-            return json.load(open(path, encoding="utf-8"))
-    except Exception:
-        pass
-    return default
-
-
-def _write_json(path, data):
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1)
 
 
 def _wb_store_append(phone, at, rt):
@@ -112,159 +92,11 @@ def _wb_store_append(phone, at, rt):
     return rec
 
 
-def _cred_store_set(path, name, fields):
-    data = _read_json(path, {})
-    if not isinstance(data, dict):
-        data = {}
-    data[name] = fields
-    _write_json(path, data)
-    return data
-
-
-def _cred_store_remove(path, name):
-    data = _read_json(path, {})
-    if not isinstance(data, dict) or name not in data:
-        return False
-    data.pop(name, None)
-    _write_json(path, data)
-    return True
-
-
 def _invalidate_state():
     """凭据变更后只把缓存标脏，立刻返回。
     前端在拿到响应后会自己再发一次 /api/state，无需在这里同步重读全部平台——
     否则「添加账号 / 从本地客户端导入」按钮要等十几秒才有反应（看起来像点了没反应）。"""
     _state_cache.update(at=0, data=None)
-
-
-# 各平台「身份指纹」字段（按优先级）：同一个指纹 = 同一个账号，只是显示名/令牌可能变了
-# ⚠ minimax 刻意把 user_id(realUserID) 放在 access_token 之前：客户端会轮换 accessToken
-#   （v2 store 的 refreshToken 每刷新一次 generation+1，令牌随之变化），
-#   若拿令牌当指纹，同一个人换个令牌就会被当成新账号，多出一张卡片。
-IDENT_FIELDS = {
-    "minimax": ("user_id", "phone", "access_token"),
-    "baidu_dumate": ("cookie",),
-    "lingxi": ("wps_sid",),
-    "trae": ("user_id", "token"),
-    "qoder": ("user_id", "token"),
-    "zcode": ("user_id", "token"),
-    # ⚠ user_id 优先（2026-10-12 修复）：原来 ak 排最前，而 STS 每次续期/重新导入都换新
-    #   AK → 同一账号每次导入都被判成新身份，追加 ·1d5e#2 这类重复卡
-    #   （实测：同一 user_id 01a080ec...165be 一次导入一张 ·1d5e、再导入一张 ·1d5e#2）。
-    #   user_id 是 IAM 身份主键，稳定不变；phone 是短信登录落盘的稳定字段。
-    "officeace": ("user_id", "phone", "ak"),
-    "codearts": ("user_id", "phone", "ak"),   # user_id=华为云 domain_id（续期换 AK 后身份不变）
-}
-
-# 「粘贴添加」时若用户没填备注名，用这个前缀 + 手机号/ID 尾号 自动起名，
-# 避免多个账号全落进同一个键（"MiniMax"）而互相覆盖。
-DEFAULT_LABEL = {
-    "minimax": "MiniMax", "baidu_dumate": "DuMate", "lingxi": "灵犀",
-    "trae": "Trae", "qoder": "Qoder", "zcode": "ZCode",
-    "officeace": "OfficeACE", "codearts": "CodeArts",
-}
-
-
-def _ident_of(pid, rec):
-    for f in IDENT_FIELDS.get(pid, ()):
-        v = str((rec or {}).get(f) or "").strip()
-        if v:
-            return f, v
-    return None
-
-
-def _wb_match(it, name):
-    """WorkBuddy 的条目以手机号为身份，允许用户另设备注名（alias）。"""
-    return isinstance(it, dict) and (str(it.get("phone") or "") == name
-                                     or str(it.get("alias") or "") == name)
-
-
-def _dedupe_store(path, pid, keep_name, rec):
-    """写入前清掉「同一身份、换了显示名」的旧条目。
-    场景：桌面端把显示名从「一只总柴0623」改成「用户68388451332」，
-    再点一次导入，若不去重就会多出一张同名不同键的卡片，账号数被虚增。"""
-    data = _read_json(path, {})
-    if not isinstance(data, dict):
-        return []
-    ident = _ident_of(pid, rec)
-    if not ident:
-        return []
-    f, v = ident
-    dropped = []
-    for nm, old in list(data.items()):
-        if nm == keep_name or not isinstance(old, dict):
-            continue
-        if str(old.get(f) or "").strip() == v:
-            data.pop(nm, None)
-            dropped.append(nm)
-    if dropped:
-        _write_json(path, data)
-    return dropped
-
-
-def _name_tail(rec):
-    """取一段能区分账号的短尾号，用于同重名时消歧。
-    手机号 / 用户 ID 这类可读标识取末 4 位；cookie、token 这类不透明串取 sha1 前 4 位
-    （直接截末 4 位会得到 `EN=2` 这种看不懂的碎片）。"""
-    rec = rec or {}
-    for f in ("phone", "user_id"):
-        v = str(rec.get(f) or "").strip()
-        if v:
-            return v[-4:]
-    for f in ("wps_sid", "cookie", "token", "access_token", "sts_token", "secret",
-              "refresh_token", "ak"):
-        v = str(rec.get(f) or "").strip()
-        if v:
-            return hashlib.sha1(v.encode("utf-8")).hexdigest()[:4]
-    return ""
-
-
-def _alloc_account_name(path, pid, ideal, rec):
-    """为一条凭据挑一个「不会覆盖其他账号」的键名。
-
-    为什么必须做这件事：MiniMax 客户端只有 user / sharedUser 两个登录槽位，
-    登录第 3 个号时客户端会把先前槽位顶掉；而两个不同账号的显示名可能完全相同
-    （都叫「一只总柴」之类）。此时若直接按名字写入字典，后写的就把前面的**覆盖**掉了
-    —— 这正是「登了三个号，后面两个号总是互相覆盖」的根因。
-
-    规则：
-      ① 同身份（user_id / phone / token …）已存在 → 沿用旧键名（顺便保住用户改过的备注名）
-      ② ideal 未被占用 → 直接用
-      ③ ideal 被别的身份占用 → 追加尾号，仍冲突则 #2 #3 …
-    """
-    data = _read_json(path, {})
-    if not isinstance(data, dict):
-        data = {}
-    ident = _ident_of(pid, rec)
-
-    def _same(nm):
-        if not ident:
-            return False
-        old = data.get(nm)
-        return isinstance(old, dict) and str(old.get(ident[0]) or "").strip() == ident[1]
-
-    ideal = (ideal or "").strip()
-    if not ideal:
-        tail = _name_tail(rec)
-        ideal = DEFAULT_LABEL.get(pid, pid) + (("·" + tail) if tail else "")
-
-    if ident:
-        for nm in data:
-            if nm != ideal and _same(nm):
-                return nm          # ① 同一账号已存在 → 沿用旧名，绝不新建
-    if ideal not in data or _same(ideal):
-        return ideal               # ② 名字空着，或就是同一个账号 → 直接用
-
-    tail = _name_tail(rec)
-    base = ("%s·%s" % (ideal, tail)) if tail else ideal
-    if base not in data or _same(base):
-        return base
-    i = 2
-    while True:
-        nm = "%s#%d" % (base, i)
-        if nm not in data or _same(nm):
-            return nm
-        i += 1
 
 
 def _dumate_web_save(ideal, grant):
@@ -471,15 +303,6 @@ def _officeace_login_save(name, grant):
     _invalidate_state()
     extra = ("，并从 App 刷新 %d 条凭据" % refreshed) if refreshed else ""
     return True, use, "登录成功，已保存 OfficeACE 账号「%s」%s" % (use, extra)
-
-
-def _save_cred(pid, fields, ideal=""):
-    """按「不覆盖其他账号」的规则落盘一条凭据，返回最终键名。"""
-    path = CRED_FILES[pid]
-    use = _alloc_account_name(path, pid, ideal, fields)
-    _dedupe_store(path, pid, use, fields)
-    _cred_store_set(path, use, fields)
-    return use
 
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8799
