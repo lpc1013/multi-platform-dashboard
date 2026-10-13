@@ -18,23 +18,49 @@ rem 带 --no-open 参数时只启动服务，不自动打开浏览器
 set "OPEN=1"
 if /i "%~1"=="--no-open" set "OPEN=0"
 
+rem /restart：先结束旧服务再启动（改完代码后用这个；双击不带参数不会重启）
+set "RESTART=0"
+if /i "%~1"=="/restart" set "RESTART=1"
+if /i "%~1"=="--restart" set "RESTART=1"
+
 rem ================= 1) 服务是否已经在运行 =================
 netstat -ano | findstr /c:":%PORT% " | findstr /i "LISTENING" >nul 2>&1
+if errorlevel 1 goto :freshstart
+
+rem ---- 端口已被监听 ----
+if "%RESTART%"=="1" goto :dorestart
+curl -s -m 3 http://127.0.0.1:%PORT%/api/ping 2>nul | findstr /c:"ok" >nul 2>&1
+if errorlevel 1 goto :portbusy
+echo [提示] 看板服务已经在运行，直接打开页面：
+echo        http://127.0.0.1:%PORT%
+echo        [注意] 改完代码双击不会生效！重启请运行：启动看板.bat /restart
+if "%OPEN%"=="1" start "" "http://127.0.0.1:%PORT%"
+%SystemRoot%\System32\timeout.exe /t 2 /nobreak >nul 2>&1
+exit /b 0
+
+:portbusy
+echo [错误] 端口 %PORT% 已被其他程序占用，看板无法启动。
+echo        请关闭占用该端口的程序后重试，或修改本文件中的 PORT 值。
+echo.
+pause
+exit /b 1
+
+:dorestart
+echo [重启] 正在结束占用端口 %PORT% 的旧服务...
+rem 服务端开了端口复用，可能有多实例同占 8799，循环全部结束
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /c:":%PORT% " ^| findstr /i "LISTENING"') do taskkill /f /pid %%P >nul 2>&1
+%SystemRoot%\System32\timeout.exe /t 2 /nobreak >nul 2>&1
+netstat -ano | findstr /c:":%PORT% " | findstr /i "LISTENING" >nul 2>&1
 if not errorlevel 1 (
-    curl -s -m 3 http://127.0.0.1:%PORT%/api/ping 2>nul | findstr /c:"ok" >nul 2>&1
-    if not errorlevel 1 (
-        echo [提示] 看板服务已经在运行，直接打开页面：
-        echo        http://127.0.0.1:%PORT%
-        if "%OPEN%"=="1" start "" "http://127.0.0.1:%PORT%"
-        %SystemRoot%\System32\timeout.exe /t 2 /nobreak >nul 2>&1
-        exit /b 0
-    )
-    echo [错误] 端口 %PORT% 已被其他程序占用，看板无法启动。
-    echo        请关闭占用该端口的程序后重试，或修改本文件中的 PORT 值。
+    echo [失败] 端口 %PORT% 仍被占用（权限不足或进程杀不掉），请手动关闭后重试。
     echo.
     pause
     exit /b 1
 )
+echo [重启] 旧服务已结束，启动新服务。
+echo.
+
+:freshstart
 
 rem ================= 2) 查找一个带 requests 的 Python =================
 set "PY="
@@ -87,6 +113,7 @@ echo                 多平台账号看板 · 本地服务
 echo.
 echo    访问地址： http://127.0.0.1:%PORT%
 echo    停止服务： 关闭本窗口，或按 Ctrl+C
+echo    重启服务： 命令行运行 启动看板.bat /restart
 echo ============================================================
 echo.
 
