@@ -238,12 +238,29 @@ def _click_text(page, names, timeout=1500):
             pass
     return False
 def _has_captcha(page):
-    """检测腾讯滑块验证码是否弹出（turing.captcha / tcaptcha 的 iframe 或浮层）。"""
+    """检测腾讯滑块验证码是否弹出（turing.captcha / tcaptcha 的 iframe 或浮层）。
+
+    ⚠ 2026-10-13 加固：必须**可见**才算弹出——MiniMax 登录页会预载隐藏的
+    captcha iframe（src/id 含 captcha 字样但从不显示），旧逻辑把隐藏 iframe
+    也判为弹出 → job["captcha"] 恒为 True → 前端把真实状态文案覆盖成
+    「窗口弹出了滑块」假警告（真机回归实测：用户被误导去找不存在的滑块）。
+    可见判据：几何尺寸 ≥4px 且非 display:none / visibility:hidden。
+    """
     try:
         return bool(page.evaluate("""() => {
-            const fs = Array.from(document.querySelectorAll('iframe'));
-            if (fs.some(f => /turing\\.captcha|tcaptcha|captcha/.test((f.src||'')+(f.id||'')))) return true;
-            if (document.querySelector('#tcaptcha_iframe,[class*="tcaptcha"],[id*="tcaptcha"]')) return true;
+            const vis = (e) => {
+                if (!e) return false;
+                const r = e.getBoundingClientRect();
+                if (r.width < 4 || r.height < 4) return false;
+                const s = getComputedStyle(e);
+                return s.display !== 'none' && s.visibility !== 'hidden';
+            };
+            for (const f of document.querySelectorAll('iframe')) {
+                if (/turing\\.captcha|tcaptcha|captcha/.test((f.src||'')+(f.id||'')) && vis(f)) return true;
+            }
+            for (const e of document.querySelectorAll('#tcaptcha_iframe,[class*="tcaptcha"],[id*="tcaptcha"]')) {
+                if (vis(e)) return true;
+            }
             return false;
         }"""))
     except Exception:

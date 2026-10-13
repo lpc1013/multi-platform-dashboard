@@ -184,6 +184,12 @@ def _run_sms_job(job, flow, phone, on_success):
             # ② 点「获取验证码」（若平台弹滑块，请在窗口里手动拖一下）
             _click_text(page, ["获取验证码", "发送验证码", "获取短信验证码"], timeout=3000)
             page.wait_for_timeout(1000)
+            # ②b MiniMax 点「获取验证码」后可能先弹协议确认框，要点「确认」短信才真正
+            #    发出（2026-10-13 真机回归实测）。点掉确认框后补点一次发送；其它平台
+            #    无此框时两次点击都空跑（_click_text 找不到文本直接返回 False），无副作用。
+            if _click_text(page, ["确认", "确定", "同意"], timeout=1200):
+                page.wait_for_timeout(600)
+                _click_text(page, ["获取验证码", "发送验证码", "获取短信验证码"], timeout=2500)
             if _has_captcha(page):
                 _pull_window_front(ctx)   # 滑块弹出：把屏幕外窗口拉回让人工拖
             job.update(status="waiting_code", sms_sent=True, need_code=True,
@@ -209,12 +215,13 @@ def _run_sms_job(job, flow, phone, on_success):
                         job["code_submitted"] = True
                         job["need_code"] = False
                         job["result"] = "已提交验证码，正在登录…"
-                # 滑块风控状态回传前端，好提示用户去窗口里拖一下
-                if not job.get("code_submitted"):
-                    cap = _has_captcha(page)
-                    if cap and not job.get("captcha"):
-                        _pull_window_front(ctx)   # 边沿触发：新弹出的滑块把窗口拉回
-                    job["captcha"] = cap
+                # 滑块风控状态回传前端：每轮都刷新（验证码消失后 flag 自动归 False，
+                # 前端状态文案随之恢复真实内容——旧实现只在未提交验证码时更新，
+                # 提交后 flag 永久滞留 true，假警告盖住「正在登录」直到结束）
+                cap = _has_captcha(page)
+                if cap and not job.get("captcha"):
+                    _pull_window_front(ctx)   # 边沿触发：新弹出的滑块把窗口拉回
+                job["captcha"] = cap
                 if job.get("code_submitted"):
                     # 登录成功后设备授权页会出现确认按钮
                     _click_text(page, ["授权", "确认授权", "同意授权", "允许", "Authorize"],

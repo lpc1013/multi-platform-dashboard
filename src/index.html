@@ -1908,7 +1908,8 @@ async function smsPoll(platform, jobId){
     if(txt && s.text){
       txt.style.display = "block";
       txt.textContent = s.captcha
-        ? "⚠️ 登录窗口弹出了滑块/图片验证码，请先在窗口里完成，短信才会发出。"
+        ? (s.need_code ? "⚠️ 登录窗口弹出了滑块/图片验证码，请先在窗口里完成，短信才会发出。"
+                       : "⚠️ 登录窗口有滑块/验证未完成，请在窗口里操作，登录才能继续。")
         : s.text;
     }
     if(!codeShown && s.need_code){
