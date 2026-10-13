@@ -1,11 +1,18 @@
 # oauth_login.py 拆分评估（2026-10-11）
 
-> **进度（2026-10-12）：✅ 第一期已完成**——22 个纯基建符号（常量 + job 调度 +
-> PKCE/表单 + 浏览器助手）已抽至 `src/oauth_common.py`（22KB），oauth_login.py
-> 减至 203KB，头部显式 `from oauth_common import (...)` 保命名空间。
-> 验证：146 个原顶层符号全部可达、`_JOBS` 对象同一、34 单测全绿、
-> server 完整加载链路冒烟 200。**`_run_job` 留守**（内部引用 device_poll
-> 平台分发，不满足封闭性）。二三期待逐平台真机回归。
+> **进度（2026-10-13）：✅ 第一、二期已完成，待真机回归**
+>
+> 一期（2026-10-12）：22 个纯基建符号 → `src/oauth_common.py`。
+>
+> 二期（2026-10-13）：巨石按平台/职责切为 10 个平铺模块，oauth_login.py
+> 变 80 行薄壳 re-export（4226 → 80 行）：
+> `oauth_shared.py`（验证码探测/JSON 捞 token/调试留痕，解 HW↔CODEARTS 环）、
+> `oauth_device.py`（设备流三步 + refresh_grant）、`oauth_jobs.py`（任务调度）、
+> `oauth_qoder/zcode/dumate/lingxi/hw/trae/codearts/officeace.py`（各平台直登）。
+> 切割由跨段调用矩阵驱动：127 个原顶层符号全覆盖、无跨模块重名；
+> JOBS/submit_code 与 oauth_common 同一对象；77 单测全绿；服务冒烟
+> /api/ping /api/state 200 + minimax 设备流真实 user_code 下发成功。
+> **三期（server/webapi/platforms 改直连、删壳）待逐平台真机回归全过后执行。**
 
 ## 现状（一期完成前存档：原 222KB / 4552 行 / 146 个顶层符号）
 `src/oauth_login.py` ~214KB / 4061 行 / 113 个顶层函数，混合四类内容：
