@@ -119,7 +119,12 @@ def start_sms_job(platform, phone, on_success, region="cn"):
     → 自动点「获取验证码」→ 前端弹验证码输入框 → submit_code() 注入验证码并点登录
     → 自动点「授权」→ 轮询拿到正式令牌 → on_success 落盘 → 关浏览器。
     """
-    phone = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    raw = str(phone or "")
+    if "*" in raw:
+        # 设备流登录的账号只存得到脱敏号（如 180******23），完整号从未落盘
+        return False, ("该账号记录的是脱敏手机号（%s），完整号码未保存过——"
+                       "请手动输入 11 位手机号后重新续期" % raw), None
+    phone = "".join(ch for ch in raw if ch.isdigit())
     if len(phone) != 11:
         return False, "请填写 11 位手机号（当前：%s）" % (phone or "空"), None
     ok, msg, flow = device_start(platform, region)

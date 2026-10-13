@@ -1291,7 +1291,8 @@ function detailHTML(a, pid){
   var renewBtnHTML = function(a, pid){
     const ph = String((a.extra||{}).phone||"").trim();
     if(!ph || !PHONE_INPUT[pid]) return "";
-    return `<button class="btn-ren2" data-renewc="${pid}" data-phone="${esc(ph)}" data-name="${esc(a.name)}" title="手机号已预填，只需输入验证码">🔄 续期凭据</button>`;
+    const masked = ph.indexOf("*") >= 0;   /* 设备流账号只有脱敏号：仍可续期，但需手输完整号 */
+    return `<button class="btn-ren2" data-renewc="${pid}" data-phone="${esc(ph)}" data-name="${esc(a.name)}" title="${masked ? "账号记录的是脱敏手机号，续期需手动输入完整号码" : "手机号已预填，只需输入验证码"}">🔄 续期凭据</button>`;
   };
   const pkgs = (a.packages||[]).slice().sort((x,y)=>{
     if(x.perpetual) return 1;
@@ -1635,7 +1636,16 @@ function startRenew(pid, phone, name){
   $("#addMask").style.display="flex"; setTab(pid); clearAddMsg();
   document.querySelector("#addMask .mtitle").textContent = "🔄 续期凭据 · " + name;
   const inp = document.getElementById(PHONE_INPUT[pid]);
-  if(inp){ inp.value = phone; }
+  /* 设备流登录的账号（如 Trae 客户端授权）回调里只有脱敏手机号（180******23），
+     完整号码根本拿不到——预填只会让「发送验证码」必然报错。此时不预填，
+     请用户手输完整号；登录成功后按身份原地覆盖，记录自愈为完整号。 */
+  const masked = phone.indexOf("*") >= 0;
+  if(inp){ inp.value = masked ? "" : phone; }
+  if(masked){
+    addMsg("⚠️ 续期「"+name+"」：该账号记录的是脱敏手机号（"+phone+"），完整号码未保存过——请手动输入 11 位手机号后点「发送验证码」（成功后自动覆盖旧凭据，备注名保留，下次续期即可预填）", false);
+    if(inp) inp.focus();
+    return;
+  }
   addMsg("🔄 续期「"+name+"」：手机号已预填 "+phone+"，直接点「发送验证码」，收码后「登录并保存」即可（自动覆盖该账号旧凭据，备注名保留）", true);
   const pane = document.querySelector('.tabpane[data-pane="'+pid+'"]');
   if(pane){

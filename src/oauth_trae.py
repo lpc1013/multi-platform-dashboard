@@ -744,7 +744,12 @@ def _trae_click_open(ctx, debug=None):
 
 def start_trae_sms_job(phone, name, on_success):
     """Trae 手机号+短信直登（OAuth PKCE + 随机回调端口，对齐客户端 listen(0)）。"""
-    phone = "".join(ch for ch in str(phone or "") if ch.isdigit())
+    raw = str(phone or "")
+    if "*" in raw:
+        # 设备流（客户端授权）登录的账号只有脱敏号（如 180******23），完整号从未落盘
+        return False, ("该账号记录的是脱敏手机号（%s），完整号码未保存过——"
+                       "请手动输入 11 位手机号后重新续期" % raw), None
+    phone = "".join(ch for ch in raw if ch.isdigit())
     if len(phone) != 11:
         return False, "请填写 11 位手机号（当前：%s）" % (phone or "空"), None
     flow = {"user_code": "", "verify_url": "", "expires_in": 600,
