@@ -46,6 +46,13 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import secret_box
 
+# 统一异常体系（锁超时等存取层错误 → StorageError）
+try:
+    from errors import StorageError
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from errors import StorageError
+
 __all__ = [
     "CRED_FILES", "IDENT_FIELDS", "DEFAULT_LABEL",
     "read_json", "write_json", "locked",
@@ -145,7 +152,8 @@ def _os_lock(lock_path):
             except OSError:
                 if time.time() > deadline:
                     f.close()
-                    raise TimeoutError("cred_store 跨进程锁等待超时：%s" % lock_path)
+                    raise StorageError("cred_store 跨进程锁等待超时（可能有其它实例长时间占用）：%s"
+                                       % lock_path)
                 time.sleep(0.05)
     else:
         import fcntl

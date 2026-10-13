@@ -163,6 +163,12 @@ POST http://127.0.0.1:8799/v1/chat/completions  # 流式透传 / 非流式聚合
 ### 行为与限制
 
 - **鉴权**：请求复用看板里 CodeArts 账号的 AK/SK 签名 + STS 临时令牌，无需额外配置
+- **入口网关**（2026-10-13）：默认对本机开放；设置环境变量 `DASHBOARD_PROXY_API_KEY` 后
+  `/v1/*` 须带 `Authorization: Bearer <key>`（为放开局域网监听预留）；
+  内置令牌桶限流（默认 60 次/分钟、突发 30，`DASHBOARD_PROXY_RATELIMIT` /
+  `DASHBOARD_PROXY_BURST` 可调），超限返回 429
+- **统一异常**：`src/errors.py`（DashboardError/StorageError/AuthError/UpstreamError），
+  路由层按 `http_status` + `err_code` 返回结构化错误
 - **审计**：每次调用落一条 `[proxy]` 日志（模型/账号/耗时/token 用量），看板日志区可见；按日/按模型聚合写入 `proxy_usage.json`，看板显示「今日 token 消耗」卡片
 - **续期边界**：代理**不触发**浏览器静默续登（避免客户端启动拉模型列表时随机弹窗）；凭据过期返回 503 并提示到看板续期，签到/续期按钮会自动续
 - **多账号**：取 `expires_at` 最晚（最新鲜）的账号

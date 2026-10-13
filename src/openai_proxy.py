@@ -51,13 +51,50 @@ _lock = threading.Lock()
 _catalog = {"ts": 0.0, "builtin": [], "benefit": set()}
 
 
-class UpstreamError(Exception):
-    """上游错误（带 HTTP 状态码与响应体），转译给 OpenAI 客户端。"""
+# ── 访问网关：API Key（可选）+ 令牌桶限流（2026-10-13，对应外部评审「八」）──
+# 服务只监听 127.0.0.1，默认对「本机任意进程/浏览器页面」开放（与看板其余 API 同级）。
+# 若设置 DASHBOARD_PROXY_API_KEY，则 /v1/* 必须带 Authorization: Bearer <key>——
+# 为将来放开局域网监听预留开关。限流防失控客户端把每日免费额度瞬间打光。
+PROXY_API_KEY = os.environ.get("DASHBOARD_PROXY_API_KEY", "").strip()
+RATE_PER_MIN = max(1.0, float(os.environ.get("DASHBOARD_PROXY_RATELIMIT", "60") or 60))
+BURST = max(1.0, float(os.environ.get("DASHBOARD_PROXY_BURST", "30") or 30))
+_rl_lock = threading.Lock()
+_rl = {"tokens": BURST, "ts": time.time()}
 
-    def __init__(self, status, message):
-        super().__init__(message)
-        self.status = int(status) if status else 502
-        self.message = message
+
+def allow_request():
+    """令牌桶：每分钟稳定 RATE_PER_MIN 个，桶容量 BURST 允许突发。"""
+    with _rl_lock:
+        now = time.time()
+        _rl["tokens"] = min(BURST, _rl["tokens"] + (now - _rl["ts"]) * RATE_PER_MIN / 60.0)
+        _rl["ts"] = now
+        if _rl["tokens"] >= 1.0:
+            _rl["tokens"] -= 1.0
+            return True
+        return False
+
+
+def gate(handler):
+    """/v1/* 统一入口校验：鉴权 + 限流。失败时直接写响应并返回 False。"""
+    if PROXY_API_KEY:
+        import hmac as _hmac
+        auth = str(handler.headers.get("Authorization") or "")
+        if not _hmac.compare_digest(auth, "Bearer %s" % PROXY_API_KEY):
+            handler._send(401, {"error": {
+                "message": "Invalid API key。后端设置了 DASHBOARD_PROXY_API_KEY，"
+                           "客户端须以 Authorization: Bearer <key> 访问。",
+                "type": "auth_error", "code": "invalid_api_key"}})
+            return False
+    if not allow_request():
+        handler._send(429, {"error": {
+            "message": "本地代理限流：请求过于频繁（当前 %s 次/分钟，可用环境变量 "
+                       "DASHBOARD_PROXY_RATELIMIT / DASHBOARD_PROXY_BURST 调整）" % int(RATE_PER_MIN),
+            "type": "rate_limit_error", "code": "rate_limit_exceeded"}})
+        return False
+    return True
+
+
+from errors import UpstreamError   # noqa: E402  统一异常体系（保持 (status, message) 旧签名）
 
 
 def _pick_freshest(d):

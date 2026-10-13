@@ -17,6 +17,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import data_dir
+from errors import DashboardError
 from registry import PORT, LOCAL_IMPORT_PLATFORMS
 from logstore import log, LOG
 import cred_store
@@ -138,6 +139,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 force = "force" in q
                 scope = (q.get("platform") or [""])[0] or None
                 self._send(200, collect_state(force=force, scope=scope))
+            except DashboardError as e:
+                self._send(e.http_status, e.to_dict())
             except Exception as e:
                 self._send(500, {"error": str(e)[:200]})
         elif p == "/v1/models":
@@ -145,6 +148,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # import 在 try 外：若放 try 内，import 失败时 except ox.UpstreamError
             # 会因 ox 未定义抛 NameError，把真实错误搅成 500 迷雾
             import openai_proxy as ox
+            if not ox.gate(self):
+                return
             try:
                 _, ent = ox._load_ent()
                 builtin, benefit = ox.catalog(ent)
@@ -231,6 +236,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if p == "/v1/chat/completions":
                 # OpenAI 兼容反代：CodeArts 免费额度模型（详见 openai_proxy.py）
                 import openai_proxy as ox
+                if not ox.gate(self):
+                    return
                 try:
                     ox.relay(self, body)
                 except ox.UpstreamError as e:
@@ -739,5 +746,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
             else:
                 self._send(404, {"error": "not found"})
+        except DashboardError as e:
+            self._send(e.http_status, e.to_dict())
         except Exception as e:
             self._send(500, {"error": str(e)[:200]})
