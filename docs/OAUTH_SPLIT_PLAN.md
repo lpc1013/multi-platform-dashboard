@@ -1,6 +1,6 @@
 # oauth_login.py 拆分评估（2026-10-11）
 
-> **进度（2026-10-13）：✅ 第一、二期已完成，待真机回归**
+> **进度（2026-10-13）：✅ 三期全部完成，oauth_login.py 已删除**
 >
 > 一期（2026-10-12）：22 个纯基建符号 → `src/oauth_common.py`。
 >
@@ -12,7 +12,17 @@
 > 切割由跨段调用矩阵驱动：127 个原顶层符号全覆盖、无跨模块重名；
 > JOBS/submit_code 与 oauth_common 同一对象；77 单测全绿；服务冒烟
 > /api/ping /api/state 200 + minimax 设备流真实 user_code 下发成功。
-> **三期（server/webapi/platforms 改直连、删壳）待逐平台真机回归全过后执行。**
+>
+> 三期（2026-10-13）：全部调用点改直连，薄壳删除——
+> ① `platforms/minimax.py` 懒加载 `import oauth_login` → 直连
+> `oauth_device.refresh_grant`；② `platforms/codearts.py` → 直连
+> `oauth_codearts.codearts_silent_renew`；③ `webapi.py` 顶部按需导入
+> 各 oauth 模块（tasks.start_job 与 oauth start_job 同名 → 登录侧别名
+> `_oauth_*`，守卫改 `OAUTH_OK` 标志）。验收：81 单测全绿、py_compile
+> 17 文件全过、_JOBS 同一性、9 平台 /api/state 200、minimax 设备流
+> 真实下发 user_code。依赖方向：common ← shared ← device/hw ← 各平台 ← jobs，
+> 无环；oauth 模块顶层只牵 stdlib + requests（可选），playwright 全部
+> 函数内延迟导入 → webapi 顶部导入安全。
 
 ## 现状（一期完成前存档：原 222KB / 4552 行 / 146 个顶层符号）
 `src/oauth_login.py` ~214KB / 4061 行 / 113 个顶层函数，混合四类内容：

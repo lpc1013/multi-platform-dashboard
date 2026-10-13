@@ -31,8 +31,10 @@ dashboard_analysis/
 │   ├── server.py           # 本地后端（标准库 http.server，127.0.0.1:8799）
 │   ├── cred_store.py       # 凭据存储层（原子写 + 进程内/跨进程双重锁 + 身份指纹键名分配）
 │   ├── local_import.py     # 各平台本地凭据读取与解密
-│   ├── oauth_login.py      # 统一登录框架（设备码 / 短信直登 / 浏览器代填）
 │   ├── oauth_common.py     # 登录共享基建（job 调度 / PKCE / 浏览器助手）
+│   ├── oauth_*.py          # 登录框架平铺模块（设备码 / 各平台短信直登；
+│   │                       #   shared/device/jobs + qoder/zcode/dumate/
+│   │                       #   lingxi/hw/trae/codearts/officeace）
 │   ├── backup_creds.py     # 凭据加密备份/恢复（PBKDF2 + Fernet 单文件）
 │   ├── browser_login.py    # 受控 Chromium 登录
 │   ├── fetch_state.py      # 状态抓取

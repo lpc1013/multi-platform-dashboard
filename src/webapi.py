@@ -47,11 +47,29 @@ except Exception as _e:
     wblogin = None
     print("⚠ 未加载 workbuddy_login，网页端 WorkBuddy 短信登录将不可用：%s" % _e)
 
+# ── oauth 各平铺模块直连（三期拆分：oauth_login.py 薄壳已删除）──────────
+# 顶层只牵 stdlib + requests（可选），playwright 全部在函数内延迟导入 → 顶部导入安全。
+# 命名冲突注意：tasks.start_job 是「平台签到任务」，oauth 的「登录任务」同名
+# → 登录侧一律加 _oauth_ 前缀别名，调用点不再有 oauth_login.* 间接层。
 try:
-    import oauth_login
+    from oauth_common import PROVIDERS as _OAUTH_PROVIDERS, get_job as _oauth_get_job
+    from oauth_jobs import (
+        start_job as _oauth_start_job, start_sms_job as _oauth_start_sms_job,
+        submit_code as _oauth_submit_code,
+    )
+    from oauth_zcode import start_zcode_sms_job as _oauth_start_zcode
+    from oauth_dumate import start_dumate_web_job as _oauth_start_dumate
+    from oauth_lingxi import start_lingxi_sms_job as _oauth_start_lingxi
+    from oauth_trae import start_trae_sms_job as _oauth_start_trae
+    from oauth_codearts import start_codearts_sms_job as _oauth_start_codearts
+    from oauth_officeace import (
+        start_officeace_sms_job as _oauth_start_officeace,
+        _officeace_autostart, _officeace_probe, _officeace_exe_path,
+    )
+    OAUTH_OK = True
 except Exception as _e:
-    oauth_login = None
-    print("⚠ 未加载 oauth_login，网页授权（手机号）登录将不可用：%s" % _e)
+    OAUTH_OK = False
+    print("⚠ 未加载 oauth 模块，网页授权（手机号）登录将不可用：%s" % _e)
 
 
 def _allowed_hosts():
@@ -197,25 +215,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # 网页授权（手机号登录）任务状态：前端每 1.5 秒轮询一次
             q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             jid = (q.get("job") or [""])[0]
-            if oauth_login is None:
-                self._send(200, {"finished": True, "ok": False, "text": "后端未加载 oauth_login 模块"})
+            if not OAUTH_OK:
+                self._send(200, {"finished": True, "ok": False, "text": "后端未加载 oauth 模块"})
             else:
-                v = oauth_login.get_job(jid)
+                v = _oauth_get_job(jid)
                 if not v:
                     self._send(404, {"error": "job not found"})
                 else:
                     self._send(200, v)
         elif p == "/api/officeace/status":
             # OfficeACE 桌面端本地 API 探活（端口从 runtime-state.json 实时解析）
-            if oauth_login is None:
-                self._send(200, {"ok": False, "msg": "后端未加载 oauth_login 模块"})
+            if not OAUTH_OK:
+                self._send(200, {"ok": False, "msg": "后端未加载 oauth 模块"})
             else:
                 try:
-                    ok, base, info = oauth_login._officeace_probe(timeout=5)
+                    ok, base, info = _officeace_probe(timeout=5)
                 except Exception as e:
                     ok, base, info = False, "", {"error": str(e)[:120]}
                 try:
-                    exe = oauth_login._officeace_exe_path()
+                    exe = _officeace_exe_path()
                 except Exception:
                     exe = None
                 self._send(200, {"ok": bool(ok), "api": base, "exe": exe, "info": info})
@@ -574,13 +592,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 platform = body.get("platform")
                 name = (body.get("name") or "").strip()
                 sub = (body.get("sub") or "").strip() or None
-                if oauth_login is None:
-                    self._send(200, {"ok": False, "msg": "后端未加载 oauth_login 模块"})
-                elif platform not in oauth_login.PROVIDERS:
+                if not OAUTH_OK:
+                    self._send(200, {"ok": False, "msg": "后端未加载 oauth 模块"})
+                elif platform not in _OAUTH_PROVIDERS:
                     self._send(200, {"ok": False, "msg": "该平台暂不支持网页授权登录"})
                 else:
                     try:
-                        ok, msg, view = oauth_login.start_job(
+                        ok, msg, view = _oauth_start_job(
                             platform, lambda grant: _oauth_save(platform, name, grant),
                             sub=sub)
                     except Exception as e:
@@ -598,12 +616,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 platform = body.get("platform")
                 name = (body.get("name") or "").strip()
                 phone = (body.get("phone") or "").strip()
-                if oauth_login is None:
-                    self._send(200, {"ok": False, "msg": "后端未加载 oauth_login 模块"})
+                if not OAUTH_OK:
+                    self._send(200, {"ok": False, "msg": "后端未加载 oauth 模块"})
                 elif platform in ("baidu_dumate", "dumate"):
                     # DuMate 网页直登：无设备码流程，成功判定 = 百度 cookie 落地
                     try:
-                        ok, msg, view = oauth_login.start_dumate_web_job(
+                        ok, msg, view = _oauth_start_dumate(
                             phone, name, lambda g: _dumate_web_save(name, g))
                     except Exception as e:
                         ok, msg, view = False, "发起 DuMate 登录失败：%s" % str(e)[:150], None
@@ -614,7 +632,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 elif platform == "lingxi":
                     # 灵犀网页短信直登：account.wps.cn 弹窗代点，抓 wps_sid
                     try:
-                        ok, msg, view = oauth_login.start_lingxi_sms_job(
+                        ok, msg, view = _oauth_start_lingxi(
                             phone, name, lambda g: _lingxi_web_save(name, g))
                     except Exception as e:
                         ok, msg, view = False, "发起灵犀登录失败：%s" % str(e)[:150], None
@@ -626,7 +644,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     # ZCode 短信直登：cli/init 流 + 弹窗代点（zai / bigmodel 双通道）
                     sub = (body.get("sub") or "zai").strip()
                     try:
-                        ok, msg, view = oauth_login.start_zcode_sms_job(
+                        ok, msg, view = _oauth_start_zcode(
                             phone, sub, lambda g: _oauth_save("zcode", name, g), name)
                     except Exception as e:
                         ok, msg, view = False, "发起 ZCode 登录失败：%s" % str(e)[:150], None
@@ -636,9 +654,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self._send(200, out)
                 elif platform == "trae":
                     # Trae 短信直登：OAuth PKCE + 本地随机回调端口 + 三段兑换链
-                    # （身份/版本按线取真值：IDE→Trae CN，见 oauth_login._trae_line_dirs）
+                    # （身份/版本按线取真值：IDE→Trae CN，见 oauth_trae._trae_line_dirs）
                     try:
-                        ok, msg, view = oauth_login.start_trae_sms_job(
+                        ok, msg, view = _oauth_start_trae(
                             phone, name, lambda g: _trae_oauth_save(name, g))
                     except Exception as e:
                         ok, msg, view = False, "发起 Trae 登录失败：%s" % str(e)[:150], None
@@ -649,7 +667,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 elif platform == "codearts":
                     # CodeArts 短信直登：自建 OAuth 会话（DPoP），refresh 归看板独享
                     try:
-                        ok, msg, view = oauth_login.start_codearts_sms_job(
+                        ok, msg, view = _oauth_start_codearts(
                             phone, name, lambda g: _codearts_oauth_save(name, g))
                     except Exception as e:
                         ok, msg, view = False, "发起 CodeArts 登录失败：%s" % str(e)[:150], None
@@ -660,7 +678,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 elif platform == "officeace":
                     # OfficeACE 短信直登：驱动桌面端本地 API（127.0.0.1:3004）完成华为云登录
                     try:
-                        ok, msg, view = oauth_login.start_officeace_sms_job(
+                        ok, msg, view = _oauth_start_officeace(
                             phone, name, lambda g: _officeace_login_save(name, g))
                     except Exception as e:
                         ok, msg, view = False, "发起 OfficeACE 登录失败：%s" % str(e)[:150], None
@@ -668,13 +686,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     out["ok"] = ok
                     out["msg"] = msg
                     self._send(200, out)
-                elif platform not in oauth_login.PROVIDERS:
+                elif platform not in _OAUTH_PROVIDERS:
                     self._send(200, {"ok": False, "msg": "该平台暂不支持短信验证码登录"})
                 elif not _has_playwright():
                     self._send(200, {"ok": False, "msg": "缺少依赖 playwright，无法拉起登录窗口。"})
                 else:
                     try:
-                        ok, msg, view = oauth_login.start_sms_job(
+                        ok, msg, view = _oauth_start_sms_job(
                             platform, phone, lambda grant: _oauth_save(platform, name, grant))
                     except Exception as e:
                         ok, msg, view = False, "发起短信登录失败：%s" % str(e)[:150], None
@@ -686,22 +704,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             elif p == "/api/account/sms_code":
                 jid = (body.get("job") or "").strip()
                 code = (body.get("code") or "").strip()
-                if oauth_login is None:
-                    self._send(200, {"ok": False, "msg": "后端未加载 oauth_login 模块"})
+                if not OAUTH_OK:
+                    self._send(200, {"ok": False, "msg": "后端未加载 oauth 模块"})
                 else:
                     try:
-                        ok, msg = oauth_login.submit_code(jid, code)
+                        ok, msg = _oauth_submit_code(jid, code)
                     except Exception as e:
                         ok, msg = False, "提交验证码失败：%s" % str(e)[:150]
                     self._send(200, {"ok": ok, "msg": msg})
 
             # ── OfficeACE：一键启动桌面端客户端（本地 API 未就绪时的兜底手段）──
             elif p == "/api/officeace/launch":
-                if oauth_login is None:
-                    self._send(200, {"ok": False, "msg": "后端未加载 oauth_login 模块"})
+                if not OAUTH_OK:
+                    self._send(200, {"ok": False, "msg": "后端未加载 oauth 模块"})
                 else:
                     try:
-                        ok, base, note = oauth_login._officeace_autostart(wait=25)
+                        ok, base, note = _officeace_autostart(wait=25)
                     except Exception as e:
                         ok, base, note = False, "", "启动失败：%s" % str(e)[:150]
                     self._send(200, {"ok": bool(ok),
@@ -710,15 +728,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                      "api": base})
             elif p == "/api/officeace/status":
                 # 见 do_GET（此处保留兜底，允许 POST 形式调用）
-                if oauth_login is None:
-                    self._send(200, {"ok": False, "msg": "后端未加载 oauth_login 模块"})
+                if not OAUTH_OK:
+                    self._send(200, {"ok": False, "msg": "后端未加载 oauth 模块"})
                 else:
                     try:
-                        ok, base, info = oauth_login._officeace_probe(timeout=5)
+                        ok, base, info = _officeace_probe(timeout=5)
                     except Exception as e:
                         ok, base, info = False, "", {"error": str(e)[:120]}
                     self._send(200, {"ok": bool(ok), "api": base,
-                                     "exe": oauth_login._officeace_exe_path(),
+                                     "exe": _officeace_exe_path(),
                                      "info": info})
 
             # ── 浏览器辅助登录（备用）：未安装桌面客户端时，用受控 Chromium 登录后抓凭据 ──

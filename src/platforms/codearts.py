@@ -434,9 +434,9 @@ def _silent_renew_via_browser(name, ent):
         return expired(ent) is not True
     _SILENT_STATE["t"] = now
     try:
-        import oauth_login
+        from oauth_codearts import codearts_silent_renew   # 三期拆分：直连平台模块
     except Exception as e:
-        _SILENT_STATE["msg"] = "oauth_login 加载失败：%s" % str(e)[:80]
+        _SILENT_STATE["msg"] = "oauth_codearts 加载失败：%s" % str(e)[:80]
         return expired(ent) is not True
 
     def _save(grant):
@@ -453,7 +453,7 @@ def _silent_renew_via_browser(name, ent):
         return True, "已静默续期至 %s" % (ent.get("expires_at") or "")[:19]
 
     try:
-        ok, msg = oauth_login.codearts_silent_renew(_save)
+        ok, msg = codearts_silent_renew(_save)
     except Exception as e:
         ok, msg = False, "静默续登异常：%s" % str(e)[:120]
     _SILENT_STATE["msg"] = msg

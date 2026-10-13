@@ -353,14 +353,14 @@ def _token_alive(token):
 
 # ── Bearer(mmoat_) 令牌续期 ────────────────────────────────────────────
 # 新版令牌寿命只有 1 小时，到期就 401。桌面端靠 refreshToken 静默换新；
-# 看板侧用同一条 OAuth 接口（oauth_login.refresh_grant）自动续期，
+# 看板侧用同一条 OAuth 接口（oauth_device.refresh_grant）自动续期，
 # 把新令牌写回凭据文件，用户不必再手动「重新导入」。
-try:
-    from ._util import dec_cred, enc_cred
-except ImportError:  # 被独立脚本直接加载时的兜底
-    dec_cred = enc_cred = (lambda o: o)
-
-
+try:
+    from ._util import dec_cred, enc_cred
+except ImportError:  # 被独立脚本直接加载时的兜底
+    dec_cred = enc_cred = (lambda o: o)
+
+
 def _cred_file_path():
     for p in _acc_paths("minimax_accounts.json"):
         if os.path.exists(p):
@@ -486,7 +486,7 @@ def refresh_bearer_token(name, ent):
         if not rt:
             return ""
     try:
-        import oauth_login
+        from oauth_device import refresh_grant   # 三期拆分：直连设备流模块
     except Exception:
         return ""
     with _REFRESH_LOCK:
@@ -503,13 +503,13 @@ def refresh_bearer_token(name, ent):
             rt = latest_rt
         elif cur and cur != rt:
             rt = cur
-        ok, grant, _ = oauth_login.refresh_grant("minimax", rt, ent.get("region") or "cn")
+        ok, grant, _ = refresh_grant("minimax", rt, ent.get("region") or "cn")
         if not ok or not (grant or {}).get("access_token"):
             # 主凭据里那把 RT 已失效时，拿「RT 备份」里的副本再试一次 ——
             # 专治「上次刷新成功、新 RT 却没能写进主文件」这类断链（新 RT 只落在备份里）。
             bak = _load_rt_backup(ent.get("user_id"))
             if bak and bak != rt:
-                ok2, grant2, _ = oauth_login.refresh_grant("minimax", bak, ent.get("region") or "cn")
+                ok2, grant2, _ = refresh_grant("minimax", bak, ent.get("region") or "cn")
                 if ok2 and (grant2 or {}).get("access_token"):
                     print("[MiniMax] 「%s」主凭据里的 refresh_token 已失效，已用备份副本续期成功"
                           % name)
