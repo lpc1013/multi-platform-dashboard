@@ -534,12 +534,6 @@ h1{font-size:31px;font-weight:700;letter-spacing:-.4px}
         <label>备注名（可选，留空用客户端默认名；多账号导入时作为前缀）</label>
         <input id="lxName" autocomplete="off" placeholder="如 灵犀·主号">
       </div>
-      <button class="btn-main sm" id="lxImport"
-        style="background:linear-gradient(135deg,#e8574a,#f78d7b);box-shadow:0 4px 14px rgba(232,87,74,.28)">
-        📱 从本地客户端导入（推荐）</button>
-      <div class="hint-sm">自动解密本机已登录的 <b>WPS 灵犀桌面端</b>登录态（<code>wps_sid</code>，
-        存在客户端 session partition 的 Cookies 里），可一次导入多个已登录账号，一键完成。<br>
-        <b>多账号提示：</b>客户端正在运行时，个别 cookie 文件会被独占，退出灵犀后再点一次即可读全。</div>
       <!-- 灵犀网页短信直登：account.wps.cn 弹窗代点（与 WorkBuddy 同款两步式） -->
       <div class="field">
         <label>手机号（WPS 账号）</label>
@@ -560,6 +554,13 @@ h1{font-size:31px;font-weight:700;letter-spacing:-.4px}
       <div class="hint-sm">和 WorkBuddy 一样两步走：点「发送验证码」会自动打开 WPS 登录页、
         切到手机登录、替你填好手机号并点发送（窗口若弹滑块顺手完成），短信到了在这里填入点「登录并保存」，
         看板自动抓 <code>wps_sid</code>。不用装 WPS 灵犀桌面端也能登录。</div>
+      <!-- 本地客户端导入（放在账号登录区下面，避免手快点错；2026-10-13 用户反馈） -->
+      <button class="btn-main sm" id="lxImport"
+        style="background:linear-gradient(135deg,#e8574a,#f78d7b);box-shadow:0 4px 14px rgba(232,87,74,.28)">
+        📱 从本地客户端导入</button>
+      <div class="hint-sm">自动解密本机已登录的 <b>WPS 灵犀桌面端</b>登录态（<code>wps_sid</code>，
+        存在客户端 session partition 的 Cookies 里），可一次导入多个已登录账号，一键完成。<br>
+        <b>多账号提示：</b>客户端正在运行时，个别 cookie 文件会被独占，退出灵犀后再点一次即可读全。</div>
     </div>
 
     <!-- Trae：从本地客户端解密登录态 -->
@@ -1641,13 +1642,18 @@ function startRenew(pid, phone, name){
      请用户手输完整号；登录成功后按身份原地覆盖，记录自愈为完整号。 */
   const masked = phone.indexOf("*") >= 0;
   if(inp){ inp.value = masked ? "" : phone; }
+  const pane = document.querySelector('.tabpane[data-pane="'+pid+'"]');
+  if(pane){
+    /* 换账号续期：验证码等其余输入一律清空——上一家填过的验证码留在框里，
+       下意识点「登录并保存」就会把 A 家的码发给 B 家 */
+    pane.querySelectorAll("input").forEach(function(i){ if(i !== inp) i.value = ""; });
+  }
   if(masked){
     addMsg("⚠️ 续期「"+name+"」：该账号记录的是脱敏手机号（"+phone+"），完整号码未保存过——请手动输入 11 位手机号后点「发送验证码」（成功后自动覆盖旧凭据，备注名保留，下次续期即可预填）", false);
     if(inp) inp.focus();
     return;
   }
   addMsg("🔄 续期「"+name+"」：手机号已预填 "+phone+"，直接点「发送验证码」，收码后「登录并保存」即可（自动覆盖该账号旧凭据，备注名保留）", true);
-  const pane = document.querySelector('.tabpane[data-pane="'+pid+'"]');
   if(pane){
     const nums = pane.querySelectorAll('input[inputmode="numeric"]');
     if(nums.length > 1){ nums[nums.length-1].focus(); }  // 焦点直落验证码框

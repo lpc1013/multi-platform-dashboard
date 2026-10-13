@@ -7,6 +7,8 @@ account_service.py —— 网页端「添加账号」落盘编排（2026-10-13 �
 import os
 import sys
 import time
+import json
+import base64
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -24,6 +26,25 @@ from cred_store import (
 from logstore import log  # noqa: F401  （预留：落盘审计）
 from registry import PLATFORMS
 from tasks import _invalidate_state
+
+
+def _jwt_claim_first(tok, keys):
+    """本地解 JWT payload（不验签），按 keys 顺序返回第一个非空声明。
+
+    用于从令牌本身提取稳定身份（如 ZCode 的 user_id/sub）；
+    非 JWT / 无该声明返回空串，调用方自行兜底。
+    """
+    try:
+        seg = str(tok or "").split(".")[1]
+        seg += "=" * (4 - len(seg) % 4)
+        pl = json.loads(base64.urlsafe_b64decode(seg))
+        for k in keys:
+            v = str(pl.get(k) or "").strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    return ""
 
 
 def _wb_store_append(phone, at, rt):
@@ -94,10 +115,14 @@ def _oauth_save(platform, name, grant):
     except Exception:
         info = None
     if not info:
-        # ZCode 没有可反查身份的公开接口 —— 令牌本身就是稳定指纹
-        # （IDENT_FIELDS["zcode"] 以 token 为准），直接落盘即可。
+        # ZCode 没有可反查身份的公开接口，但 cli_poll 下发的 token 是 JWT——
+        # payload 里的 user_id/sub 是稳定身份（重新登录会换 token，sub 不变）。
+        # 必须提取落盘：IDENT_FIELDS["zcode"]=("user_id","token")，若 user_id 留空，
+        # 身份判定退化为 token，而 token 每次登录都换 → 每次续期都生成重复卡
+        # （2026-10-13 实测：2 个账号续期后变 4 张卡）。
         if platform == "zcode":
-            rec = {"token": tok, "secret": "", "user_id": "",
+            uid = _jwt_claim_first(tok, ("user_id", "sub"))
+            rec = {"token": tok, "secret": "", "user_id": uid,
                    "via_oauth": True, "sub": (grant or {}).get("sub") or "",
                    "source": "网页授权登录（%s）" % ((grant or {}).get("sub") or "zai")}
             use = _save_cred("zcode", rec, name or "ZCode")
