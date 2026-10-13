@@ -103,6 +103,9 @@ python server.py 9000     # 指定端口
 - **凭据/数据统一存放在 `%LOCALAPPDATA%\dashboard_analysis\`**（2026-10-12 起，`src/data_dir.py`
   自动迁移；读点兼容旧位置兜底），源码目录不再保存任何凭据
 - 凭据文件（`*_accounts.json`）**已在 `.gitignore` 中排除**，不会进入版本库
+- 凭据文件（`*_accounts.json`）**敏感字段已用 Windows DPAPI 静态加密**（2026-10-13 起，
+  `secret_box.py`：token/refresh_token/sk/cookie 等落盘即密文 `dpapi:`，身份字段保持明文；
+  同机同用户透明解密。`python secret_box.py status|migrate` 可盘点/全量加密）
 - 本地回环请求**绕过系统代理**，避免凭据流向代理
 - 本仓库**不含任何真实凭据、手机号或账号信息**，所有示例数据均为占位符
 

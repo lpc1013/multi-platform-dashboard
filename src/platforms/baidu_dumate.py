@@ -25,6 +25,13 @@
 import os, sys, time, uuid, json
 
 try:
+    from ._util import dec_cred, enc_cred
+except ImportError:  # 被独立脚本直接加载时的兜底
+    dec_cred = enc_cred = (lambda o: o)
+
+
+
+try:
     import requests
 except ImportError:
     sys.exit("缺少依赖 requests，请先：pip install requests")
@@ -141,7 +148,7 @@ def load_accounts():
         if not os.path.exists(path):
             continue
         try:
-            data = json.load(open(path, encoding="utf-8"))
+            data = dec_cred(json.load(open(path, encoding="utf-8")))
         except Exception:
             continue
         if isinstance(data, dict):

@@ -355,6 +355,12 @@ def _token_alive(token):
 # 新版令牌寿命只有 1 小时，到期就 401。桌面端靠 refreshToken 静默换新；
 # 看板侧用同一条 OAuth 接口（oauth_login.refresh_grant）自动续期，
 # 把新令牌写回凭据文件，用户不必再手动「重新导入」。
+try:
+    from ._util import dec_cred, enc_cred
+except ImportError:  # 被独立脚本直接加载时的兜底
+    dec_cred = enc_cred = (lambda o: o)
+
+
 def _cred_file_path():
     for p in _acc_paths("minimax_accounts.json"):
         if os.path.exists(p):
@@ -367,7 +373,7 @@ def _load_rt_backup(uid):
     if not uid:
         return ""
     try:
-        data = json.load(open(RT_BACKUP_FILE, encoding="utf-8"))
+        data = dec_cred(json.load(open(RT_BACKUP_FILE, encoding="utf-8")))
     except Exception:
         return ""
     rec = (data or {}).get(str(uid)) or {}
@@ -379,7 +385,7 @@ def _save_rt_backup(uid, grant_rt, grant_at, expires_at_ms):
     if not uid or not grant_rt:
         return False
     try:
-        data = json.load(open(RT_BACKUP_FILE, encoding="utf-8"))
+        data = dec_cred(json.load(open(RT_BACKUP_FILE, encoding="utf-8")))
         if not isinstance(data, dict):
             data = {}
     except Exception:
@@ -389,7 +395,7 @@ def _save_rt_backup(uid, grant_rt, grant_at, expires_at_ms):
     try:
         tmp = RT_BACKUP_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=1)
+            json.dump(enc_cred(data), fh, ensure_ascii=False, indent=1)
         os.replace(tmp, RT_BACKUP_FILE)
         return True
     except Exception:
@@ -406,7 +412,7 @@ def _persist_grant(name, ent, grant):
     """
     path = _cred_file_path()
     try:
-        data = json.load(open(path, encoding="utf-8"))
+        data = dec_cred(json.load(open(path, encoding="utf-8")))
     except Exception as e:
         print("[MiniMax] ⚠ 续期落盘失败：读不到凭据文件 %s（%s）" % (path, str(e)[:80]))
         return False
@@ -432,7 +438,7 @@ def _persist_grant(name, ent, grant):
     try:
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=1)
+            json.dump(enc_cred(data), fh, ensure_ascii=False, indent=1)
         os.replace(tmp, path)          # 原子替换：要么是旧内容，要么是完整新内容
         return True
     except Exception as e:
@@ -447,7 +453,7 @@ def _read_latest_tokens(name, uid):
     是则直接复用，避免拿一把已被用掉的旧 RT 再撞一次 invalid_grant。
     """
     try:
-        data = json.load(open(_cred_file_path(), encoding="utf-8"))
+        data = dec_cred(json.load(open(_cred_file_path(), encoding="utf-8")))
     except Exception:
         return "", "", 0
     rec = data.get(name) if isinstance(data, dict) else None
@@ -550,7 +556,7 @@ def load_token_cache():
         if not os.path.isfile(CACHE_FILE):
             return ""
         with open(CACHE_FILE, "r", encoding="utf-8") as fh:
-            return clean_env_value(json.load(fh).get("token") or "")
+            return clean_env_value(dec_cred(json.load(fh)).get("token") or "")
     except Exception:
         return ""
 
@@ -568,7 +574,7 @@ def save_token_cache(token, source="renewal", refresh_token="", expires_at_ms=No
             payload["expires_at_ms"] = int(expires_at_ms)
         tmp = CACHE_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=1)
+            json.dump(enc_cred(payload), fh, ensure_ascii=False, indent=1)
         os.replace(tmp, CACHE_FILE)
         return True
     except Exception:
@@ -584,7 +590,7 @@ def _cred_file_items():
         if not os.path.exists(path):
             continue
         try:
-            data = json.load(open(path, encoding="utf-8"))
+            data = dec_cred(json.load(open(path, encoding="utf-8")))
         except Exception:
             continue
         if isinstance(data, dict):

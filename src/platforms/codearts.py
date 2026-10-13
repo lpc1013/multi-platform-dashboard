@@ -171,6 +171,12 @@ STS_TOKEN_URL = "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens"
 _TOMB_FILES = tuple(_acc_paths("codearts_deleted.json"))
 
 
+try:
+    from ._util import dec_cred, enc_cred
+except ImportError:  # 被独立脚本直接加载时的兜底
+    dec_cred = enc_cred = (lambda o: o)
+
+
 def _load_tombs():
     """返回 (墓碑列表, 可写路径)。"""
     for p in _TOMB_FILES:
@@ -203,14 +209,14 @@ def remove_account(name):
         if not os.path.exists(p):
             continue
         try:
-            data = json.load(open(p, encoding="utf-8"))
+            data = dec_cred(json.load(open(p, encoding="utf-8")))
         except Exception:
             continue
         if isinstance(data, dict) and name in data:
             data.pop(name, None)
             try:
                 with open(p, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=1)
+                    json.dump(enc_cred(data), f, ensure_ascii=False, indent=1)
                 removed_file = True
             except Exception:
                 pass
@@ -236,7 +242,7 @@ def load_accounts():
         if not os.path.exists(path):
             continue
         try:
-            data = json.load(open(path, encoding="utf-8"))
+            data = dec_cred(json.load(open(path, encoding="utf-8")))
         except Exception:
             continue
         items = [(str(k), v) for k, v in data.items()] if isinstance(data, dict) else \
@@ -329,14 +335,14 @@ def _persist_entry(name, ent):
         if not os.path.exists(path):
             continue
         try:
-            data = json.load(open(path, encoding="utf-8"))
+            data = dec_cred(json.load(open(path, encoding="utf-8")))
         except Exception:
             continue
         if isinstance(data, dict) and name in data:
             data[name] = ent
             try:
                 with open(path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=1)
+                    json.dump(enc_cred(data), f, ensure_ascii=False, indent=1)
                 return True
             except Exception:
                 return False
@@ -344,10 +350,10 @@ def _persist_entry(name, ent):
     try:
         data = {}
         if os.path.exists(_ACC_FILES[0]):
-            data = json.load(open(_ACC_FILES[0], encoding="utf-8")) or {}
+            data = dec_cred(json.load(open(_ACC_FILES[0], encoding="utf-8"))) or {}
         data[name] = ent
         with open(_ACC_FILES[0], "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=1)
+            json.dump(enc_cred(data), f, ensure_ascii=False, indent=1)
         return True
     except Exception:
         return False

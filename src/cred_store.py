@@ -39,6 +39,13 @@ except ImportError:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import data_dir
 
+# 敏感字段静态加密（DPAPI）：read/write_json 透明加解密，详见 secret_box.py
+try:
+    import secret_box
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import secret_box
+
 __all__ = [
     "CRED_FILES", "IDENT_FIELDS", "DEFAULT_LABEL",
     "read_json", "write_json", "locked",
@@ -184,16 +191,18 @@ def locked(path):
 # ════════════════════════════════════════════════════════════════════
 
 def read_json(path, default):
-    """读 JSON；文件不存在/不可读返回 default。
+    """读 JSON 并解密敏感字段；文件不存在/不可读返回 default。
 
-    排障铁律：损坏的 JSON 不再静默吞——隔离备份为 *.corrupt-<时间戳> 并写 stderr，
-    避免「写一半被杀 → 下次读成空 dict → 所有账号从看板消失」且无任何痕迹。
+    - 排障铁律：损坏的 JSON 不再静默吞——隔离备份为 *.corrupt-<时间戳> 并写 stderr，
+      避免「写一半被杀 → 下次读成空 dict → 所有账号从看板消失」且无任何痕迹。
+    - 返回前经 secret_box.decrypt_obj：dpapi: 密文字段透明还原为明文，
+      调用方（server / 适配器 / openai_proxy）拿到的永远是可用明文。
     """
     if not os.path.exists(path):
         return default
     try:
         with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
+            obj = json.load(fh)
     except json.JSONDecodeError as e:
         bak = "%s.corrupt-%s" % (path, time.strftime("%Y%m%d-%H%M%S"))
         try:
@@ -206,16 +215,21 @@ def read_json(path, default):
         return default
     except OSError:
         return default
+    return secret_box.decrypt_obj(obj)
 
 
 def write_json(path, data):
     """原子写：临时文件 + fsync + os.replace（同卷原子替换）。
 
+    落盘前经 secret_box.encrypt_obj：SECRET_FIELDS（token/refresh_token/sk/
+    sts_token/cookie/wps_sid/dpop 私钥…）自动加密为 dpapi: 密文，
+    user_id / phone / ak 等身份与展示字段保持明文（排障/身份判定不受影响）。
     读侧要么看到旧完整内容、要么看到新完整内容，绝无半截 JSON。
     调用方如处于读-改-写周期，应先 `with locked(path):`。
     """
     d = os.path.dirname(path) or "."
     os.makedirs(d, exist_ok=True)
+    data = secret_box.encrypt_obj(data)
     tmp = "%s.%d.tmp" % (path, threading.get_ident())
     try:
         with open(tmp, "w", encoding="utf-8") as fh:

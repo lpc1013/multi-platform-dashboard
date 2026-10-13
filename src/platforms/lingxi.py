@@ -22,6 +22,13 @@ import urllib.request
 import urllib.error
 import urllib.parse
 
+try:
+    from ._util import dec_cred, enc_cred
+except ImportError:  # 被独立脚本直接加载时的兜底
+    dec_cred = enc_cred = (lambda o: o)
+
+
+
 try:                       # 包内导入（server.py: import platforms.lingxi）
     from ._util import to_float as _num
 except ImportError:        # 直接以脚本运行（python platforms/lingxi.py）时的兜底
@@ -77,7 +84,7 @@ def load_accounts():
         if not os.path.exists(path):
             continue
         try:
-            data = json.load(open(path, encoding="utf-8"))
+            data = dec_cred(json.load(open(path, encoding="utf-8")))
         except Exception:
             continue
         if isinstance(data, dict):

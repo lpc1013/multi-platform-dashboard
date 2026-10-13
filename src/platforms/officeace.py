@@ -54,6 +54,13 @@ import subprocess
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, quote
 
+try:
+    from ._util import dec_cred, enc_cred
+except ImportError:  # 被独立脚本直接加载时的兜底
+    dec_cred = enc_cred = (lambda o: o)
+
+
+
 try:                       # 包内导入（server.py: import platforms.officeace）
     from ._util import to_float
 except ImportError:        # 直接以脚本运行时的兜底
@@ -343,12 +350,12 @@ def _persist_entry(name, ent):
             break
     path = path or _acc_paths("officeace_accounts.json")[0]
     try:
-        data = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
+        data = dec_cred(json.load(open(path, encoding="utf-8"))) if os.path.exists(path) else {}
         if not isinstance(data, dict):
             data = {}
         data[name] = {k: ent.get(k, "") for k in keep if ent.get(k)}
         tmp = path + ".tmp"
-        json.dump(data, open(tmp, "w", encoding="utf-8"),
+        json.dump(enc_cred(data), open(tmp, "w", encoding="utf-8"),
                   ensure_ascii=False, indent=1)
         os.replace(tmp, path)
     except Exception:
@@ -446,7 +453,7 @@ def load_accounts():
         if not os.path.exists(path):
             continue
         try:
-            data = json.load(open(path, encoding="utf-8"))
+            data = dec_cred(json.load(open(path, encoding="utf-8")))
         except Exception:
             continue
         items = [(str(k), v) for k, v in data.items()] if isinstance(data, dict) else \
