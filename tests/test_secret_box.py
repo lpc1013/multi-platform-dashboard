@@ -116,3 +116,58 @@ class MigrateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FetchStateDecryptTest(unittest.TestCase):
+    """回归：fetch_state._from_file 必须解密 wb_login_result.json 的 DPAPI 字段。
+
+    2026-10-13 事故：加密迁移漏了 WorkBuddy 链路（fetch_state 裸 json.load），
+    看板 WorkBuddy 全部账号「状态未知」。新凭据文件接入时必须走解密读。
+    """
+
+    def test_from_file_decrypts_dpapi_fields(self):
+        import json, os, sys, tempfile
+        sys.path.insert(0, os.path.join(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))), "src"))
+        import secret_box
+        import fetch_state
+        d = tempfile.mkdtemp(prefix="wb_dec_")
+        p = os.path.join(d, "wb_login_result.json")
+        # wb_login_result.json 是 list 格式（workbuddy_login.py 写出）
+        ent = [{"phone": "13800000000",
+                "access_token": "eyJhbGciOi.fake.at", "refresh_token": "rt-plain"}]
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(secret_box.encrypt_obj(ent), f, ensure_ascii=False)
+        got = fetch_state._from_file(p)
+        self.assertEqual(got.get("13800000000", {}).get("access_token"),
+                         "eyJhbGciOi.fake.at")
+        self.assertEqual(got.get("13800000000", {}).get("refresh_token"), "rt-plain")
+
+    def test_from_file_decrypts_dict_format(self):
+        """dict 格式（wb_refresh_tokens.json，L0NE-6 主脚本）同样要解密。"""
+        import json, os, sys, tempfile
+        sys.path.insert(0, os.path.join(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))), "src"))
+        import secret_box
+        import fetch_state
+        d = tempfile.mkdtemp(prefix="wb_dec_d_")
+        p = os.path.join(d, "wb_refresh_tokens.json")
+        raw = {"13911111111": {"access_token": "at-enc", "refresh_token": "rt-enc"}}
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(secret_box.encrypt_obj(raw), f, ensure_ascii=False)
+        got = fetch_state._from_file(p)
+        self.assertEqual(got.get("13911111111", {}).get("access_token"), "at-enc")
+        self.assertEqual(got.get("13911111111", {}).get("refresh_token"), "rt-enc")
+
+    def test_from_file_plain_file_still_works(self):
+        import json, os, sys, tempfile
+        sys.path.insert(0, os.path.join(os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))), "src"))
+        import fetch_state
+        d = tempfile.mkdtemp(prefix="wb_plain_")
+        p = os.path.join(d, "wb_refresh_tokens.json")
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"13911111111": {"access_token": "at-x", "refresh_token": "rt-y"}},
+                      f, ensure_ascii=False)
+        got = fetch_state._from_file(p)
+        self.assertEqual(got.get("13911111111", {}).get("access_token"), "at-x")

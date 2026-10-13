@@ -68,7 +68,10 @@ def _from_file(path):
     if not os.path.exists(path):
         return out
     try:
-        raw = json.load(open(path, encoding="utf-8"))
+        # 凭据敏感字段是 DPAPI 密文（secret_box.py 迁移），读入即解密；
+        # 未加密文件（旧备份/外部维护）原样返回，透明兼容
+        import secret_box
+        raw = secret_box.decrypt_obj(json.load(open(path, encoding="utf-8")))
     except Exception:
         return out
 
