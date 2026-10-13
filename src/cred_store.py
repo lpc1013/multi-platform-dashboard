@@ -59,6 +59,7 @@ __all__ = [
     "cred_store_set", "cred_store_remove",
     "ident_of", "wb_match", "dedupe_store", "name_tail",
     "alloc_account_name", "save_cred",
+    "dumate_stable_uid", "lingxi_stable_uid", "ensure_identity",
 ]
 
 # ════════════════════════════════════════════════════════════════════
@@ -93,8 +94,17 @@ CRED_FILES = {
 #   若拿令牌当指纹，同一个人换个令牌就会被当成新账号，多出一张卡片。
 IDENT_FIELDS = {
     "minimax": ("user_id", "phone", "access_token"),
-    "baidu_dumate": ("cookie",),
-    "lingxi": ("wps_sid",),
+    # ⚠ user_id 优先（2026-10-13 修复）：原先 ("cookie",) 把整串 cookie 当身份，
+    #   而 BAIDUID/STOKEN/pplogid/时间戳每次登录都变 → 每次网页登录都被判成
+    #   新身份追加重复卡（实测 3 账号变 6 卡）。user_id 落盘时从 cookie 提取
+    #   bce-login-accountid（本地导入与网页登录两条路的 cookie 都带，
+    #   跨登录会话稳定，实测同一账号 10-07 与 10-13 两次登录完全一致）。
+    "baidu_dumate": ("user_id", "phone", "cookie"),
+    # ⚠ user_id 优先（2026-10-13 修复）：wps_sid 每次登录都换新 → 原先
+    #   ("wps_sid",) 每次网页登录都生成新卡（3 账号变 6 卡）。user_id 落盘时取
+    #   wps_sid 尾 10 位（同一用户换 sid 后尾部不变，实测 3 组两两一致），
+    #   phone 兜底（网页登录记录有；本地导入以手机号命名的键由回填脚本补齐）。
+    "lingxi": ("phone", "user_id", "wps_sid"),
     "trae": ("user_id", "token"),
     "qoder": ("user_id", "token"),
     "zcode": ("user_id", "token"),
@@ -302,6 +312,50 @@ def ident_of(pid, rec):
         if v:
             return f, v
     return None
+
+
+# ── 稳定身份提取（2026-10-13）─────────────────────────────────────────
+# 教训（ZCode / dumate / lingxi 三连同源事故）：IDENT_FIELDS 首位绝不能是
+# 轮换令牌。baidu_dumate 原以整串 cookie、lingxi 原以 wps_sid 当身份，
+# 两者每次登录必换 → 每次网页登录/导入都生成重复卡（实测 3 账号变 6 卡）。
+# 修复：落盘时把稳定指纹提取进 user_id 字段，IDENT_FIELDS 改 user_id 优先。
+# 提取函数与 IDENT_FIELDS 同放本模块：身份语义一处收敛，且便于单测
+# （account_service 牵起 registry/tasks 导入链，测试不便触达）。
+
+def dumate_stable_uid(cookie_str):
+    """从百度 cookie 提取 bce-login-accountid（本地导入与网页登录都带，跨登录稳定）。"""
+    import re
+    m = re.search(r"bce-login-accountid=([0-9a-fA-F]+)", str(cookie_str or ""))
+    return m.group(1) if m else ""
+
+
+def lingxi_stable_uid(wps_sid):
+    """wps_sid 尾 10 位 = 用户指纹（实测同一用户换 sid 后尾 10 位不变）。"""
+    s = str(wps_sid or "").strip()
+    return s[-10:] if len(s) >= 16 else ""
+
+
+def ensure_identity(pid, rec):
+    """把稳定身份回填进 rec（幂等，就地修改并返回）。
+
+    本地导入路径（webapi /api/account/import_local）拿到的记录只有
+    cookie/wps_sid，没有 user_id —— 不回填的话 ident 退化为轮换令牌，
+    同一账号第二次导入/登录就会另开新卡。所有写 baidu_dumate / lingxi
+    凭据的路径都必须先过这里。
+    """
+    if not isinstance(rec, dict):
+        return rec
+    if pid == "baidu_dumate":
+        if not str(rec.get("user_id") or "").strip():
+            uid = dumate_stable_uid(rec.get("cookie"))
+            if uid:
+                rec["user_id"] = uid
+    elif pid == "lingxi":
+        if not str(rec.get("user_id") or "").strip():
+            uid = lingxi_stable_uid(rec.get("wps_sid"))
+            if uid:
+                rec["user_id"] = uid
+    return rec
 
 
 def wb_match(it, name):

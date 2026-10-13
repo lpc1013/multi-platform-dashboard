@@ -38,6 +38,7 @@ from tasks import (
 from account_service import (
     _wb_store_append, _oauth_save, _dumate_web_save, _lingxi_web_save,
     _trae_oauth_save, _codearts_oauth_save, _officeace_login_save,
+    ensure_identity,
 )
 
 try:
@@ -535,6 +536,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             saved, merged = [], []
                             for i, (nm, ent) in enumerate(accs.items(), 1):
                                 rec = {k: v for k, v in dict(ent).items() if k != "name"}
+                                # 稳定身份回填（幂等）：本地导入记录只有 cookie/wps_sid，
+                                # 不回填 user_id 的话身份退化为轮换令牌 → 重复导入另开新卡
+                                ensure_identity(platform, rec)
                                 # 理想名：用户填了备注名就优先用它，否则用客户端里的展示名
                                 if name and len(accs) == 1:
                                     ideal = name

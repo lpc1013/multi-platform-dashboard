@@ -132,5 +132,55 @@ class SaveCredSemanticsTest(unittest.TestCase):
         self.assertEqual(data[k2]["user_id"], "u2")
 
 
+class IdentityRotationTest(unittest.TestCase):
+    """2026-10-13 重复卡事故回归：dumate 整串 cookie / lingxi 整串 wps_sid
+    每次登录必换，曾被当身份指纹 → 3 账号变 6 卡。修复后 IDENT_FIELDS
+    以 user_id/phone 等稳定字段优先，令牌轮换不得再开新卡。"""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="credstore_rot_")
+        self.cf = {
+            "baidu_dumate": os.path.join(self.dir, "dumate_accounts.json"),
+            "lingxi": os.path.join(self.dir, "lingxi_accounts.json"),
+        }
+
+    def test_dumate_cookie_rotation_no_new_card(self):
+        ck1 = "BDUSS=aaa; bce-login-accountid=24a678ecAAAA; STOKEN=x1"
+        ck2 = "BDUSS=bbb; bce-login-accountid=24a678ecAAAA; STOKEN=x2; BAIDUID=fresh"
+        k1 = cs.save_cred("baidu_dumate", {"cookie": ck1, "user_id": "24a678ecAAAA",
+                                           "phone": "18685898566"}, "老名字", self.cf)
+        k2 = cs.save_cred("baidu_dumate", {"cookie": ck2, "user_id": "24a678ecAAAA",
+                                           "phone": "18685898566"}, "新昵称", self.cf)
+        self.assertEqual(k1, k2, "cookie 轮换但 user_id 相同 → 必须沿用旧键名")
+        self.assertEqual(len(cs.read_json(self.cf["baidu_dumate"], {})), 1)
+
+    def test_lingxi_sid_rotation_no_new_card(self):
+        s1 = "V02SaaaaXYZ00a43ba6900438f6dec"
+        s2 = "V02SbbbbQQQ00abb5bf500438f6dec"   # 换 sid，尾 10 位不变（同一用户）
+        k1 = cs.save_cred("lingxi", {"wps_sid": s1, "phone": "18685898566"},
+                          "灵犀", self.cf)
+        k2 = cs.save_cred("lingxi", {"wps_sid": s2, "phone": "18685898566"},
+                          "灵犀", self.cf)
+        self.assertEqual(k1, k2, "wps_sid 轮换但 phone 相同 → 必须沿用旧键名")
+        self.assertEqual(len(cs.read_json(self.cf["lingxi"], {})), 1)
+
+    def test_ensure_identity_backfills_from_cookie(self):
+        rec = {"cookie": "BDUSS=zz; bce-login-accountid=abc123"}
+        cs.ensure_identity("baidu_dumate", rec)
+        self.assertEqual(rec["user_id"], "abc123")
+        rec2 = {"wps_sid": "V02Sxyz00438f6decabcdefghij"}
+        cs.ensure_identity("lingxi", rec2)
+        self.assertEqual(rec2["user_id"], str(rec2["wps_sid"])[-10:])
+        # 幂等：已有 user_id 不被覆盖
+        rec3 = {"cookie": "bce-login-accountid=aaa", "user_id": "keep"}
+        cs.ensure_identity("baidu_dumate", rec3)
+        self.assertEqual(rec3["user_id"], "keep")
+
+    def test_ident_fields_stable_first(self):
+        self.assertEqual(cs.IDENT_FIELDS["baidu_dumate"][0], "user_id")
+        self.assertEqual(cs.IDENT_FIELDS["lingxi"][0], "phone")
+        self.assertEqual(cs.IDENT_FIELDS["lingxi"][1], "user_id")
+
+
 if __name__ == "__main__":
     unittest.main()

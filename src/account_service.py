@@ -22,6 +22,7 @@ from cred_store import (
     alloc_account_name as _alloc_account_name,
     dedupe_store as _dedupe_store,
     cred_store_set as _cred_store_set,
+    dumate_stable_uid, lingxi_stable_uid, ensure_identity,
 )
 from logstore import log  # noqa: F401  （预留：落盘审计）
 from registry import PLATFORMS
@@ -45,6 +46,11 @@ def _jwt_claim_first(tok, keys):
     except Exception:
         pass
     return ""
+
+
+# ── 稳定身份提取已上移 cred_store（dumate_stable_uid / lingxi_stable_uid /
+#    ensure_identity，随本模块 import 引入）——身份语义与 IDENT_FIELDS 同处收敛，
+#    便于 cred_store 单测直接触达（account_service 导入链过重）。
 
 
 def _wb_store_append(phone, at, rt):
@@ -76,10 +82,12 @@ def _dumate_web_save(ideal, grant):
         return False, "", "未抓到有效登录 Cookie（缺 BDUSS）"
     info = (grant or {}).get("user") or {}
     phone = str((grant or {}).get("phone") or "")
+    # user_id 必须是跨登录稳定的指纹：bce-login-accountid（cookie 自带）优先，
+    # 反查接口的 UUID 兜底。若留空，身份退化到整串 cookie（每次登录都换）→ 重复卡。
     rec = {"cookie": ck, "via_web": True,
            "source": "网页登录（百度账号）",
            "phone": phone,
-           "user_id": str(info.get("user_id") or "")}
+           "user_id": str(dumate_stable_uid(ck) or info.get("user_id") or "")}
     fallback = ("DuMate·" + phone[-4:]) if phone else "DuMate"
     use = _save_cred("baidu_dumate", rec,
                      ideal or str(info.get("name") or "") or fallback)
@@ -92,9 +100,12 @@ def _lingxi_web_save(ideal, grant):
     sid = str((grant or {}).get("wps_sid") or "").strip()
     if not sid:
         return False, "", "未抓到 wps_sid"
+    # user_id = wps_sid 尾 10 位（跨登录稳定的用户指纹）。若留空，
+    # 身份退化到整串 wps_sid（每次登录都换）→ 每次登录生成重复卡。
     rec = {"wps_sid": sid, "via_web": True,
            "source": "网页登录（WPS 手机号）",
-           "phone": str((grant or {}).get("phone") or "")}
+           "phone": str((grant or {}).get("phone") or ""),
+           "user_id": lingxi_stable_uid(sid)}
     use = _save_cred("lingxi", rec, ideal or "灵犀")
     _invalidate_state()
     return True, use, "登录成功，已保存灵犀账号「%s」" % use
