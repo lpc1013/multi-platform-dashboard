@@ -119,9 +119,21 @@ _LOCK_TIMEOUT = 30.0              # 跨进程锁最长等待（秒）
 
 
 def _os_lock(lock_path):
-    """跨进程独占锁：Windows msvcrt / POSIX fcntl。返回锁文件句柄。"""
+    """跨进程独占锁：Windows msvcrt / POSIX fcntl。返回锁文件句柄（不可用时返回 None）。"""
     os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
-    f = open(lock_path, "a+b")
+    deadline = time.time() + _LOCK_TIMEOUT
+    while True:
+        try:
+            f = open(lock_path, "a+b")
+            break
+        except PermissionError:
+            # 实测（2026-10-13）：锁文件刚创建时可被杀软/索引器瞬时占用 → Errno 13。
+            # 重试窗口内等它放开；彻底失败则降级为进程内锁（写盘照常，留痕可查）。
+            if time.time() > deadline:
+                sys.stderr.write("[cred_store] ⚠ 锁文件打开失败（杀软/索引器占用？），"
+                                 "本次降级为进程内锁：%s\n" % lock_path)
+                return None
+            time.sleep(0.05)
     if os.name == "nt":
         import msvcrt
         deadline = time.time() + _LOCK_TIMEOUT
