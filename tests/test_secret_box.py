@@ -46,6 +46,7 @@ class ValueRoundTripTest(unittest.TestCase):
 
 
 class ObjectWalkTest(unittest.TestCase):
+    @unittest.skipUnless(HAS_DPAPI, "需要 Windows DPAPI（非 Windows 加密为透传，无密文可断言）")
     def test_encrypt_only_secret_fields(self):
         obj = {"user_id": "u1", "phone": "138", "access_token": "at-xyz",
                "list": [{"refresh_token": "rt-1"}, "keepme"]}
@@ -97,6 +98,7 @@ class UtilHelperTest(unittest.TestCase):
 
 
 class MigrateTest(unittest.TestCase):
+    @unittest.skipUnless(HAS_DPAPI, "需要 Windows DPAPI（非 Windows 加密为透传，无密文可断言）")
     def test_migrate_and_idempotent(self):
         d = tempfile.mkdtemp(prefix="secbox_mig_")
         p = os.path.join(d, "x_accounts.json")
