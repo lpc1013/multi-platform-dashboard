@@ -128,6 +128,7 @@ h1{font-size:31px;font-weight:700;letter-spacing:-.4px}
 .ava.g8{background:linear-gradient(135deg,#0f766e,#2dd4bf);box-shadow:0 3px 9px rgba(15,118,110,.24)}
 .ava.g9{background:linear-gradient(135deg,#c2410c,#fb923c);box-shadow:0 3px 9px rgba(194,65,12,.24)}
 .ava.g10{background:linear-gradient(135deg,#0369a1,#38bdf8);box-shadow:0 3px 9px rgba(3,105,161,.24)}
+.ava.g11{background:linear-gradient(135deg,#be185d,#f472b6);box-shadow:0 3px 9px rgba(190,24,93,.24)}
 
 /* ── 平台分组：分区标题 + 折叠 ── */
 .gsec{margin-bottom:26px}
@@ -245,6 +246,40 @@ h1{font-size:31px;font-weight:700;letter-spacing:-.4px}
 .proxybox td.num{text-align:right;color:#fff;font-weight:600}
 .proxybox td.dim{color:#7e93aa}
 .proxybox .sum{margin-top:6px;font-size:12px;color:#fff;font-weight:600}
+/* 「🔌 API 接入」弹窗：接入三件套行 + 模型 chips + 示例代码块 */
+.apirow{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.apirow .field{flex:1;margin-bottom:0}
+.apirow .field input{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;
+  background:#f8fafd;color:#33415c}
+.btncopy{flex:0 0 auto;background:#fff;color:var(--ink2);border:1px solid #dbe2ee;
+  padding:8px 12px;border-radius:9px;font-size:12.5px;font-weight:560;cursor:pointer;white-space:nowrap}
+.btncopy:hover{background:#eef2f9;color:var(--ink)}
+.apichips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 2px}
+.apichip{font:11.5px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace;padding:1px 9px;
+  border-radius:20px;border:1px solid var(--line);background:#f6f8fc;color:var(--ink2)}
+.apichip.free{border-color:#bfe8d2;background:#effaf4;color:#0d7a4d}
+.apichip.builtin{border-color:#c9d7f5;background:#f0f5ff;color:#2b5fd9}
+.apisel{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 12px;
+  font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;outline:none;
+  background:#fff;color:var(--ink);cursor:pointer}
+.apisel:focus{border-color:#b9b1ff}
+.apisel optgroup{font-weight:700;color:var(--ink2)}
+.apisel optgroup option{color:var(--ink);background:var(--card)}   /* 防止选项继承分组色 */
+/* 模型条目按上游底色区分；悬停/选中行强制白字蓝底，保证高亮可读 */
+.apisel option:hover,.apisel option:checked{background:#2563eb !important;color:#fff !important}
+.apierr{font-size:12.5px;color:var(--red);background:#fdf3f3;border:1px solid #f3d4d4;
+  border-radius:9px;padding:8px 12px;margin-bottom:10px;line-height:1.6}
+.apierr:empty{display:none}
+/* 【测试连接】按钮：点击后文字隐藏、圆圈旋转 */
+.btnspin{color:transparent !important;pointer-events:none;position:relative}
+.btnspin::after{content:"";position:absolute;inset:0;margin:auto;width:13px;height:13px;
+  border:2px solid #c3cfe8;border-top-color:#5b45d9;border-radius:50%;
+  animation:apispin .7s linear infinite}
+@keyframes apispin{to{transform:rotate(360deg)}}
+#apiTestOut{font-size:13px;line-height:1.5;min-height:20px}
+#apiTestOut.ok{color:var(--green);font-weight:600}
+#apiTestOut.err{color:var(--red);font-weight:600}
+
 .toast{
   position:fixed;left:50%;bottom:34px;transform:translateX(-50%) translateY(18px);
   background:#0a2540;color:#fff;padding:13px 22px;border-radius:12px;font-size:14px;font-weight:560;
@@ -384,6 +419,7 @@ h1{font-size:31px;font-weight:700;letter-spacing:-.4px}
         <span class="dot off" id="dot"></span><span id="conn">正在连接本地后端…</span>
       </div>
     </div>
+    <button class="btn-ghost" id="btnApiHead" title="OpenAI 兼容反代接入信息">🔌 API 接入</button>
   </div>
 
   <div id="banner" class="banner" style="display:none"></div>
@@ -431,6 +467,7 @@ h1{font-size:31px;font-weight:700;letter-spacing:-.4px}
       <div class="tabsep">📄 办公 / 云平台</div>
       <button class="tab" data-tab="lingxi">WPS 灵犀（智点）</button>
       <button class="tab" data-tab="officeace">OfficeACE（华为云）</button>
+      <button class="tab" data-tab="teleagent">TeleAgent（积分）</button>
     </div>
 
     <div class="tabpanes">
@@ -776,9 +813,99 @@ h1{font-size:31px;font-weight:700;letter-spacing:-.4px}
         仅当客户端登录态本身失效（islogin=false）才需打开客户端登录一次。</div>
     </div>
 
+    <!-- 电信 TeleAgent（星辰超级智能体） -->
+    <div class="tabpane" data-pane="teleagent" style="display:none">
+      <div class="field">
+        <label>备注名（可选，留空用客户端默认名）</label>
+        <input id="taName" autocomplete="off" placeholder="如 TeleAgent·主号">
+      </div>
+      <div class="field">
+        <label>手机号（可选，填了自动代填登录页）</label>
+        <input id="taPhone" autocomplete="off" inputmode="numeric" maxlength="11" placeholder="11 位手机号，可留空">
+      </div>
+      <button class="btn-main sm" id="taSms"
+        style="background:linear-gradient(135deg,#0e7490,#22d3ee);box-shadow:0 4px 14px rgba(14,116,144,.28)">
+        🌐 打开登录窗口</button>
+      <div id="taSmsTxt" style="display:none;margin-top:8px;font-size:13px;color:var(--ink2);line-height:1.6"></div>
+      <span id="taSmsLeft" style="font-size:12.5px;color:var(--muted);margin-left:8px"></span>
+      <div class="hint-sm">弹出真实浏览器走 <b>天翼统一登录</b>（手机号+短信验证码 或 密码，
+        滑块/拼图验证码在窗口里完成）。登录成功后看板自动抓取 <b>web 会话</b>，
+        用于查询<b>积分余额</b>与每日打卡。<br>
+        桌面客户端的登录态（token 月抛）仍以「从本地客户端导入」通道自动解密读取，
+        两路凭据同账号自动合并。</div>
+
+      <hr style="border:0;border-top:1px dashed var(--line);margin:16px 0">
+      <button class="btn-main sm" id="taImport"
+        style="background:linear-gradient(135deg,#0e7490,#22d3ee);box-shadow:0 4px 14px rgba(14,116,144,.28)">
+        📱 从本地客户端导入（推荐）</button>
+      <div class="hint-sm">解密本机已登录的 <b>TeleAgent 客户端</b>登录态
+        （<code>~\.local\share\TeleAgent</code> 的 Chromium safeStorage，看板<b>只读解密</b>），
+        监控 token 有效期（约 <b>29 天</b>月抛）。<br>
+        打开客户端即可静默续命——token 过期前重新登录一次客户端，看板刷新即拿到新票。</div>
+    </div>
+
     </div><!-- /.tabpanes -->
 
     <div class="addmsg" id="addMsg"></div>
+  </div>
+</div>
+
+<!-- 🔌 API 接入：OpenAI 兼容反代三件套（URL / API Key / 模型名）统一入口 -->
+<div class="modal-mask" id="apiMask" style="display:none">
+  <div class="modal" style="max-width:640px">
+    <div class="modal-head">
+      <div class="mtitle">🔌 OpenAI 兼容反代 · 接入信息</div>
+      <button class="x" id="apiClose" title="关闭">×</button>
+    </div>
+    <div class="modal-body" style="padding:0 24px 8px;overflow-y:auto">
+
+      <div class="apierr" id="apiErr"></div>
+
+      <div class="field" style="margin-bottom:6px">
+        <label>任意 OpenAI 客户端的三件套</label>
+      </div>
+      <div class="apirow">
+        <div class="field">
+          <label>① API 地址（Base URL）</label>
+          <input id="apiUrl" readonly>
+        </div>
+        <button class="btncopy" data-copy="#apiUrl">复制</button>
+      </div>
+      <div class="apirow">
+        <div class="field">
+          <label>② API Key</label>
+          <input id="apiKey" readonly>
+        </div>
+        <button class="btncopy" data-copy="#apiKey">复制</button>
+      </div>
+      <div class="apirow">
+        <div class="field">
+          <label>③ 模型（可输入过滤，模型名决定走哪个上游）</label>
+          <input id="apiModelFilter" class="apisel" style="margin-bottom:6px"
+                 placeholder="输入关键字过滤，如 glm / deepseek / chat…" autocomplete="off">
+          <select id="apiModelSel" class="apisel" size="1"></select>
+        </div>
+        <button class="btncopy" data-copy="::model">复制</button>
+      </div>
+
+      <div class="apirow" style="align-items:flex-start">
+        <button class="btncopy" id="apiTest" style="padding:9px 18px;font-weight:600">▶ 测试连接</button>
+        <div style="flex:1;padding-top:9px"><span id="apiTestOut"></span></div>
+      </div>
+
+      <div style="display:flex;gap:8px;align-items:center;margin:4px 0 2px">
+        <span style="font-size:12px;color:var(--muted)" id="apiMeta"></span>
+      </div>
+
+      <div class="hint-sm" style="margin:6px 0 10px">
+        反代把三个上游统一暴露为本机 OpenAI API：<b style="color:#0369a1">CodeArts Agent</b>（华为免费额度模型）、
+        <b style="color:#be185d">TeleAgent</b>（星辰）与 <b style="color:#c2410c">OfficeACE</b>（华为云果办）——
+        <b>模型名即路由</b>：<code>chat-*</code> / <code>deepseek-v3</code> 等走星辰；
+        <code>GLM-5.2</code> 等内置模型与福利模型（<code>deepseek-v4.1-flash</code> 等 5 个交集）走 CodeArts
+        （福利模型吃每日免费额度，内置模型计积分）；
+        <code>glm-5.3</code> / <code>kimi-k2.6</code> 等其余走 OfficeACE。服务只监听 <b>127.0.0.1</b>
+        （不出本机），默认无需 API Key；限流 <span id="apiRate"></span>。用量看底部「今日 token 消耗」卡片。</div>
+    </div>
   </div>
 </div>
 
@@ -793,13 +920,18 @@ const TASK_META = {
 /* 平台配色（头部圆点 + 头像渐变） */
 const PLAT_CLR = { workbuddy:"#635bff", minimax:"#0ea5e9", baidu_dumate:"#0d9f6e",
                    lingxi:"#e8574a", trae:"#3355e8", qoder:"#7c3aed",
-                   zcode:"#0f766e", officeace:"#c2410c", codearts:"#0369a1" };
+                   zcode:"#0f766e", officeace:"#c2410c", codearts:"#0369a1",
+                   teleagent:"#be185d" };
 const PLAT_GRAD = { workbuddy:"", minimax:"g2", baidu_dumate:"g3", lingxi:"g5",
-                    trae:"g6", qoder:"g7", zcode:"g8", officeace:"g9", codearts:"g10" };
+                    trae:"g6", qoder:"g7", zcode:"g8", officeace:"g9", codearts:"g10",
+                    teleagent:"g11" };
+/* 反代模型下拉的条目底色（PLAT_CLR 的浅色版，只用于背景标记） */
+const PLAT_TINT = { codearts:"#d9ecf9", teleagent:"#f9dfea", officeace:"#fbe6d8" };
 /* 「从本地客户端导入」失败提示里用到的桌面端名称 */
 const PLAT_LOCAL_NAME = { workbuddy:"WorkBuddy", minimax:"MiniMax Code", baidu_dumate:"百度搭子 DuMate",
                           lingxi:"WPS 灵犀", trae:"Trae / TRAE SOLO CN", qoder:"Qoder CN",
-                          zcode:"ZCode（z.ai）", officeace:"OfficeACE", codearts:"CodeArts Agent" };
+                          zcode:"ZCode（z.ai）", officeace:"OfficeACE", codearts:"CodeArts Agent",
+                          teleagent:"电信 TeleAgent" };
 
 /* ── 平台分组（前端按业务域分区展示，避免一屏铺开 9 个平台） ── */
 const GROUPS = [
@@ -1004,7 +1136,7 @@ async function load(force, scope){
     }else{
       const nPlat = Object.keys(STATE.platforms).length;
       const nAcc = Object.values(STATE.platforms).reduce((s,p)=>s+(p.accounts?p.accounts.length:0),0);
-      conn(true, "后端已连接 · " + (STATE.generated_at||"—") + " · " + nPlat + " 个平台 · 共 " + nAcc + " 个账号" +
+      conn(true, (real.stale ? "（后台刷新中，显示上次快照）· " : "") + "后端已连接 · " + (STATE.generated_at||"—") + " · " + nPlat + " 个平台 · 共 " + nAcc + " 个账号" +
         (STATE.data_dir ? " · 数据目录 " + STATE.data_dir : ""));
       $("#banner").style.display = "none";
     }
@@ -1524,9 +1656,155 @@ async function loadProxyUsage(){
     const fmt = x => x>=1e6 ? (x/1e6).toFixed(1)+"M" : x>=1000 ? (x/1000).toFixed(1)+"k" : String(x);
     box.innerHTML = `<div class="ptitle">⚡ CodeArts 反代 · 今日 token 消耗</div>
       <table>${rows}</table>
-      <div class="sum">今日 ${sumN} 次 · ${fmt(sumT)} tokens　<span class="dim">｜ 30 天累计 ${allN} 次 · ${fmt(allT)} tokens</span></div>`;
+      <div class="sum">今日 ${sumN} 次 · ${fmt(sumT)} tokens　<span class="dim">｜ 30 天累计 ${allN} 次 · ${fmt(allT)} tokens · <a href="#" id="apiLinkInBox" style="color:#8ab4d8">接入方式</a></span></div>`;
+    const lb = $("#apiLinkInBox");
+    if(lb) lb.addEventListener("click", e=>{ e.preventDefault(); openApi(); });
   }catch(e){ /* 用量卡片失败静默，不影响主流程 */ }
 }
+
+/* ── 🔌 API 接入弹窗：URL / API Key / 模型下拉 + 测试连接 ── */
+let API_INFO = null;   // /api/proxy_info 缓存（打开期间复用）
+function _copyTxt(txt, tip){
+  const done = ()=>toast(tip||"已复制", "ok");
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(txt).then(done).catch(()=>_copyFallback(txt, done));
+  } else _copyFallback(txt, done);
+}
+function _copyFallback(txt, done){
+  const ta = document.createElement("textarea");
+  ta.value = txt; ta.style.cssText = "position:fixed;opacity:0";
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand("copy"); done(); }catch(e){ toast("复制失败，请手动选择复制", "err"); }
+  document.body.removeChild(ta);
+}
+function _apiProviderOf(model){
+  const ps = (API_INFO && API_INFO.providers) || [];
+  const hit = ps.find(p => (p.models||[]).includes(model));
+  return hit ? hit.id : "codearts";
+}
+function _fillModelSelect(keep){
+  const sel = $("#apiModelSel");
+  if(!sel) return;
+  const ps = (API_INFO && API_INFO.providers) || [];
+  const kw = ($("#apiModelFilter") && $("#apiModelFilter").value.trim().toLowerCase()) || "";
+  const prev = keep || sel.value;
+  let html = "", firstAvail = "", n = 0;
+  for(const p of ps){
+    let ms = p.models || [];
+    if(kw) ms = ms.filter(m=>m.toLowerCase().includes(kw));
+    if(!ms.length) continue;
+    if(!firstAvail) firstAvail = p.default_model && ms.includes(p.default_model) ? p.default_model : ms[0];
+    const tag = p.error ? "（不可用：登录后可测）" : "";
+    const clr = PLAT_CLR[p.id] || "";    // 分组名用上游色
+    const tint = PLAT_TINT[p.id] || "";  // 模型条目背景用上游浅底色
+    html += `<optgroup label="${p.label}${tag}"` +
+      (clr ? ` style="color:${clr}"` : "") + `>` +
+      ms.map(m=>`<option value="${m}"${p.default_model===m?' data-default="1"':''}` +
+        (tint ? ` style="background:${tint}"` : "") + `>${m}</option>`).join("") +
+      `</optgroup>`;
+    n += ms.length;
+  }
+  sel.innerHTML = html || `<option value="">${kw ? "（无匹配模型）" : "（加载中…）"}</option>`;
+  if(prev && [...sel.options].some(o=>o.value===prev)) sel.value = prev;
+  else if(firstAvail) sel.value = firstAvail;
+  _apiMetaRefresh(n);
+}
+function _apiMetaRefresh(filtered){
+  const I = API_INFO || {};
+  const m = $("#apiModelSel").value;
+  const pid = _apiProviderOf(m);
+  const p = ((I.providers||[]).find(x=>x.id===pid)) || {};
+  const total = (I.providers||[]).reduce((s,x)=>s+(x.models?x.models.length:0), 0);
+  const cnt = (filtered != null && filtered !== total) ? `（匹配 ${filtered}/${total}）` : "";
+  const clr = PLAT_CLR[pid] || "";
+  const lbl = p.label || pid;
+  $("#apiMeta").innerHTML = m
+    ? `当前模型 <b>${m}</b> → 走 <span style="color:${clr};font-weight:700">${lbl}</span>` +
+      (p.account ? ` · 账号 ${p.account}` : "") + cnt
+    : "";
+}
+async function openApi(){
+  $("#apiMask").style.display = "flex";
+  const fill = I => {
+    API_INFO = I;                     // 只在成功路径调用；失败不放占位进来
+    $("#apiErr").textContent = "";
+    // 逐上游报错（哪个上游不可用就提示哪个，不整弹窗报错）
+    const errs = (I.providers||[]).filter(p=>p.error)
+      .map(p=>`⚠ ${p.label}：${p.error}`);
+    $("#apiErr").textContent = errs.join("\n");
+    $("#apiUrl").value = I.base_url || "";
+    $("#apiKey").value = I.auth_required
+      ? (I.api_key || "(后端设置了 Key 但未取到值)") : "（未设置，无需 API Key）";
+    $("#apiRate").textContent = I.rate_limit ? `${I.rate_limit.per_min}/分钟（突发 ${I.rate_limit.burst}）` : "—";
+    _fillModelSelect($("#apiModelSel").value);
+  };
+  const fail = () => {
+    API_INFO = null;                  // 清缓存：下次打开必须重试，不能卡死在占位数据
+    $("#apiErr").innerHTML =
+      '⚠ 后端未连接，无法读取模型目录　<button id="apiRetry" class="btn-ghost" style="padding:2px 10px;font-size:12px">↻ 重试</button>';
+    $("#apiRetry").addEventListener("click", e=>{ e.target.disabled = true; e.target.textContent = "请求中…"; load(); });
+  };
+  const load = () => fetch("/api/proxy_info", {cache:"no-store"})
+    .then(r=>{ if(!r.ok) throw new Error("HTTP "+r.status); return r.json(); })
+    .then(fill).catch(fail);
+  if(API_INFO) fill(API_INFO);        // 有缓存先秒开；下面仍会静默刷新拿最新值
+  else fill({base_url:location.origin+"/v1", chat_url:location.origin+"/v1/chat/completions",
+             providers:[], rate_limit:null, _placeholder:true});
+  load();                             // 每次打开都刷新（接口 ~5ms），后端重启换上游后无需刷新页面
+}
+function closeApi(){ $("#apiMask").style.display="none"; }
+$("#btnApiHead").addEventListener("click", openApi);
+$("#apiClose").addEventListener("click", closeApi);
+$("#apiMask").addEventListener("click", e=>{ if(e.target.id==="apiMask") closeApi(); });
+$("#apiModelSel").addEventListener("change", _apiMetaRefresh);
+$("#apiModelFilter").addEventListener("input", ()=>_fillModelSelect());   // 输入即过滤（保留当前选中值）
+document.querySelectorAll("#apiMask .btncopy[data-copy]").forEach(b=>{
+  b.addEventListener("click", ()=>{
+    if(b.dataset.copy === "::model"){                 // 选中模型名
+      const v = $("#apiModelSel").value;
+      if(!v){ toast("没有可复制的模型", "err"); return; }
+      _copyTxt(v, "已复制模型名 " + v); return;
+    }
+    const v = $(b.dataset.copy).value || "";
+    if(v.includes("未设置，无需")) { toast("当前未设置 API Key，直接留空即可", "ok"); return; }
+    _copyTxt(v, "已复制");
+  });
+});
+/* 【▶ 测试连接】：真发一次 chat 请求，转圈 → ✅/❌ */
+$("#apiTest").addEventListener("click", async ()=>{
+  const btn = $("#apiTest"), out = $("#apiTestOut");
+  const model = $("#apiModelSel").value;
+  if(!model){ toast("没有可选模型（后端未连接？）", "err"); return; }
+  btn.classList.add("btnspin"); out.className=""; out.textContent = "";
+  const t0 = performance.now();
+  try{
+    const ctl = new AbortController();
+    const tm = setTimeout(()=>ctl.abort(), 60000);
+    const hdrs = {"Content-Type":"application/json"};
+    if(API_INFO && API_INFO.auth_required && API_INFO.api_key)
+      hdrs["Authorization"] = "Bearer " + API_INFO.api_key;
+    const r = await fetch("/v1/chat/completions", {method:"POST", headers:hdrs,
+      body: JSON.stringify({model, messages:[{role:"user",content:"只回复：ok"}],
+                            max_tokens:64, stream:false}),
+      signal: ctl.signal});
+    clearTimeout(tm);
+    const j = await r.json().catch(()=>({}));
+    if(r.ok && (j.choices||[]).length){
+      const c = ((j.choices[0].message||{}).content||"").trim();
+      out.className="ok";
+      out.textContent = "✅ 连接成功（" + ((performance.now()-t0)/1000).toFixed(1) + "s）"
+        + (c ? " · 回复：" + c.slice(0,50) : " · 模型已应答");
+    }else{
+      const msg = (j.error && j.error.message) || ("HTTP " + r.status);
+      out.className="err"; out.textContent = "❌ 连接失败：" + msg;
+    }
+  }catch(e){
+    out.className="err";
+    out.textContent = "❌ 连接失败：" + (e.name==="AbortError" ? "超时（60s）" : String(e).slice(0,90));
+  }finally{
+    btn.classList.remove("btnspin");
+  }
+});
 
 /* ── 执行 ── */
 async function callRun(payload){
@@ -1627,7 +1905,8 @@ async function runOne(task, platform, name){
 
 /* ── 添加账号弹窗 ── */
 const PHONE_INPUT = {workbuddy:"wbPhone",minimax:"mmPhone",baidu_dumate:"dmPhone",lingxi:"lxPhone",
-  trae:"trPhone",qoder:"qdPhone",zcode:"zcPhone",codearts:"caPhone",officeace:"oaPhone"};
+  trae:"trPhone",qoder:"qdPhone",zcode:"zcPhone",codearts:"caPhone",officeace:"oaPhone",
+  teleagent:"taPhone"};
 function openAdd(){
   $("#addMask").style.display="flex"; setTab("workbuddy"); clearAddMsg();
   document.querySelector("#addMask .mtitle").textContent = "➕ 添加账号";
@@ -1752,6 +2031,7 @@ $("#qdImport").addEventListener("click", ()=> importLocal("qoder", $("#qdName").
 $("#zcImport").addEventListener("click", ()=> importLocal("zcode", $("#zcName").value.trim()));
 $("#caImport").addEventListener("click", ()=> importLocal("codearts", $("#caName").value.trim()));
 $("#oaImport").addEventListener("click", ()=> importLocal("officeace", $("#oaName").value.trim()));
+$("#taImport").addEventListener("click", ()=> importLocal("teleagent", $("#taName").value.trim()));
 /* OfficeACE：一键启动桌面端客户端（本地 API 未就绪时的兜底；正常点「发送验证码」也会自动拉起） */
 $("#oaLaunch") && $("#oaLaunch").addEventListener("click", async ()=>{
   if(!BACKEND_OK){ addMsg("未连接本地后端，无法启动客户端", false); return; }
@@ -1856,6 +2136,8 @@ const SMS_UI = {
         txt:"#caSmsTxt", code:"#caCode", login:"#caCodeGo", left:"#caSmsLeft"},
   officeace:{label:"OfficeACE（华为云）", phone:"#oaPhone", name:"#oaName", send:"#oaSms",
         txt:"#oaSmsTxt", code:"#oaCode", login:"#oaCodeGo", left:"#oaSmsLeft"},
+  teleagent:{label:"电信 TeleAgent", phone:"#taPhone", name:"#taName", send:"#taSms",
+        txt:"#taSmsTxt", code:null, login:null, left:"#taSmsLeft", webLogin:true},
 };
 let SMS_JOB = null, SMS_PLAT = null;
 const _uiVal = s => { const e = s && $(s); return e ? (e.value||"").trim() : ""; };
@@ -1863,7 +2145,8 @@ const _uiVal = s => { const e = s && $(s); return e ? (e.value||"").trim() : "";
 async function smsSend(platform){
   const U = SMS_UI[platform] || {};
   const phone = _uiVal(U.phone);
-  if(!/^1\d{10}$/.test(phone)){ addMsg("请填写 11 位手机号（当前："+(phone||"空")+"）", false); return; }
+  const phoneOptional = !!U.webLogin;   // TeleAgent：手机号可空，窗口里手输也行
+  if(!phoneOptional && !/^1\d{10}$/.test(phone)){ addMsg("请填写 11 位手机号（当前："+(phone||"空")+"）", false); return; }
   if(!BACKEND_OK){
     addMsg("未连接本地后端，无法发送验证码。请先双击运行「启动看板.bat」，刷新页面后重试。", false);
     return;
@@ -2017,6 +2300,9 @@ async function runDel(platform, name, key){
 $("#btnAll").addEventListener("click", runAll);
 $("#btnRefresh").addEventListener("click", ()=>load(true));
 load(false);
+/* 30s 轮询：配合后端 stale-while-revalidate——普通请求秒回旧快照、后台重读，
+   轮询负责把后台刷新完成后的新值换上来（页面隐藏时暂停，省资源）。 */
+setInterval(()=>{ if(!document.hidden && BACKEND_OK) load(false); }, 30000);
 </script>
 </body>
 </html>

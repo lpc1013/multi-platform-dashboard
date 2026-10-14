@@ -33,6 +33,8 @@ import uuid
 import requests
 
 import platforms.codearts as cap
+import platforms.teleagent as tat
+import platforms.officeace as oac
 
 SNAP = "https://snap-access.cn-north-4.myhuaweicloud.com"
 OPENGW = "https://opengw.developer.huaweicloud.com"
@@ -125,6 +127,70 @@ def _load_ent():
             503, "CodeArts 凭证已于 %s 过期，请到看板「🔄 续期凭据」"
                  "（或点一次签到触发自动续期）" % (ent.get("expires_at") or "")[:19])
     return name, ent
+
+
+# ── TeleAgent 上游（星辰，2026-10-14 实测打通）──────────────
+# 路由规则：model 命中 tat.CHAT_MODELS → TeleAgent；其余（含空）→ CodeArts。
+# 两套模型名无交集，客户端只靠 model 字段即可选上游。
+TA_MODELS = set(tat.CHAT_MODELS)
+
+
+def route_of(model):
+    return "teleagent" if str(model or "").strip().lower() in TA_MODELS else "codearts"
+
+
+def _ta_ent():
+    """取 TeleAgent 账号（多账号选 JWT exp 最晚者）。只读解密，不触发刷新。"""
+    import datetime
+    accs = tat.load_accounts()
+    if not accs:
+        raise UpstreamError(503, "TeleAgent 账号不存在，请先在看板导入 TeleAgent")
+    def exp_of(item):
+        return (tat._jwt_payload((item[1] or {}).get("token") or "").get("exp")) or 0
+    name, ent = max(accs.items(), key=exp_of)
+    exp = exp_of((name, ent))
+    if exp and exp < time.time():
+        raise UpstreamError(503, "TeleAgent token 已于 %s 过期，请打开 TeleAgent 客户端"
+                                 "重新登录一次（约 29 天月抛）"
+                            % datetime.datetime.fromtimestamp(exp).strftime("%Y-%m-%d %H:%M"))
+    return name, ent
+
+
+# ── OfficeACE 上游（华为云果办，2026-10-14 实测打通）──────────────
+# 协议：agent2api 还原 + 本机实测——网关 Basic 对在订阅响应 model_infos[0]，
+# chat 原生 OpenAI 恒流式。模型名与 CodeArts 有交集（如 deepseek-v4.1-flash），
+# 交集名保持走 CodeArts（福利免费额度优先），OfficeAce 只接独有模型
+# （openpangu / kimi-k3 / glm-5.3 / qwen3 系等 ~15 个）。
+_OA_IDS = {"ts": 0.0, "ids": set()}
+
+
+def _oa_ent():
+    """取 OfficeACE 账号（expires_at 最晚者）。只判断不续期（热路径，同 _load_ent）。"""
+    import server as srv
+    path = srv.CRED_FILES.get("officeace")
+    d = srv._read_json(path, {}) if path else {}
+    if not d:
+        raise UpstreamError(503, "OfficeACE 账号不存在，请先在看板导入 OfficeACE")
+    name, ent = _pick_freshest(d)
+    if oac._expired(ent) is True:
+        raise UpstreamError(503, "OfficeACE 凭据已于 %s 过期，请到看板「从本地客户端导入」"
+                                 "或打开客户端重新登录" % (ent.get("expires_at") or "")[:19])
+    return name, ent
+
+
+def oa_model_ids():
+    """OfficeACE 网关模型 id 集合（TTL 缓存）。失败返回上次缓存/空集合（回退 CodeArts）。"""
+    now = time.time()
+    if _OA_IDS["ids"] and now - _OA_IDS["ts"] < CATALOG_TTL:
+        return _OA_IDS["ids"]
+    try:
+        name, ent = _oa_ent()
+        ids = set(oac.gw_models(ent))
+        if ids:
+            _OA_IDS.update(ts=now, ids=ids)
+        return _OA_IDS["ids"]
+    except Exception:
+        return _OA_IDS["ids"]   # 网关不可用时回退：名字全归 CodeArts，行为不变
 
 
 def _get(ent, url):
@@ -279,17 +345,38 @@ def relay(handler, openai_body):
     t0 = time.time()
     name = "?"   # _load_ent 失败（无账号/凭据不完整/已过期）时 log 仍要有值
     model = str(openai_body.get("model") or "deepseek-v4.1-flash")
+    provider = route_of(openai_body.get("model"))
+    if provider == "codearts":
+        # OfficeACE 判定：模型命中 OA 目录且不在 CodeArts 目录 → 走果办网关。
+        # 交集名（deepseek-v4.1-flash 等）保持 CodeArts：福利免费额度优先，行为不变。
+        m = str(openai_body.get("model") or "").strip()
+        if m and m in oa_model_ids():
+            try:
+                ne, ec = _load_ent()
+                _bi, _be = catalog(ec)
+                if m not in (set(_bi) | _be):
+                    provider = "officeace"
+            except UpstreamError:
+                pass      # CodeArts 无账号时不拦：OA 独有模型仍可走果办
     want_stream = bool(openai_body.get("stream"))
     try:
-        name, ent = _load_ent()
-        lines = _chat_stream(ent, openai_body)
+        if provider == "teleagent":
+            name, ent = _ta_ent()
+            lines = tat.chat_stream(ent, openai_body)
+        elif provider == "officeace":
+            name, ent = _oa_ent()
+            lines = oac.chat_stream(ent, openai_body)
+        else:
+            name, ent = _load_ent()
+            lines = _chat_stream(ent, openai_body)
     except UpstreamError as e:
-        srv.log("[proxy] %s acct=%s HTTP%s %s" % (model, name, e.status, e.message[:80]))
+        srv.log("[proxy:%s] %s acct=%s HTTP%s %s"
+                % (provider, model, name, e.status, e.message[:80]))
         handler._send(e.status if e.status >= 400 else 502,
                       {"error": {"message": e.message, "type": "upstream_error"}})
         return
     except Exception as e:
-        srv.log("[proxy] %s acct=%s 异常 %s" % (model, name, str(e)[:80]))
+        srv.log("[proxy:%s] %s acct=%s 异常 %s" % (provider, model, name, str(e)[:80]))
         handler._send(502, {"error": {"message": str(e)[:200],
                                       "type": "upstream_error"}})
         return
@@ -301,7 +388,10 @@ def relay(handler, openai_body):
             for line in lines:
                 n_lines += 1
                 if not line:
-                    continue          # v2 SSE 无空行分隔，直接透传非空行
+                    # TeleAgent SSE 是标准事件帧（事件间空行分隔）——空行要透传保帧；
+                    # CodeArts SSE 无空行，此分支不会走到，行为不变
+                    handler._write_chunk(b"\n")
+                    continue
                 if line.startswith("data:") and "[DONE]" not in line:
                     try:              # 透传时顺带抓 usage；上游首个 chunk 会发全 0
                         j = json.loads(line[5:].strip())   # 占位，须跳过取尾部的真实值
@@ -314,8 +404,8 @@ def relay(handler, openai_body):
         except Exception:
             pass                      # 客户端断开等 IO 错误，直接收尾
         finally:
-            srv.log("[proxy] %s acct=%s stream %.1fs lines=%d%s"
-                    % (model, name, time.time() - t0, n_lines, _usage_str(usage)))
+            srv.log("[proxy:%s] %s acct=%s stream %.1fs lines=%d%s"
+                    % (provider, model, name, time.time() - t0, n_lines, _usage_str(usage)))
             _record_usage(model, usage)
         return
 
@@ -371,6 +461,6 @@ def relay(handler, openai_body):
            "choices": [{"index": 0, "message": msg, "finish_reason": finish or "stop"}],
            "usage": usage or {}}
     handler._send(200, out)
-    srv.log("[proxy] %s acct=%s %.1fs%s" % (model, name, time.time() - t0,
-                                            _usage_str(usage)))
+    srv.log("[proxy:%s] %s acct=%s %.1fs%s" % (provider, model, name, time.time() - t0,
+                                               _usage_str(usage)))
     _record_usage(model, usage)

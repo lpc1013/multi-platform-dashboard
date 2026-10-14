@@ -954,11 +954,34 @@ def read_codearts():
              "safely_renew_interval": sess.get("safelyRenewTokenInterval")}}
 
 
+def read_teleagent():
+    """只读解密 TeleAgent（电信星辰超级智能体）客户端登录态。
+
+    凭据链：~\\.local\\share\\TeleAgent\\users\\<dir>\\app-auth\\token.json
+    （Chromium safeStorage：Local State 主密钥 DPAPI + AES-256-GCM），
+    明文 = "<tenant>:<JWT>"（≈29 天月抛）。解密实现在 platforms/teleagent.py，
+    此处只做「读客户端 → 归一化」，绝不写入客户端目录。
+    返回 (ok, msg, accounts)；accounts = {名字: {token, tenant, user_id, ...}}
+    """
+    from platforms import teleagent as ta
+    ents = ta._client_entries()
+    if not ents:
+        return False, ("未找到已登录的 TeleAgent 客户端数据"
+                       "（~\\.local\\share\\TeleAgent\\users）。"
+                       "请先打开 TeleAgent 客户端登录一次再导入。"), {}
+    accs = {}
+    for uid, ent in ents.items():
+        nm = ent.get("account_name") or ("TeleAgent·" + uid[-4:])
+        accs[nm] = dict(ent)
+    return (True, "已从本地客户端读取 TeleAgent 登录态：%s（只读解密，未改动客户端）"
+            % "、".join(accs.keys()), accs)
+
+
 # ────────────────────────── 统一入口 ──────────────────────────
 READERS = {"minimax": read_minimax, "baidu_dumate": read_dumate,
            "lingxi": read_lingxi, "trae": read_trae, "qoder": read_qoder,
            "zcode": read_zcode, "officeace": read_officeace,
-           "codearts": read_codearts}
+           "codearts": read_codearts, "teleagent": read_teleagent}
 
 
 def read_local(platform):

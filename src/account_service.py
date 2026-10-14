@@ -95,6 +95,47 @@ def _dumate_web_save(ideal, grant):
     return True, use, "登录成功，已保存 DuMate 账号「%s」" % use
 
 
+def _teleagent_login_save(ideal, grant):
+    """TeleAgent 网页登录成功后的落盘：web console 会话（积分余额/每日打卡用）。
+
+    grant 来自 oauth_teleagent._grab_session：localStorage 的 console_token /
+    refresh_token / token / sso_token / USER_INFO。身份指纹：USER_INFO 里的
+    accountId（与桌面端 user_id 同源），同身份落盘自动与客户端导入的卡合并
+    （platforms/teleagent.load_accounts 按 user_id 归并，客户端 token 优先）。
+    """
+    g = grant or {}
+    console = str(g.get("console_token") or "").strip()
+    refresh = str(g.get("refresh_token") or "").strip()
+    if not console and not refresh:
+        return False, "", "未抓到 web 会话 token（缺 console_token/refresh_token）"
+
+    uid = ""
+    try:
+        info = json.loads(g.get("USER_INFO") or "{}")
+        uid = str(info.get("accountId") or info.get("accountID") or
+                  info.get("userId") or info.get("id") or "")
+    except Exception:
+        pass
+    rec = {
+        "web_console_token": console,
+        "web_refresh_token": refresh,
+        "web_saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "via_web": True,
+        "source": "网页登录（天翼账号）",
+        "phone": str(g.get("phone") or ""),
+        "user_id": uid,
+    }
+    if g.get("token"):
+        rec["web_sso_token"] = str(g["token"])
+    if g.get("sso_token"):
+        rec["web_sso_token2"] = str(g["sso_token"])
+    if not uid and rec["phone"]:
+        rec["user_id"] = ""   # 不造假指纹；client 端合并兜底
+    use = _save_cred("teleagent", rec, ideal or "TeleAgent")
+    _invalidate_state()
+    return True, use, "登录成功，已保存 TeleAgent 账号「%s」（web 会话）" % use
+
+
 def _lingxi_web_save(ideal, grant):
     """灵犀网页直登成功后的落盘：wps_sid + 身份。返回 (ok, 键名, 提示)。"""
     sid = str((grant or {}).get("wps_sid") or "").strip()

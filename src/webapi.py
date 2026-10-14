@@ -38,6 +38,7 @@ from tasks import (
 from account_service import (
     _wb_store_append, _oauth_save, _dumate_web_save, _lingxi_web_save,
     _trae_oauth_save, _codearts_oauth_save, _officeace_login_save,
+    _teleagent_login_save,
     ensure_identity,
 )
 
@@ -66,6 +67,7 @@ try:
         start_officeace_sms_job as _oauth_start_officeace,
         _officeace_autostart, _officeace_probe, _officeace_exe_path,
     )
+    from oauth_teleagent import start_teleagent_login as _oauth_start_teleagent
     OAUTH_OK = True
 except Exception as _e:
     OAUTH_OK = False
@@ -176,30 +178,117 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(500, {"error": str(e)[:200]})
 
     def _r_v1_models(self):
-        # OpenAI 兼容：CodeArts 模型目录（内置 + 福利免费额度）
+        # OpenAI 兼容：CodeArts 模型目录（内置 + 福利免费额度）+ TeleAgent（星辰）
         # import 在 try 外：若放 try 内，import 失败时 except ox.UpstreamError
         # 会因 ox 未定义抛 NameError，把真实错误搅成 500 迷雾
         import openai_proxy as ox
         if not ox.gate(self):
             return
+        data = []
         try:
             _, ent = ox._load_ent()
             builtin, benefit = ox.catalog(ent)
             ids = list(dict.fromkeys((builtin or []) + sorted(benefit)))
-            self._send(200, {"object": "list", "data": [
-                {"id": i, "object": "model",
-                 "owned_by": "codearts-benefit" if i in benefit else "codearts"}
-                for i in ids]})
-        except ox.UpstreamError as e:
-            self._send(e.status, {"error": {"message": e.message}})
+            data += [{"id": i, "object": "model",
+                      "owned_by": "codearts-benefit" if i in benefit else "codearts"}
+                     for i in ids]
+        except ox.UpstreamError:
+            pass          # CodeArts 不可用不阻塞 TeleAgent 模型列出
         except Exception as e:
             self._send(502, {"error": {"message": str(e)[:200]}})
+            return
+        try:
+            ox._ta_ent()
+            data += [{"id": m, "object": "model", "owned_by": "teleagent"}
+                     for m in ox.tat.CHAT_MODELS]
+        except Exception:
+            pass
+        try:
+            ox._oa_ent()
+            data += [{"id": m, "object": "model", "owned_by": "officeace"}
+                     for m in sorted(ox.oa_model_ids())]
+        except Exception:
+            pass    # OfficeACE 不可用不阻塞其余模型列出
+        self._send(200, {"object": "list", "data": data})
 
     def _r_api_proxy_usage(self):
         # 反代用量聚合（openai_proxy._record_usage 写入，按日/按模型）
         uf = data_dir.path("proxy_usage.json")
         d = _read_json(uf, {})
         self._send(200, d)
+
+    def _r_api_proxy_info(self):
+        # OpenAI 兼容反代「接入信息」（前端「🔌 API 接入」弹窗数据源）：
+        # URL / API Key / 双上游模型目录 / 限流 / 在用账号。
+        # 模型目录优先读 openai_proxy 缓存（10min TTL）；缓存冷时才打上游（秒级）。
+        import openai_proxy as ox
+        # Host 头取访问地址：用户用 localhost 还是 127.0.0.1 打开的看板，示例 URL 跟着一致
+        host = str(self.headers.get("Host") or "127.0.0.1:8799")
+        base = "http://%s/v1" % host
+        out = {"base_url": base,
+               "chat_url": base + "/chat/completions",
+               "models_url": base + "/models",
+               "api_key": ox.PROXY_API_KEY,
+               "auth_required": bool(ox.PROXY_API_KEY),
+               "rate_limit": {"per_min": int(ox.RATE_PER_MIN), "burst": int(ox.BURST)},
+               "default_model": "deepseek-v4.1-flash"}
+
+        # 上游一：CodeArts（福利免费额度 + 内置计积分）
+        ca = {"id": "codearts", "label": "CodeArts（华为免费额度）",
+              "default_model": "deepseek-v4.1-flash",
+              "benefit": sorted(ox._SEED_BENEFIT), "builtin": [],
+              "account": None, "error": ""}
+        try:
+            name, ent = ox._load_ent()
+            ca["account"] = name
+            builtin, benefit = ox.catalog(ent)
+            if builtin:
+                ca["builtin"] = builtin
+            if benefit:
+                ca["benefit"] = sorted(benefit)
+        except ox.UpstreamError as e:
+            ca["error"] = e.message
+        except Exception as e:
+            ca["error"] = str(e)[:200]
+        ca["models"] = list(dict.fromkeys(ca["builtin"] + ca["benefit"]))
+
+        # 上游二：TeleAgent（星辰，模型名决定路由）
+        ta = {"id": "teleagent", "label": "TeleAgent（星辰）",
+              "default_model": "chat-max", "models": list(ox.tat.CHAT_MODELS),
+              "account": None, "error": ""}
+        try:
+            tn, _ = ox._ta_ent()
+            ta["account"] = tn
+        except Exception as e:
+            ta["error"] = getattr(e, "message", None) or str(e)[:160]
+
+        # 上游三：OfficeACE（华为云果办，模型网关 Basic 对）
+        oa = {"id": "officeace", "label": "OfficeACE（华为云果办）",
+              "default_model": "", "models": [], "account": None, "error": ""}
+        try:
+            on, _ = ox._oa_ent()
+            oa["account"] = on
+            oa_ids = sorted(ox.oa_model_ids())
+            oa["models"] = oa_ids
+            # 默认模型选一个「OA 独有」的（交集名走 CodeArts，选它不会路由到本上游）
+            ca_ids = set(ca["models"])
+            exclusive = [m for m in oa_ids if m not in ca_ids]
+            for pref in ("glm-5.3", "kimi-k2.6", "qwen3-32b", "openpangu-2.0-pro"):
+                if pref in exclusive:
+                    oa["default_model"] = pref
+                    break
+            if not oa["default_model"] and exclusive:
+                oa["default_model"] = exclusive[0]
+        except Exception as e:
+            oa["error"] = getattr(e, "message", None) or str(e)[:160]
+
+        out["benefit_models"] = ca["benefit"]     # 旧字段保留（向后兼容）
+        out["builtin_models"] = ca["builtin"]
+        out["models"] = ca["models"]
+        out["account"] = ca["account"]
+        out["error"] = ca["error"]
+        out["providers"] = [ca, ta, oa]
+        self._send(200, out)
 
     def _r_api_progress(self):
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -714,6 +803,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             out["ok"] = ok
             out["msg"] = msg
             self._send(200, out)
+        elif platform == "teleagent":
+            # TeleAgent 网页登录：弹可见 Chromium 走天翼 upms OAuth → master-auth
+            # 统一登录 → 抓 SPA localStorage 的 console_token/refresh_token。
+            # 手机号可空（填了尽力代填代点发码；滑块/验证码在窗口里人工完成）。
+            try:
+                ok, msg, view = _oauth_start_teleagent(
+                    phone, name, lambda g: _teleagent_login_save(name, g))
+            except Exception as e:
+                ok, msg, view = False, "发起 TeleAgent 登录失败：%s" % str(e)[:150], None
+            out = dict(view or {})
+            out["ok"] = ok
+            out["msg"] = msg
+            self._send(200, out)
         elif platform == "officeace":
             # OfficeACE 短信直登：驱动桌面端本地 API（127.0.0.1:3004）完成华为云登录
             try:
@@ -819,6 +921,7 @@ _GET_ROUTES = {
     "/api/state": Handler._r_api_state,
     "/v1/models": Handler._r_v1_models,
     "/api/proxy_usage": Handler._r_api_proxy_usage,
+    "/api/proxy_info": Handler._r_api_proxy_info,
     "/api/progress": Handler._r_api_progress,
     "/api/log": Handler._r_api_log,
     "/api/account/browser_login_status": Handler._r_api_account_browser_login_status,

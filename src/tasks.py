@@ -28,6 +28,7 @@ from registry import PLATFORMS
 CACHE_TTL = 60
 _state_cache = {"at": 0, "data": None}
 _lock = threading.Lock()
+_refreshing = threading.Event()      # 后台刷新去重（stale-while-revalidate）
 
 
 def _invalidate_state():
@@ -51,13 +52,107 @@ def _safe_read(mod, name, ent):
         return _blank_acct(name, str(e)[:80])
 
 
-def collect_state(force=False, scope=None):
-    """汇总所有平台状态。
+_SNAPSHOT_FILE = "state_snapshot.json"   # data_dir 下的磁盘快照（重启后仍有得显示）
 
-    force=True 忽略缓存重读；scope=<pid> 时只重读该平台并合并进上一份快照
-    （用于「添加 / 删除 / 导入账号后只刷新受影响的那一个平台」，秒级返回）。
-    账号读取全部并发——原实现是「逐平台逐账号顺序读 + 每条 sleep(0.3)」，
-    15 个账号要 10~30 秒，导致点完按钮半分钟没反应，看起来像没生效。
+
+def _load_disk_snapshot():
+    try:
+        d = json.load(open(data_dir.path(_SNAPSHOT_FILE), encoding="utf-8"))
+        if isinstance(d, dict) and d.get("platforms"):
+            return d
+    except Exception:
+        pass
+    return None
+
+
+def _save_disk_snapshot(out):
+    try:
+        with open(data_dir.path(_SNAPSHOT_FILE), "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _collect_pids(pids):
+    """真正执行一轮「读凭据 + 并发读账号」的完整采集，返回 pinfos。"""
+    pinfos, loaded = {}, []
+    for pid in pids:
+        mod = PLATFORMS[pid]
+        try:
+            accs = mod.load_accounts()
+        except Exception as e:
+            accs = {}
+            log("%s 凭据加载失败：%s" % (pid, e))
+        has = bool(accs)
+        pinfos[pid] = {"id": pid, "label": getattr(mod, "LABEL", pid),
+                       "tasks": getattr(mod, "TASKS", []),
+                       "has_credentials": has, "accounts": []}
+        for nm, ent in accs.items():
+            loaded.append((pid, nm, mod, ent))
+
+    got = {}
+    if loaded:
+        workers = max(4, min(12, len(loaded)))
+        with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(_safe_read, mod, nm, ent): (pid, nm)
+                    for pid, nm, mod, ent in loaded}
+            for fu in cf.as_completed(futs):
+                got[futs[fu]] = fu.result()
+    for pid, nm, mod, ent in loaded:
+        # 保持凭据文件中的顺序，卡片不会每次刷新乱跳
+        pinfos[pid]["accounts"].append(got.get((pid, nm)) or _blank_acct(nm, "读取失败"))
+    return pinfos
+
+
+def _finalize(out, pinfos, scope, stamp):
+    if scope and _state_cache["data"]:
+        out = json.loads(json.dumps(_state_cache["data"]))   # 深拷贝，避免污染旧快照
+        out["platforms"].update(pinfos)
+        out["generated_at"] = stamp
+        out["log"] = LOG[-40:]
+    else:
+        out = {"generated_at": stamp, "platforms": pinfos, "log": LOG[-40:]}
+    any_cred = any(p.get("has_credentials") for p in out["platforms"].values())
+    out["demo"] = not any_cred
+    out["backend"] = True   # 本条响应来自真实后端；与「有无凭据」相互独立
+    out["data_dir"] = data_dir.DATA_DIR   # 凭据/数据存放目录（外移后可见可核对）
+    if any_cred:
+        out.pop("hint", None)
+    else:
+        out["hint"] = ("未检测到任何平台凭据。最省事的办法：点右上角「添加账号」→"
+                       "「从本地客户端导入」，会自动读取你已登录的桌面端登录态"
+                       "（WorkBuddy / MiniMax / DuMate / WPS 灵犀 / Trae / Qoder / ZCode / OfficeACE / CodeArts / TeleAgent）。")
+    return out
+
+
+def _bg_refresh():
+    """后台全量刷新（stale-while-revalidate 的 revalidate 半边）。
+    完成后更新内存缓存 + 磁盘快照；期间新来的普通请求继续拿旧快照。"""
+    try:
+        pinfos = _collect_pids(list(PLATFORMS.keys()))
+        out = _finalize(None, pinfos, None, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        with _lock:
+            _state_cache.update(at=time.time(), data=out)
+        _save_disk_snapshot(out)
+    except Exception as e:
+        log("后台刷新状态失败：%s" % str(e)[:120])
+    finally:
+        _refreshing.clear()
+
+
+def collect_state(force=False, scope=None):
+    """汇总所有平台状态（stale-while-revalidate，2026-10-14）。
+
+    三种路径：
+      scope=<pid>  只重读该平台并合并快照（添加/删除/导入账号后用，秒级、必须新值）
+      force=True   同步全量重读（手动刷新按钮 / 任务结束后用，行为不变）
+      普通请求     缓存命中直接回；缓存过期/为空时——
+                   ① 有旧快照（内存过期版或磁盘快照）→ **立即返回旧快照**
+                      （打 stale 标记），同时后台线程重读，前端 30s 轮询自动换新；
+                   ② 连旧快照都没有（首次启动且从未采集过）→ 同步全量读（仅一次）。
+
+    背景：原先普通请求过期后同步等全平台网络读（最长 25s 超时 × 账号数），
+    前端刷新/重启后白屏几秒到十几秒。改为旧值先回、新值后台补，白屏消除。
     """
     now = time.time()
     # 普通请求走缓存；带 scope 的请求本来就是为了拿最新值，直接重读
@@ -69,54 +164,27 @@ def collect_state(force=False, scope=None):
     with _lock:
         pids = [scope] if (scope in PLATFORMS) else list(PLATFORMS.keys())
 
-        # 1) 先同步读各平台凭据（本地文件/解密，开销极小）并搭好骨架
-        pinfos, loaded = {}, []
-        for pid in pids:
-            mod = PLATFORMS[pid]
-            try:
-                accs = mod.load_accounts()
-            except Exception as e:
-                accs = {}
-                log("%s 凭据加载失败：%s" % (pid, e))
-            has = bool(accs)
-            pinfos[pid] = {"id": pid, "label": getattr(mod, "LABEL", pid),
-                           "tasks": getattr(mod, "TASKS", []),
-                           "has_credentials": has, "accounts": []}
-            for nm, ent in accs.items():
-                loaded.append((pid, nm, mod, ent))
+        # ── stale-while-revalidate：普通请求 + 有旧快照可回 → 先回旧值，后台补新
+        if not force and not scope:
+            stale = _state_cache["data"] or _load_disk_snapshot()
+            if stale is not None:
+                if not _refreshing.is_set():
+                    _refreshing.set()
+                    threading.Thread(target=_bg_refresh, daemon=True,
+                                     name="state-swr").start()
+                if _state_cache["data"]:
+                    out = dict(_state_cache["data"])
+                else:
+                    out = dict(stale)
+                out["stale"] = True          # 前端提示「显示的是上次快照，后台刷新中」
+                return out
 
-        # 2) 所有账号的网络读取并发执行（这是唯一的耗时段）
-        got = {}
-        if loaded:
-            workers = max(4, min(12, len(loaded)))
-            with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-                futs = {ex.submit(_safe_read, mod, nm, ent): (pid, nm)
-                        for pid, nm, mod, ent in loaded}
-                for fu in cf.as_completed(futs):
-                    got[futs[fu]] = fu.result()
-        for pid, nm, mod, ent in loaded:
-            # 保持凭据文件中的顺序，卡片不会每次刷新乱跳
-            pinfos[pid]["accounts"].append(got.get((pid, nm)) or _blank_acct(nm, "读取失败"))
-
+        # ── 同步路径：force / scope / 磁盘快照也没有的首次启动
+        pinfos = _collect_pids(pids)
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        if scope and _state_cache["data"]:
-            out = json.loads(json.dumps(_state_cache["data"]))   # 深拷贝，避免污染旧快照
-            out["platforms"].update(pinfos)
-            out["generated_at"] = stamp
-            out["log"] = LOG[-40:]
-        else:
-            out = {"generated_at": stamp, "platforms": pinfos, "log": LOG[-40:]}
-
-        any_cred = any(p.get("has_credentials") for p in out["platforms"].values())
-        out["demo"] = not any_cred
-        out["backend"] = True   # 本条响应来自真实后端；与「有无凭据」相互独立
-        out["data_dir"] = data_dir.DATA_DIR   # 凭据/数据存放目录（外移后可见可核对）
-        if any_cred:
-            out.pop("hint", None)
-        else:
-            out["hint"] = ("未检测到任何平台凭据。最省事的办法：点右上角「添加账号」→"
-                           "「从本地客户端导入」，会自动读取你已登录的桌面端登录态"
-                           "（WorkBuddy / MiniMax / DuMate / WPS 灵犀 / Trae / Qoder / ZCode / OfficeACE / CodeArts）。")
+        out = _finalize(None, pinfos, scope, stamp)
+        if not scope:
+            _save_disk_snapshot(out)
         _state_cache.update(at=now, data=out)
         return out
 

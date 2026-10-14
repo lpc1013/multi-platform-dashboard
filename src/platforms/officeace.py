@@ -724,3 +724,95 @@ def run_task(name, ent, task_key):
     if st in (401, 403) or code.startswith("APIG"):
         return {"ok": False, "msg": "华为网关鉴权失败：%s（客户端登录态可能已过期）" % msg}
     return {"ok": False, "msg": "领取失败（HTTP %s）：%s" % (st, msg), "state": "failed"}
+
+
+# ══════════════════ OpenAI 反代（模型网关，2026-10-14 实测打通）══════════════════
+# 协议还原自 github aimod-cc/agent2api（officeace provider 模块）+ 本机实测：
+#   · 网关三件套在 /v1/subscription 响应的 model_infos[0] 里：
+#       model_api_url_base（= 本适配器的 DEFAULT_HOST 同主机）
+#       model_auth_info.model_app_key / model_app_secret（32hex 一对，Basic 头，
+#       **不过期**——控制面 STS 过期只影响额度/签到，不影响转发）
+#   · 模型目录 GET https://{host}/v2/models（OpenAI {data:[{id,...}]}，21 个）
+#   · chat POST https://{host}/v2/chat/completions：标准 OpenAI 体，上游**恒流式**
+#     （stream:true 强制 + stream_options.include_usage）；
+#     ⚠ 上游把 max_tokens 当「推理+正文」总预算，给小了 200 但正文空
+#       （finish_reason=length）→ 本地追加 1024 下限（<16 原样透传）
+#   · 关联头 Chat-Id / Session-Id（32hex，本地生成）+ lang: en
+_GW_CACHE = {"ts": 0.0, "host": "", "key": "", "secret": ""}
+_GW_TTL = 600.0
+_MODELS_CACHE = {"ts": 0.0, "ids": []}
+
+
+def gw_credentials(ent, force=False):
+    """订阅响应里的模型网关三件套，返回 (host, app_key, app_secret)。TTL 缓存；
+    刷新失败时回退上次缓存（Basic 对不过期，缓存旧值无害）。失败抛 RuntimeError。"""
+    now = time.time()
+    if not force and _GW_CACHE["key"] and now - _GW_CACHE["ts"] < _GW_TTL:
+        return _GW_CACHE["host"], _GW_CACHE["key"], _GW_CACHE["secret"]
+    st, j = _req(ent, SUB_PATH, timeout=20)
+    if st != 200:
+        raise RuntimeError("subscription HTTP %s" % st)
+    d = (j.get("data") if isinstance(j, dict) else None) or j or {}
+    if isinstance(d, dict) and isinstance(d.get("subscription"), dict):
+        d = d["subscription"]
+    mi = (d.get("model_infos") or [{}])[0]
+    host = str(mi.get("model_api_url_base") or "").strip().strip("/")
+    auth = mi.get("model_auth_info") or {}
+    key = str(auth.get("model_app_key") or "").strip()
+    secret = str(auth.get("model_app_secret") or "").strip()
+    if not (host and key and secret):
+        raise RuntimeError("订阅响应缺少模型网关三件套（账号可能未开通）")
+    _GW_CACHE.update(ts=now, host=host, key=key, secret=secret)
+    return host, key, secret
+
+
+def _gw_headers(host_key_secret):
+    host, key, secret = host_key_secret
+    import base64 as _b64
+    import uuid as _uuid
+    basic = _b64.b64encode(("%s:%s" % (key, secret)).encode()).decode()
+    return {"Authorization": "Basic " + basic, "Content-Type": "application/json",
+            "Accept": "*/*", "lang": "en",
+            "Chat-Id": _uuid.uuid4().hex, "Session-Id": _uuid.uuid4().hex}
+
+
+def gw_models(ent, force=False):
+    """模型目录（{host}/v2/models，OpenAI 形状）。TTL 缓存；失败抛异常。"""
+    now = time.time()
+    if not force and _MODELS_CACHE["ids"] and now - _MODELS_CACHE["ts"] < _GW_TTL:
+        return list(_MODELS_CACHE["ids"])
+    host, key, secret = gw_credentials(ent, force=force)
+    r = requests.get("https://%s/v2/models" % host, headers=_gw_headers((host, key, secret)),
+                     timeout=20, verify=False, proxies={"http": None, "https": None})
+    if r.status_code != 200:
+        raise RuntimeError("models HTTP %s %s" % (r.status_code, r.text[:100]))
+    ids = [m.get("id") for m in (r.json().get("data") or []) if m.get("id")]
+    if ids:
+        _MODELS_CACHE.update(ts=now, ids=ids)
+    return ids
+
+
+# 推理预算追加量：上游把 max_tokens 当总预算（agent2api 同款处理，勿改小）
+REASONING_ALLOWANCE = 1024
+
+
+def chat_stream(ent, openai_body):
+    """调模型网关 chat，返回 SSE 行迭代器（标准 OpenAI chunk，可直接透传）。"""
+    host, key, secret = gw_credentials(ent)
+    body = dict(openai_body or {})
+    mt = body.get("max_tokens")
+    if isinstance(mt, int) and mt >= 16:
+        body["max_tokens"] = mt + REASONING_ALLOWANCE
+    body["stream"] = True
+    so = body.get("stream_options")
+    body["stream_options"] = dict(so) if isinstance(so, dict) else {}
+    body["stream_options"].setdefault("include_usage", True)
+    data = json.dumps(body, ensure_ascii=False)
+    r = requests.post("https://%s/v2/chat/completions" % host,
+                      headers=_gw_headers((host, key, secret)), data=data.encode("utf-8"),
+                      timeout=(15, 600), verify=False, stream=True,
+                      proxies={"http": None, "https": None})
+    if r.status_code >= 400:
+        raise RuntimeError("chat HTTP %s %s" % (r.status_code, r.text[:200]))
+    r.encoding = "utf-8"      # 上游 SSE 不带 charset，防中文乱码（同 CodeArts 坑）
+    return r.iter_lines(decode_unicode=True)
