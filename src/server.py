@@ -78,6 +78,15 @@ class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
+    def handle_error(self, request, client_address):
+        """客户端（浏览器/iframe/curl）提前断开连接时，stdlib 会在读取请求阶段
+        抛 ConnectionAbortedError/BrokenPipeError 并由 socketserver 打印堆栈——
+        属正常现象，静默处理，避免控制台被刷屏。"""
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionAbortedError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
 
 def _already_running():
     """探测端口上是否已有看板实例在跑。

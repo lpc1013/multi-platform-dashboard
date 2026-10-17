@@ -15,11 +15,12 @@ if HERE not in sys.path:
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8799
 
 PLATFORM_IDS = ["workbuddy", "minimax", "baidu_dumate", "lingxi", "trae",
-                "qoder", "zcode", "officeace", "codearts", "teleagent"]
+                "qoder", "zcode", "officeace", "codearts", "teleagent", "workbuddy_ai"]
 
 # 支持「从本地客户端导入」的平台
 LOCAL_IMPORT_PLATFORMS = ("baidu_dumate", "minimax", "lingxi", "trae",
-                          "qoder", "zcode", "officeace", "codearts", "teleagent")
+                          "qoder", "zcode", "officeace", "codearts", "teleagent",
+                          "workbuddy_ai")
 
 PLATFORMS = {}
 for _pid in PLATFORM_IDS:

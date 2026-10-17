@@ -67,10 +67,13 @@ def _trae_client_running():
     try:
         import subprocess
         r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"],
-                           capture_output=True, text=True, timeout=12)
-        out = (r.stdout or "").lower()
+                           capture_output=True, timeout=12)
+        # 进程名是 ASCII：按字节匹配，任何代码页都稳。
+        # 切勿用 text=True——中文 Windows 以 GBK 读管道，遇到 UTF-8 连续字节(如 0x80)
+        # 会让 subprocess 的 _readerthread 抛 UnicodeDecodeError。
+        out = (r.stdout or b"").lower()
         for kw in ("trae cn.exe", "trae.exe", "trae solo cn.exe", "traecode.exe"):
-            if kw in out:
+            if kw.encode("ascii") in out:
                 return True
     except Exception:
         return False

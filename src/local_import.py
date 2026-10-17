@@ -978,10 +978,22 @@ def read_teleagent():
 
 
 # ────────────────────────── 统一入口 ──────────────────────────
+def read_workbuddy_ai():
+    """从本机 WorkBuddy AI（国际版）客户端解密登录态。
+    返回 (ok, msg, accounts)；accounts = {名字: {token, refresh_token, user_id, expires_at}}。
+    解密协议见 platforms/workbuddy_ai.py（密钥不落盘，需本机装有客户端二进制现取）。"""
+    import platforms.workbuddy_ai as wai
+    accs, msg = wai.import_from_client()
+    if not accs:
+        return False, msg, {}
+    return True, msg, accs
+
+
 READERS = {"minimax": read_minimax, "baidu_dumate": read_dumate,
            "lingxi": read_lingxi, "trae": read_trae, "qoder": read_qoder,
            "zcode": read_zcode, "officeace": read_officeace,
-           "codearts": read_codearts, "teleagent": read_teleagent}
+           "codearts": read_codearts, "teleagent": read_teleagent,
+           "workbuddy_ai": read_workbuddy_ai}
 
 
 def read_local(platform):

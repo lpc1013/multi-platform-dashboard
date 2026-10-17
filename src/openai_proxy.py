@@ -35,6 +35,7 @@ import requests
 import platforms.codearts as cap
 import platforms.teleagent as tat
 import platforms.officeace as oac
+import platforms.workbuddy_ai as wai
 
 SNAP = "https://snap-access.cn-north-4.myhuaweicloud.com"
 OPENGW = "https://opengw.developer.huaweicloud.com"
@@ -134,9 +135,45 @@ def _load_ent():
 # 两套模型名无交集，客户端只靠 model 字段即可选上游。
 TA_MODELS = set(tat.CHAT_MODELS)
 
+# ── WorkBuddy 国际版上游（workbuddy.ai，2026-10-16 实测打通）──────────────
+# 路由规则：`wb:` 前缀 → 国际版（如 wb:glm-5.2 / wb:gpt-5.5 / wb:auto）。
+# 国际版模型名与 CodeArts/OfficeACE 大量交集（glm/kimi/deepseek 系），
+# 用命名空间前缀隔离（buddy-proxy 同思路），客户端改前缀即切上游。
+WBAI_PREFIX = "wb:"
+
 
 def route_of(model):
-    return "teleagent" if str(model or "").strip().lower() in TA_MODELS else "codearts"
+    m = str(model or "").strip()
+    if m.lower().startswith(WBAI_PREFIX):
+        return "wbai"
+    return "teleagent" if m.lower() in TA_MODELS else "codearts"
+
+
+def _wbai_ent():
+    """取国际版账号（单号）。只判断不强制刷新失败即 503；AT 过期时 ensure_token
+    会用 RT 刷新并落盘（RT 非一次性，但新 RT 必须保存防断链）。"""
+    accs = wai.load_accounts()
+    if not accs:
+        raise UpstreamError(503, "WorkBuddy 国际版账号不存在，请先在看板「从本地客户端导入」"
+                                 "（需本机装有 WorkBuddy AI 客户端并已登录）")
+    name, ent = _pick_freshest(accs)
+    if not (ent.get("token") or ent.get("refresh_token")):
+        raise UpstreamError(503, "WorkBuddy 国际版凭据不完整，请重新导入")
+    if wai.expired(ent) is True:
+        tok = wai.ensure_token(ent, name=name)     # 尝试 RT 刷新（内部落盘）
+        if wai.expired(ent) is True:
+            raise UpstreamError(503, "WorkBuddy 国际版 token 已过期且刷新失败"
+                                     "（expires_at=%s），请打开客户端重新登录或重新导入"
+                                % (ent.get("expires_at") or "")[:19])
+        return name, ent
+    return name, ent
+
+
+# ── CodeArts 上游并发闸门 ──
+# 华为福利网关限制并发会话 3 个（TM.00001041「并发会话数已达上限」），这是上游硬限制、撤不掉。
+# 反代侧本地排队：超出的请求等槽位而非直接 400，客户端可任意并发、体感无感。
+_CA_SEM = threading.BoundedSemaphore(3)
+_CA_QUEUE_WAIT = 120        # 排队最长等 120s，再拿不到槽位才回 429
 
 
 def _ta_ent():
@@ -359,27 +396,84 @@ def relay(handler, openai_body):
             except UpstreamError:
                 pass      # CodeArts 无账号时不拦：OA 独有模型仍可走果办
     want_stream = bool(openai_body.get("stream"))
-    try:
-        if provider == "teleagent":
-            name, ent = _ta_ent()
-            lines = tat.chat_stream(ent, openai_body)
-        elif provider == "officeace":
-            name, ent = _oa_ent()
-            lines = oac.chat_stream(ent, openai_body)
-        else:
-            name, ent = _load_ent()
-            lines = _chat_stream(ent, openai_body)
-    except UpstreamError as e:
-        srv.log("[proxy:%s] %s acct=%s HTTP%s %s"
-                % (provider, model, name, e.status, e.message[:80]))
-        handler._send(e.status if e.status >= 400 else 502,
-                      {"error": {"message": e.message, "type": "upstream_error"}})
-        return
-    except Exception as e:
-        srv.log("[proxy:%s] %s acct=%s 异常 %s" % (provider, model, name, str(e)[:80]))
-        handler._send(502, {"error": {"message": str(e)[:200],
-                                      "type": "upstream_error"}})
-        return
+    # CodeArts 本地排队闸门：等槽位（上游并发上限 3），拿不到才 429
+    ca_slotted = False
+    if provider == "codearts":
+        deadline = time.time() + _CA_QUEUE_WAIT
+        while not _CA_SEM.acquire(timeout=1.0):
+            if time.time() > deadline:
+                srv.log("[proxy:codearts] %s 排队 %.0fs 未获槽位，回 429" % (model, _CA_QUEUE_WAIT))
+                handler._send(429, {"error": {
+                    "message": "CodeArts 上游并发会话已达上限（华为网关限制 3 个），排队 %ds 仍未释放，请稍后重试"
+                               % _CA_QUEUE_WAIT,
+                    "type": "rate_limit"}})
+                return
+        ca_slotted = True
+
+    def _ca_release():
+        if ca_slotted:
+            _CA_SEM.release()
+
+    # 上游「并发会话数已达上限」(TM.00001041)：会话关闭后有残留计时，紧跟着开新会话也会撞。
+    # 自动重试+退避，客户端无感（日志留痕）。
+    disp_att, DISP_MAX, RETRY_WAIT = 0, 18, 5.0
+    while True:
+        try:
+            if provider == "teleagent":
+                name, ent = _ta_ent()
+                lines = tat.chat_stream(ent, openai_body)
+            elif provider == "wbai":
+                name, ent = _wbai_ent()
+                wb_body = dict(openai_body)
+                mb = str(wb_body.get("model") or "").strip()
+                if mb.lower().startswith(WBAI_PREFIX):
+                    wb_body["model"] = mb[len(WBAI_PREFIX):]
+                if not wb_body.get("model"):
+                    wb_body["model"] = "auto"
+                lines = wai.chat_stream(ent, wb_body)
+            elif provider == "officeace":
+                name, ent = _oa_ent()
+                lines = oac.chat_stream(ent, openai_body)
+            else:
+                name, ent = _load_ent()
+                lines = _chat_stream(ent, openai_body)
+            break
+        except UpstreamError as e:
+            _ca_release()
+            if (provider == "codearts"
+                    and ("TM.00001041" in e.message or "并发会话数" in e.message)):
+                disp_att += 1
+                if disp_att > DISP_MAX:
+                    srv.log("[proxy:codearts] %s 上游并发限制重试 %d 次仍失败" % (model, DISP_MAX))
+                    handler._send(429, {"error": {
+                        "message": "CodeArts 上游并发会话已达上限（华为网关限制 3 个），重试 %d 次仍占用，请稍后重试"
+                                   % DISP_MAX,
+                        "type": "rate_limit"}})
+                    return
+                srv.log("[proxy:codearts] %s 上游并发限制，%.1fs 后第 %d/%d 次重试"
+                        % (model, RETRY_WAIT, disp_att, DISP_MAX))
+                time.sleep(RETRY_WAIT)
+                if provider == "codearts":
+                    deadline = time.time() + _CA_QUEUE_WAIT
+                    while not _CA_SEM.acquire(timeout=1.0):
+                        if time.time() > deadline:
+                            handler._send(429, {"error": {
+                                "message": "CodeArts 上游并发会话已达上限（华为网关限制 3 个），排队 %ds 仍未释放"
+                                           % _CA_QUEUE_WAIT,
+                                "type": "rate_limit"}})
+                            return
+                    continue
+            srv.log("[proxy:%s] %s acct=%s HTTP%s %s"
+                    % (provider, model, name, e.status, e.message[:80]))
+            handler._send(e.status if e.status >= 400 else 502,
+                          {"error": {"message": e.message, "type": "upstream_error"}})
+            return
+        except Exception as e:
+            _ca_release()
+            srv.log("[proxy:%s] %s acct=%s 异常 %s" % (provider, model, name, str(e)[:80]))
+            handler._send(502, {"error": {"message": str(e)[:200],
+                                          "type": "upstream_error"}})
+            return
 
     if want_stream:
         handler._begin_stream()
@@ -404,13 +498,15 @@ def relay(handler, openai_body):
         except Exception:
             pass                      # 客户端断开等 IO 错误，直接收尾
         finally:
+            _ca_release()
             srv.log("[proxy:%s] %s acct=%s stream %.1fs lines=%d%s"
                     % (provider, model, name, time.time() - t0, n_lines, _usage_str(usage)))
             _record_usage(model, usage)
         return
 
     # 非流式：聚合 SSE → 单个 OpenAI 响应
-    content, reasoning, tool_calls = [], [], []
+    content, reasoning = [], []
+    tool_map = {}                      # tool_call 增量按 index 合并（流式分片→完整调用）
     finish, usage, resp_id, created = None, None, "", 0
     try:
         for line in lines:
@@ -436,20 +532,40 @@ def relay(handler, openai_body):
                 if d.get("reasoning_content"):
                     reasoning.append(d["reasoning_content"])
                 if d.get("tool_calls"):
-                    tool_calls.extend(d["tool_calls"])
+                    for tc in d["tool_calls"]:
+                        idx = tc.get("index") or 0
+                        fn = tc.get("function") or {}
+                        cur = tool_map.get(idx)
+                        if cur is None:
+                            cur = {"id": tc.get("id") or "", "type": tc.get("type") or "function",
+                                   "function": {"name": fn.get("name") or "",
+                                                "arguments": fn.get("arguments") or ""}}
+                            tool_map[idx] = cur
+                            continue
+                        if tc.get("id"):
+                            cur["id"] = tc["id"]
+                        if tc.get("type"):
+                            cur["type"] = tc["type"]
+                        if fn.get("name"):
+                            cur["function"]["name"] += fn["name"]
+                        if fn.get("arguments"):
+                            cur["function"]["arguments"] += fn["arguments"]
                 if ch.get("finish_reason"):
                     finish = ch["finish_reason"]
             if j.get("usage"):
                 usage = j["usage"]
     except UpstreamError as e:
+        _ca_release()
         handler._send(e.status, {"error": {"message": e.message,
                                            "type": "upstream_error"}})
         return
     except Exception as e:
+        _ca_release()
         handler._send(502, {"error": {"message": str(e)[:200],
                                       "type": "upstream_error"}})
         return
 
+    tool_calls = [tool_map[i] for i in sorted(tool_map)]
     msg = {"role": "assistant", "content": "".join(content)}
     if reasoning:
         msg["reasoning_content"] = "".join(reasoning)
@@ -461,6 +577,7 @@ def relay(handler, openai_body):
            "choices": [{"index": 0, "message": msg, "finish_reason": finish or "stop"}],
            "usage": usage or {}}
     handler._send(200, out)
+    _ca_release()
     srv.log("[proxy:%s] %s acct=%s %.1fs%s" % (provider, model, name, time.time() - t0,
                                                _usage_str(usage)))
     _record_usage(model, usage)

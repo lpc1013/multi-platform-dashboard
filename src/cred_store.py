@@ -76,6 +76,7 @@ ZCODE_ACCOUNTS_FILE     = data_dir.path("zcode_accounts.json")
 OFFICEACE_ACCOUNTS_FILE = data_dir.path("officeace_accounts.json")
 CODEARTS_ACCOUNTS_FILE  = data_dir.path("codearts_accounts.json")
 TELEAGENT_ACCOUNTS_FILE = data_dir.path("teleagent_accounts.json")
+WORKBUDDY_AI_ACCOUNTS_FILE = data_dir.path("workbuddy_ai_accounts.json")
 
 # 各平台的凭据文件（供「添加 / 删除 / 本地导入」统一寻址）
 CRED_FILES = {
@@ -88,6 +89,7 @@ CRED_FILES = {
     "officeace": OFFICEACE_ACCOUNTS_FILE,
     "codearts": CODEARTS_ACCOUNTS_FILE,
     "teleagent": TELEAGENT_ACCOUNTS_FILE,
+    "workbuddy_ai": WORKBUDDY_AI_ACCOUNTS_FILE,
 }
 
 # 各平台「身份指纹」字段（按优先级）：同一个指纹 = 同一个账号，只是显示名/令牌可能变了
@@ -118,6 +120,8 @@ IDENT_FIELDS = {
     "codearts": ("user_id", "phone", "ak"),   # user_id=华为云 domain_id（续期换 AK 后身份不变）
     # ⚠ user_id=accountId（天翼账号数字主键，稳定）；token 月抛轮换不能当指纹
     "teleagent": ("user_id", "token"),
+    # 国际版：user_id=Keycloak sub（UUID 主键稳定）；token 会经 refresh 轮换
+    "workbuddy_ai": ("user_id", "token"),
 }
 
 # 「粘贴添加」时若用户没填备注名，用这个前缀 + 手机号/ID 尾号 自动起名，
@@ -126,6 +130,7 @@ DEFAULT_LABEL = {
     "minimax": "MiniMax", "baidu_dumate": "DuMate", "lingxi": "灵犀",
     "trae": "Trae", "qoder": "Qoder", "zcode": "ZCode",
     "officeace": "OfficeACE", "codearts": "CodeArts", "teleagent": "TeleAgent",
+    "workbuddy_ai": "WB国际版",
 }
 
 
