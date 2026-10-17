@@ -92,7 +92,9 @@ def _collect_pids(pids):
 
     got = {}
     if loaded:
-        workers = max(4, min(12, len(loaded)))
+        # 纯 I/O 等待型读取，线程开销可忽略：池上限拉到账号数级，
+        # 避免「慢账号波次叠队」（25 账号 12 工人时最坏 3 波串行）
+        workers = max(4, min(24, len(loaded)))
         with cf.ThreadPoolExecutor(max_workers=workers) as ex:
             futs = {ex.submit(_safe_read, mod, nm, ent): (pid, nm)
                     for pid, nm, mod, ent in loaded}

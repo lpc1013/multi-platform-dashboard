@@ -320,12 +320,24 @@ def read_account(name, ent):
                 "extra": {"phone": phone}}
 
     s = fs.sess(at)
-    resource = fs.getj(s, "/v2/billing/meter/get-user-resource", "POST")
-    summary = fs.getj(s, "/billing/meter/get-user-resource-summary", "POST")
-    status = fs.getj(s, "/v2/billing/meter/checkin-activity-status", "POST")
-    prof = fs.getj(s, "/v2/activity/growth/profile")
-    energy = fs.getj(s, "/v2/activity/growth/energy")
-    travel = fs.getj(s, "/v2/activity/growth/buddy/travel/status")
+    # 六个端点相互独立，并行拉取（串行 6×RTT 曾致单号 6s+，拖慢整体同步）
+    import concurrent.futures as _cf
+    _jobs = {
+        "resource": ("/v2/billing/meter/get-user-resource", "POST"),
+        "summary": ("/billing/meter/get-user-resource-summary", "POST"),
+        "status": ("/v2/billing/meter/checkin-activity-status", "POST"),
+        "prof": ("/v2/activity/growth/profile", "GET"),
+        "energy": ("/v2/activity/growth/energy", "GET"),
+        "travel": ("/v2/activity/growth/buddy/travel/status", "GET"),
+    }
+    with _cf.ThreadPoolExecutor(max_workers=6) as _ex:
+        _futs = {k: _ex.submit(fs.getj, s, p, m) for k, (p, m) in _jobs.items()}
+        resource = _futs["resource"].result()
+        summary = _futs["summary"].result()
+        status = _futs["status"].result()
+        prof = _futs["prof"].result()
+        energy = _futs["energy"].result()
+        travel = _futs["travel"].result()
 
     sd = (status or {}).get("data") or {}
     td = (travel or {}).get("data") or {}

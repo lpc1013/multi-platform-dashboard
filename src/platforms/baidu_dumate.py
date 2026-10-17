@@ -267,7 +267,8 @@ def read_account(name, ent):
                 "level": "?", "signed_today": False,
                 "credits": {"remain": 0, "total": 0, "used": 0}, "packages": [],
                 "extra": {"phone": _phone, "remaining_draws": 0, "win_records": []}}
-    # 签到信息
+    # ⚠ dumate.cn 有同 Cookie 并发风控（实测：3 请求并发 → 5s 塔跳延时 → Cookie 401 作废），
+    #   必须保持串行；优化空间只在连接复用，勿并行。
     bi, bi_err = _login_bonus_info(cookie)
     signed = bool(bi and bi.get("has_issued"))
     # 积分

@@ -16,7 +16,7 @@ WorkBuddy 看板数据生成器  ->  dashboard_data.json
   2) ../WorkBuddy-Daily/wb_refresh_tokens.json（L0NE-6 脚本维护）
   获取凭据：在 WorkBuddy-Daily 目录跑  python workbuddy_login.py
 """
-import os, sys, json, time, base64
+import os, sys, json, time, base64, threading
 from datetime import datetime
 
 try:
@@ -145,18 +145,33 @@ def refresh(rt):
         return None, str(e)[:80]
 
 
+_SESS_CACHE = {}          # token -> Session（跨刷新复用 TCP+TLS 连接：全量并发时
+_SESS_LOCK = threading.Lock()   # 上百次全新 TLS 握手的 CPU 争抢曾致所有平台集体 10 倍变慢）
+_SESS_MAX = 32
+
 def sess(tok):
-    s = requests.Session()
-    s.trust_env = False
-    uid = str(jw(tok).get("sub", ""))
-    s.headers.update({
-        "Authorization": "Bearer " + tok,
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/plain, */*",
-        "Origin": BASE, "Referer": BASE + "/profile/growth-center",
-        "User-Agent": UA, "X-User-Id": uid,
-    })
-    return s
+    with _SESS_LOCK:
+        s = _SESS_CACHE.get(tok)
+        if s is None:
+            s = requests.Session()
+            s.trust_env = False
+            uid = str(jw(tok).get("sub", ""))
+            s.headers.update({
+                "Authorization": "Bearer " + tok,
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/plain, */*",
+                "Origin": BASE, "Referer": BASE + "/profile/growth-center",
+                "User-Agent": UA, "X-User-Id": uid,
+            })
+            _SESS_CACHE[tok] = s
+            if len(_SESS_CACHE) > _SESS_MAX:   # token 轮换后旧会话逐步淘汰
+                for k in list(_SESS_CACHE)[:len(_SESS_CACHE) - _SESS_MAX]:
+                    old = _SESS_CACHE.pop(k)
+                    try:
+                        old.close()
+                    except Exception:
+                        pass
+        return s
 
 
 def getj(s, path, method="GET"):
