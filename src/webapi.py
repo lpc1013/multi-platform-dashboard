@@ -118,12 +118,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if isinstance(body, (dict, list)):
             body = json.dumps(body, ensure_ascii=False)
         raw = body.encode("utf-8") if isinstance(body, str) else body
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(raw)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            # 客户端（浏览器/iframe）提前断开：正常现象，不刷堆栈
+            pass
 
     def _begin_stream(self, status=200, ctype="text/event-stream; charset=utf-8"):
         """SSE 响应头（openai_proxy 用）。ThreadingTCPServer 每请求一线程，
@@ -154,6 +158,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         try:
             fn(self)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return                                   # 客户端提前断开，静默
         except DashboardError as e:
             self._send(e.http_status, e.to_dict())
         except Exception as e:
@@ -165,6 +171,60 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, open(fp, "rb").read(), "text/html; charset=utf-8")
         except Exception as e:
             self._send(500, {"error": str(e)})
+
+    # ── Token 消耗面板（复用 wb-usage-tracker 的 Node 采集内核 + 官方渲染模板）──
+    def _r_tokens(self):
+        try:
+            import token_panel
+            token_panel.ensure_started()
+            self._send(200, token_panel.render_html(), "text/html; charset=utf-8")
+        except Exception as e:
+            self._send(500, {"error": str(e)[:300]})
+
+    def _r_api_tokens(self):
+        try:
+            import token_panel
+            token_panel.ensure_started()
+            data = token_panel.collect()
+            self._send(200, data or {})
+        except Exception as e:
+            self._send(500, {"error": str(e)[:300]})
+
+    def _r_api_stream(self):
+        """Token 面板 SSE 实时推送：连接即下发当前快照，之后后台线程每 TTL 刷出
+        新快照再推一次。格式与官方 wb-usage-tracker server.js 的 /api/stream 一致
+        （`retry:` + `data: <json>`），供内嵌 Token 面板的 EventSource 使用。"""
+        try:
+            import token_panel
+            token_panel.ensure_started()
+        except Exception as e:
+            self._send(500, {"error": str(e)[:200]})
+            return
+        import time
+        self._begin_stream()                       # 复用 openai_proxy 的 SSE 头
+        try:
+            self._write_chunk(b"retry: 5000\n\n")
+        except Exception:
+            return
+        last = None
+        while True:
+            try:
+                data = token_panel.collect()       # 走缓存，不触发重扫
+            except Exception:
+                data = None
+            if data is not None and data is not last:   # collect() 换新对象 = 有新快照
+                last = data
+                try:
+                    payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+                    self._write_chunk(("data: " + payload + "\n\n").encode("utf-8"))
+                except Exception:
+                    return                         # 客户端已断开
+            else:
+                try:
+                    self._write_chunk(b": keep-alive\n\n")   # 心跳保活
+                except Exception:
+                    return
+            time.sleep(10)
 
     def _r_api_state(self):
         try:
@@ -205,10 +265,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             pass
         try:
             ox._oa_ent()
+            have = {d["id"] for d in data}   # 交集名已在 CodeArts 段：去重（路由固定走 CodeArts）
             data += [{"id": m, "object": "model", "owned_by": "officeace"}
-                     for m in sorted(ox.oa_model_ids())]
+                     for m in sorted(ox.oa_model_ids()) if m not in have]
         except Exception:
             pass    # OfficeACE 不可用不阻塞其余模型列出
+        try:
+            # WorkBuddy 国际版：wb: 前缀命名空间（与 CodeArts/OfficeACE 交集名隔离）
+            name, went = ox._wbai_ent()
+            wmodels = ox.wai.gw_models(went)
+            data += [{"id": "wb:" + m["id"], "object": "model", "owned_by": "workbuddy-intl"}
+                     for m in wmodels if m.get("id")]
+        except Exception:
+            pass    # 国际版不可用不阻塞其余模型列出
         self._send(200, {"object": "list", "data": data})
 
     def _r_api_proxy_usage(self):
@@ -269,10 +338,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             on, _ = ox._oa_ent()
             oa["account"] = on
             oa_ids = sorted(ox.oa_model_ids())
-            oa["models"] = oa_ids
-            # 默认模型选一个「OA 独有」的（交集名走 CodeArts，选它不会路由到本上游）
+            # 去重：交集名（deepseek-v4.1-flash 等 5 个）路由固定走 CodeArts（福利额度优先，
+            # 见 openai_proxy.relay 的判定），下拉/目录如实反映——本组只列 OA 真正独有的模型，
+            # 避免「两处可选、实则一路」的误导。
             ca_ids = set(ca["models"])
-            exclusive = [m for m in oa_ids if m not in ca_ids]
+            oa["models"] = [m for m in oa_ids if m not in ca_ids]
+            exclusive = oa["models"]
+            # 默认模型选一个「OA 独有」的（交集名走 CodeArts，选它不会路由到本上游）
             for pref in ("glm-5.3", "kimi-k2.6", "qwen3-32b", "openpangu-2.0-pro"):
                 if pref in exclusive:
                     oa["default_model"] = pref
@@ -282,12 +354,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             oa["error"] = getattr(e, "message", None) or str(e)[:160]
 
+        # 上游四：WorkBuddy 国际版（workbuddy.ai，wb: 前缀路由）
+        wb = {"id": "workbuddy_intl", "label": "WorkBuddy 国际版（wb: 前缀）",
+              "default_model": "wb:auto", "models": [], "account": None, "error": ""}
+        try:
+            wname, went = ox._wbai_ent()
+            wb["account"] = wname
+            wms = ox.wai.gw_models(went)
+            # 下拉展示 wb: 前缀名（客户端用前缀选上游）；附 credit 倍率供前端标注
+            wb["models"] = ["wb:" + m["id"] for m in wms if m.get("id")]
+            wb["credit"] = {("wb:" + m["id"]): m.get("credit") or ""
+                            for m in wms if m.get("id")}
+        except Exception as e:
+            wb["error"] = getattr(e, "message", None) or str(e)[:160]
+
         out["benefit_models"] = ca["benefit"]     # 旧字段保留（向后兼容）
         out["builtin_models"] = ca["builtin"]
         out["models"] = ca["models"]
         out["account"] = ca["account"]
         out["error"] = ca["error"]
-        out["providers"] = [ca, ta, oa]
+        out["providers"] = [ca, ta, oa, wb]
         self._send(200, out)
 
     def _r_api_progress(self):
@@ -363,6 +449,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         try:
             fn(self, body)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            return                                   # 客户端提前断开，静默
         except DashboardError as e:
             self._send(e.http_status, e.to_dict())
         except Exception as e:
@@ -918,6 +1006,9 @@ _GET_ROUTES = {
     "/": Handler._r_index,
     "/index.html": Handler._r_index,
     "/dashboard": Handler._r_index,
+    "/tokens": Handler._r_tokens,
+    "/api/tokens": Handler._r_api_tokens,
+    "/api/stream": Handler._r_api_stream,
     "/api/state": Handler._r_api_state,
     "/v1/models": Handler._r_v1_models,
     "/api/proxy_usage": Handler._r_api_proxy_usage,

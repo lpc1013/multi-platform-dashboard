@@ -50,3 +50,7 @@ desktop.ini
 proxy_usage.json
 # 凭据备份输出
 backups/
+
+# Token 面板运行时 dump（含工作空间/会话名等使用数据，不入库）
+src/_dump.json
+src/_dump.err
