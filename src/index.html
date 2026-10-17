@@ -1675,7 +1675,7 @@ function detailHTML(a, pid){
     });
     const tr=ex.trial;
     if(tr) kv.push(tr.started
-      ? `<div class="kv"><span>⏱ ${esc(tr.model)} 试用（${tr.days} 天）</span><b style="color:${tr.days_left<=3?'var(--red)':'var(--ink)'}">剩 ${tr.days_left} 天（${esc(tr.start)} 起）</b></div>`
+      ? `<div class="kv"><span>⏱ ${esc(tr.model)} 试用（${tr.days} 天）</span><b style="color:${tr.days_left<=3?'var(--red)':'var(--ink)'}">剩 ${tr.days_left} 天（${esc((tr.start||'').slice(5))} 起 · ${esc((tr.until||'').slice(5))} 到期）</b></div>`
       : `<div class="kv"><span>⏱ ${esc(tr.model)} 试用</span><b style="color:var(--muted)">${tr.days} 天 · 首次使用起算（未开始）</b></div>`);
     if(ex.expiring_in_30d) kv.push(`<div class="kv"><span>30 天内到期积分包</span><b style="color:var(--orange)">${esc(ex.expiring_in_30d)} 个</b></div>`);
     if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
@@ -1937,8 +1937,8 @@ const TOKEN_SECTIONS = [
   {v:"throughput", t:"量能趋势"},
   {v:"workspace",  t:"工作空间"},
   {v:"timeheat",   t:"时段热力"},
-  {v:"dist",       t:"分布账号"},
-  {v:"credit",     t:"积分结算"}
+  {v:"dist",       t:"请求分布"},
+  {v:"credit",     t:"积分消耗"}
 ];
 function _rsitem(dot, label, count, extra){
   const dotHtml = `<span class="rdot" style="background:${dot||"transparent"}"></span>`;

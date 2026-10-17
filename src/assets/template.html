@@ -3,7 +3,7 @@
 <title>WorkBuddy Token消耗看板</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-:root{--bg:#fafaf9;--card:#fff;--border:#e8e5df;--border2:#e4e1da;--border3:#efede8;--t1:#1f2328;--t2:#6f6c64;--t3:#9a978f;--t4:#b5b2a9;--t5:#a3a099;--t6:#55524b;--wcnm:#374151;--tdc:#3d3b36;--row:#f2f0ea;--empty:#f4f2ed;--hover:#fbfaf7;--focus:#c9c6be;--sep:#d4d1c9;--selbg:#e9f0f7;--selfg:#3f6b99;--selbd:#aec9e0;--red:#d64545;--blue:#5f8cb6;--tipbg:#1f2328;--tiptc:#fff;--font-ui:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;--fs-hero:76px;--fs-hero-md:44px;--fs-hero-sm:37px;--fs-kpi:22px;--fs-kpi-md:19px;--fs-kpi-sm:17px;--fs-t1:20px;--fs-t2:18px;--fs-t3:16.5px;--fs-body:15px;--fs-aux:13px;--fs-cap:11.5px;--fs-micro:10.5px;--sb-thumb:#c9c6be;--sb-thumb-hover:#a8a49b}
+:root{--bg:#fafaf9;--card:#fff;--border:#e8e5df;--border2:#e4e1da;--border3:#efede8;--t1:#1f2328;--t2:#6f6c64;--t3:#9a978f;--t4:#b5b2a9;--t5:#a3a099;--t6:#55524b;--wcnm:#374151;--tdc:#3d3b36;--row:#f2f0ea;--empty:#f4f2ed;--hover:#fbfaf7;--focus:#c9c6be;--sep:#d4d1c9;--selbg:#e9f0f7;--selfg:#3f6b99;--selbd:#aec9e0;--red:#d64545;--blue:#5f8cb6;--tipbg:#1f2328;--tiptc:#fff;--font-ui:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;--fs-hero:76px;--fs-hero-md:44px;--fs-hero-sm:37px;--fs-kpi:24px;--fs-kpi-md:19px;--fs-kpi-sm:17px;--fs-t1:20px;--fs-t2:18px;--fs-t3:16.5px;--fs-body:15px;--fs-aux:13px;--fs-cap:11.5px;--fs-micro:10.5px;--sb-thumb:#c9c6be;--sb-thumb-hover:#a8a49b}
 body.dark{--bg:#1c1b19;--card:#262521;--border:#3a3833;--border2:#3a3833;--border3:#35332e;--t1:#f0eee9;--t2:#b5b2a9;--t3:#8a877f;--t4:#6f6d66;--t5:#8a877f;--t6:#d5d2ca;--wcnm:#c5c2ba;--tdc:#c5c2ba;--row:#323029;--empty:#2e2c29;--hover:#2a2925;--focus:#55524b;--sep:#4a4842;--selbg:#2c3a47;--selfg:#a9c9e4;--selbd:#4a6a85;--red:#e06666;--blue:#8fb8d9;--tipbg:#f0eee9;--tiptc:#1c1b19;--sb-thumb:#4a4842;--sb-thumb-hover:#6f6d66;color-scheme:dark}
 body{font-family:var(--font-ui);background:var(--bg);color:var(--t1);padding:22px 18px 60px;max-width:1600px;margin:0 auto}
 .wrap{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px;align-items:start}
@@ -179,7 +179,7 @@ body{font-family:var(--font-ui);background:var(--bg);color:var(--ink);padding:0 
 button,input,select,textarea{font-family:inherit}
 body>header{max-width:1400px;margin:0 auto;padding:46px 40px 0;display:flex;justify-content:space-between;align-items:flex-end;gap:20px;flex-wrap:wrap}
 h1{font-size:var(--fs-aux);font-weight:600;letter-spacing:.2em;color:var(--ink2)}
-.sub{font-size:var(--fs-cap);color:var(--ink3);margin-top:7px;letter-spacing:.02em;display:flex;align-items:center;gap:9px}
+.sub{font-size:var(--fs-aux);color:var(--ink3);margin-top:7px;letter-spacing:.02em;display:flex;align-items:center;gap:9px}
 .tbtn,.pill,.chip,.datepick,.tools input{background:var(--card);border:1px solid var(--border2);color:var(--ink2);
   font-size:var(--fs-cap);padding:5px 13px;border-radius:9px;cursor:pointer;outline:none;
   transition:border-color .13s,color .13s,background .13s}
@@ -190,17 +190,19 @@ h1{font-size:var(--fs-aux);font-weight:600;letter-spacing:.2em;color:var(--ink2)
 /* headline：数字即图形，全页唯一重元素 */
 .kpis.kpi-hero{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));max-width:1400px;margin:26px auto 0;padding:0 40px;gap:16px 0}
 .kpis.kpi-hero .kpi{background:none;border:none;border-radius:0;box-shadow:none;padding:15px 16px 13px 0;border-top:1px solid var(--border);margin-right:14px}
-.kpis.kpi-hero .kpi .k{font-size:var(--fs-cap);letter-spacing:.08em;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpis.kpi-hero .kpi .k{font-size:var(--fs-aux);letter-spacing:.08em;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kpis.kpi-hero .kpi .v{font-size:var(--fs-kpi);font-weight:600;letter-spacing:-.7px;color:var(--ink);margin-top:5px;font-variant-numeric:tabular-nums;white-space:nowrap}
-.kpis.kpi-hero .kpi .v small{font-size:var(--fs-aux);color:var(--ink3);font-weight:500;margin-left:2px}
-.kpis.kpi-hero .kpi .d{font-size:var(--fs-cap)}
-.kpis.kpi-hero .kpi .s{font-size:var(--fs-cap);color:var(--ink3);margin-top:5px}
+.kpis.kpi-hero .kpi .v small{font-size:var(--fs-body);color:var(--ink3);font-weight:500;margin-left:2px}
+.kpis.kpi-hero .kpi .d{font-size:var(--fs-aux)}
+/* 环比行（sub()）在 .v 内部：必须挣脱 .v 的 line-height:.9 / letter-spacing 负值继承，否则叠字 */
+.kpis.kpi-hero .kpi .v>span{line-height:1.55;letter-spacing:.01em;font-variant-numeric:normal}
+.kpis.kpi-hero .kpi .s{font-size:var(--fs-aux);color:var(--ink3);margin-top:5px}
 .kpis.kpi-hero .kpi.lead{grid-column:1/-1;border-top:2px solid var(--rule);padding:22px 0 16px;margin-right:0}
-.kpis.kpi-hero .kpi.lead .k{font-size:var(--fs-cap);letter-spacing:.2em;color:var(--ink3)}
+.kpis.kpi-hero .kpi.lead .k{font-size:var(--fs-aux);letter-spacing:.2em;color:var(--ink3)}
 .kpis.kpi-hero .kpi.lead .v{font-size:var(--fs-hero);font-weight:600;letter-spacing:-3.6px;line-height:.9;margin-top:9px;color:var(--ink)}
 .kpis.kpi-hero .kpi.lead .v small{font-size:var(--fs-t1);color:var(--ink3);font-weight:400;margin-left:7px;letter-spacing:-.5px}
-.kpis.kpi-hero .kpi.lead .s{font-size:var(--fs-aux);color:var(--ink2);margin-top:13px;line-height:1.6}
-.kpis.kpi-hero .kpi.lead .s span{display:block;font-size:var(--fs-cap);color:var(--ink3);margin-top:3px}
+.kpis.kpi-hero .kpi.lead .s{font-size:var(--fs-body);color:var(--ink2);margin-top:13px;line-height:1.6}
+.kpis.kpi-hero .kpi.lead .s span{display:block;font-size:var(--fs-aux);color:var(--ink3);margin-top:3px}
 /* 计价口径长注释：默认折叠成一行入口，展开后是柔和底色的可读段落 */
 .fnote{margin-top:6px}
 .fnote summary{width:fit-content;cursor:pointer;user-select:none;list-style:none;
@@ -471,11 +473,6 @@ html{scrollbar-width:thin;scrollbar-color:var(--sb-thumb) transparent}
   <svg id="mdSvg" width="100%" height="240"></svg>
   <div class="foot">每模型一条分布形状（各自归一）· 竖线=该模型 50% · 灰点=90% · 虚线=全局 50% · 数值下条形=两列共享刻度的大小对比（深=50% 浅=90%）</div>
 </section>
-
-<section class="blk">
-  <div class="sec-h"><h2>哪个账号在烧</h2><span class="cap" id="acctCap"></span></div>
-  <div class="panel-scroll"><div id="acctPanel"></div></div>
-</section>
 </div>
 </section>
 
@@ -484,6 +481,11 @@ html{scrollbar-width:thin;scrollbar-color:var(--sb-thumb) transparent}
 <section class="act">
   <div class="act-h"><h2>积分消耗 TOP 榜</h2><span class="cap" id="tcCap"></span></div>
   <div id="topCred" class="cred2"></div>
+</section>
+
+<section class="blk">
+  <div class="sec-h"><h2>哪个账号在烧</h2><span class="cap" id="acctCap"></span></div>
+  <div class="panel-scroll"><div id="acctPanel"></div></div>
 </section>
 </section>
 
@@ -617,7 +619,7 @@ function renderKpis(A){
   const yuanS=yuanHi>=100?fy(yuanLo)+' ~ '+fy(yuanHi):'¥'+yuanLo.toFixed(2)+' ~ ¥'+yuanHi.toFixed(2);
   const busyH=A.busy/3600;
   const busyS=busyH>=1?busyH.toFixed(1)+' 小时':Math.round(busyH*60)+' 分钟';
-  const sub=t=>'<span style="display:block;font-size:var(--fs-cap);color:var(--t3);font-weight:400;margin-top:1px">'+t+'</span>';
+  const sub=t=>'<span style="display:block;font-size:var(--fs-aux);color:var(--t3);font-weight:400;margin-top:3px">'+t+'</span>';
   const toolS=nf(A.tkArr.length)+' 个'+(A.tkArr.length?sub('主力 '+esc(A.tkArr[0][0])):'');
   // ---- 环比：本期 vs 上一期同等长度窗口（从按日聚合现算，无需历史快照）----
   let prev={ocred:null,tot:null,turns:null};
