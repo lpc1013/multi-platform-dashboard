@@ -291,6 +291,7 @@ body>header,.act,.kpis.kpi-hero,.wrap{padding-left:16px;padding-right:16px}
 h1{font-size:var(--fs-cap);letter-spacing:.16em}
 .sub{margin-top:5px;font-size:var(--fs-cap)}
 .pill,.chip,.tbtn,.datepick,.tools input{font-size:var(--fs-cap);padding:5px 10px}
+.tsel,.toolbar .datepick{font-size:var(--fs-aux)}   /* 工具条下拉/日期窄屏仍保持可读字号 */
 .tbtn{white-space:nowrap;flex:none}
 .tools{flex-wrap:wrap}
 .kpis.kpi-hero{grid-template-columns:repeat(2,minmax(0,1fr));margin-top:20px}
@@ -337,23 +338,32 @@ table.rt{min-width:420px}
 /* ===== 单栏布局：顶部工具条（导航由外层看板左栏承担，此处不再重复） ===== */
 body{padding:0;max-width:none;margin:0}
 .layout{display:flex;align-items:flex-start;min-height:100vh}
-/* ---- 顶部工具条：三行结构（元信息 / 过滤 / 账号），行间细分隔线，任何宽度下各归其位不乱堆 ---- */
+/* ---- 顶部工具条：单行下拉框（时间窗 / 账号），右侧实时呼吸圆点 + 深色切换 ---- */
 .toolbar{position:sticky;top:0;z-index:40;background:var(--card);border:1px solid var(--border);border-radius:14px;
   margin-bottom:18px;box-shadow:0 5px 18px rgba(10,37,64,.05);padding:2px 16px;
   display:flex;flex-direction:column}
-.trow{display:flex;flex-wrap:wrap;align-items:center;gap:10px 20px;min-width:0;padding:11px 0}
-.trow+.trow{border-top:1px solid var(--border3)}
-.tmeta-row{font-size:var(--fs-cap);color:var(--t3);gap:8px 14px}
-.tmeta-row .tbtn{margin-left:auto}
-.tgroup{display:flex;align-items:center;gap:10px;min-width:0}
-.tgroup .flabel{font-size:var(--fs-cap);color:var(--t3);font-weight:600;letter-spacing:.3px;white-space:nowrap}
-.toolbar .pills{display:flex;flex-wrap:wrap;gap:7px}
-.toolbar .pills .pill{margin-left:0;font-size:var(--fs-aux);padding:5px 13px}
+.trow{display:flex;flex-wrap:wrap;align-items:center;gap:10px 20px;min-width:0;padding:10px 0}
+.tgroup{display:flex;align-items:center;gap:9px;min-width:0}
+.tgroup .flabel{font-size:var(--fs-aux);color:var(--t3);font-weight:600;letter-spacing:.3px;white-space:nowrap}
+/* 下拉框：与外层 .btn-ghost 同语言，字号 15px（正文级，明显大于旧胶囊 13px） */
+.tsel{appearance:none;-webkit-appearance:none;background:var(--card) url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238792a2' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 11px center;
+  border:1px solid var(--border2);color:var(--t1);font-size:var(--fs-body);font-family:inherit;
+  padding:7px 32px 7px 13px;border-radius:9px;cursor:pointer;outline:none;max-width:280px;
+  transition:border-color .15s,box-shadow .15s}
+.tsel:hover{border-color:var(--focus)}
+.tsel:focus{border-color:var(--focus);box-shadow:0 0 0 3px rgba(99,91,255,.12)}
 .toolbar .dates{display:flex;align-items:center;gap:6px}
-.toolbar .dates .datepick{padding:5px 9px;font-size:var(--fs-aux)}
-.toolbar #acctPills{display:flex;flex-wrap:wrap;gap:7px}
-.toolbar #acctPills .pill{margin-left:0;padding:4px 13px;font-size:var(--fs-aux)}
-.toolbar .tbtn{flex:none;white-space:nowrap}
+.toolbar .dates .dto{color:var(--t3);font-size:var(--fs-aux)}
+.toolbar .dates .datepick{padding:6px 10px;font-size:var(--fs-body);border-radius:9px}
+/* 实时呼吸圆点：连接后明暗交替脉动；断开变灰静止 */
+.livedot{margin-left:auto;display:inline-flex;align-items:center;padding:4px}
+.livedot i{width:10px;height:10px;border-radius:50%;background:#16a34a;animation:livedot 2.2s ease-in-out infinite}
+.livedot.off i{background:#94a3b8;animation:none}
+@keyframes livedot{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(22,163,74,.32)}50%{opacity:.35;box-shadow:0 0 0 6px rgba(22,163,74,0)}}
+body.dark .livedot i{background:#34d399}
+body.dark .livedot.off i{background:#5a626c}
+.theme-mini{border:none;background:none;padding:6px 8px;font-size:15px;line-height:1;cursor:pointer;border-radius:8px}
+.theme-mini:hover{background:var(--hover)}
 /* ---- 看板主区 ---- */
 .main{flex:1;min-width:0;padding:18px 28px 64px}
 /* 视图切换：概览=仅总览 KPI；各分区视图仅显示对应模块（概览与量能趋势严格分离）
@@ -385,27 +395,28 @@ html{scrollbar-width:thin;scrollbar-color:var(--sb-thumb) transparent}
   <main class="main">
 
   <div class="toolbar">
-    <div class="trow tmeta-row">
-      <span id="sysBadge" style="font-weight:600;color:var(--t2)"></span>
-      <span id="genAt"></span>
-      <span id="liveBadge"></span>
-      <button class="tbtn" id="themeBtn" type="button">深色</button>
-    </div>
     <div class="trow">
       <div class="tgroup">
         <span class="flabel">时间窗</span>
-        <div class="pills"><button class="pill" data-w="1">1 天</button><button class="pill" data-w="3">3 天</button><button class="pill" data-w="7">近 7 天</button><button class="pill on" data-w="30">近 30 天</button></div>
+        <select id="winSel" class="tsel" title="统计时间窗">
+          <option value="1">最近 1 天</option>
+          <option value="3">最近 3 天</option>
+          <option value="7">最近 7 天</option>
+          <option value="30" selected>最近 30 天</option>
+          <option value="custom">自定义区间…</option>
+        </select>
+        <span class="dates" id="customDates" style="display:none">
+          <input type="date" id="dStart" class="datepick" title="起始日期">
+          <span class="dto">至</span>
+          <input type="date" id="dEnd" class="datepick" title="结束日期">
+        </span>
       </div>
-      <div class="tgroup">
-        <span class="flabel">区间</span>
-        <div class="dates"><input type="date" id="dStart" class="datepick" title="起始日期"><span style="color:var(--t4);font-size:var(--fs-cap);margin:0 3px">至</span><input type="date" id="dEnd" class="datepick" title="结束日期"></div>
-      </div>
-    </div>
-    <div class="trow">
       <div class="tgroup">
         <span class="flabel">账号</span>
-        <span id="acctPills"></span>
+        <select id="acctSel" class="tsel" title="下钻到指定账号"><option value="-1">全部账号</option></select>
       </div>
+      <span class="livedot" id="liveBadge" title="正在连接实时通道…"><i></i></span>
+      <button class="tbtn theme-mini" id="themeBtn" type="button" title="切换深色 / 浅色">🌙</button>
     </div>
   </div>
 
@@ -535,7 +546,7 @@ function buildViz(w){
   }
   return h;
 }
-function syncChrome(){$('#genAt').textContent='数据截至 '+D.gen+' · 请求级真实 usage';const sb=$('#sysBadge');if(sb)sb.textContent=D._sys||'';}
+function syncChrome(){const ld=$('#liveBadge');if(ld)ld.title='数据截至 '+D.gen+' · 请求级真实 usage'+(D._sys?' · '+D._sys:'');}
 let genMs=D.genMs;
 const cut=()=>win?genMs-win*86400e3:(customStart?customStart*60000:0);
 const cutHi=()=>(!win&&customEnd)?customEnd*60000:Infinity;
@@ -1048,8 +1059,6 @@ document.addEventListener('click',e=>{
   if(s0){const ss=D.sess[+s0.dataset.si];state={ws:ss.w,ses:ss};render();return;}
   const s2=e.target.closest('[data-ses]');
   if(s2){state.ses=D.sess[+s2.dataset.ses];render();return;}
-  const p2=e.target.closest('.pill[data-w]');
-  if(p2){win=+p2.dataset.w;customStart=0;customEnd=0;$('#dStart').value='';$('#dEnd').value='';selModel=null;hrSel=null;document.querySelectorAll('.pill[data-w]').forEach(b=>b.classList.toggle('on',b===p2));render();return;}
   const mch=e.target.closest('[data-m]');
   if(mch){wsMode=mch.dataset.m;document.querySelectorAll('#wsTools [data-m]').forEach(b=>b.classList.toggle('on',b===mch));renderPanel(aggregate());return;}
   const ch2=e.target.closest('#wsSorts .chip');
@@ -1057,13 +1066,19 @@ document.addEventListener('click',e=>{
 });
 $('#wsSearch').addEventListener('input',e=>{q=e.target.value.trim().toLowerCase();renderPanel(aggregate());});
 $('#wsMult').addEventListener('change',e=>{wsMult=+e.target.value;renderPanel(aggregate());});
+/* 时间窗下拉：预设窗口直接切换；「自定义区间…」展开起止日期框 */
+$('#winSel').addEventListener('change',e=>{
+  const v=e.target.value;
+  if(v==='custom'){$('#customDates').style.display='';return;}
+  $('#customDates').style.display='none';
+  win=+v;customStart=0;customEnd=0;$('#dStart').value='';$('#dEnd').value='';selModel=null;hrSel=null;render();
+});
 function applyCustom(){
   const sv=$('#dStart').value,ev=$('#dEnd').value;
   if(!sv&&!ev)return;
   customStart=sv?new Date(sv+'T00:00:00').getTime()/60000:0;
   customEnd=ev?(new Date(ev+'T00:00:00').getTime()+86400e3)/60000:0;
   win=0;selModel=null;
-  document.querySelectorAll('.pill').forEach(b=>b.classList.remove('on'));
   render();
 }
 $('#dStart').addEventListener('change',applyCustom);
@@ -1098,12 +1113,12 @@ function renderAccts(){
   if($('#acctCap'))$('#acctCap').textContent='窗口内按账号拆分（点击某行＝把全看板下钻到该账号）';
 }
 function populateAcctPills(){
-  const box=$('#acctPills');if(!box||!D.accts)return;
-  let h='<button class="pill'+(ACCT<0?' on':'')+'" data-a="-1">全部账号</button>';
-  D.accts.forEach((nm,i)=>{h+='<button class="pill'+(ACCT===i?' on':'')+'" data-a="'+i+'">'+(nm.length>10?esc(nm.slice(0,10))+'…':esc(nm))+'</button>';});
+  const box=$('#acctSel');if(!box||!D.accts)return;
+  let h='<option value="-1">全部账号</option>';
+  D.accts.forEach((nm,i)=>{h+='<option value="'+i+'"'+(ACCT===i?' selected':'')+'>'+esc(nm)+'</option>';});
   box.innerHTML=h;
-  box.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>{const v=+b.dataset.a;setAcct(v<0?-1:(ACCT===v?-1:v));});
 }
+$('#acctSel').addEventListener('change',e=>setAcct(+e.target.value));
 function setAcct(v){
   ACCT=v;
   populateAcctPills();   // 同步更新顶部药丸高亮（先改 DOM）
@@ -1175,9 +1190,9 @@ window.__applyData=function(nd){
 window.__sse=function(url){
   try{
     const es=new EventSource(url);
-    es.onopen=()=>{const lb=$('#liveBadge');if(lb)lb.innerHTML='<span style="color:var(--blue)">● 实时</span>';};
+    es.onopen=()=>{const lb=$('#liveBadge');if(lb)lb.classList.remove('off');};
     es.onmessage=e=>{try{window.__applyData(JSON.parse(e.data));}catch(err){}};
-    es.onerror=()=>{const lb=$('#liveBadge');if(lb)lb.innerHTML='<span style="color:var(--t4)">○ 已断开</span>';};
+    es.onerror=()=>{const lb=$('#liveBadge');if(lb){lb.classList.add('off');lb.title='实时通道已断开';}};
     return es;
   }catch(e){return null;}
 };
@@ -1185,7 +1200,7 @@ if(!D.sess.length){renderEmpty();}
 if(D._live&&!/(^|[?&])live=0(&|$)/.test(location.search))window.__sse('/api/stream');
 
 
-const themeBtn=$('#themeBtn');themeBtn.textContent=DARK?'浅色':'深色';if(DARK)document.body.classList.add('dark');
-themeBtn.onclick=()=>{DARK=!DARK;CJ=DARK?CJD:CJL;MC=DARK?MCD:MCL;RAMP=DARK?RMPD:RMPL;try{localStorage.setItem('td-dark',DARK?'1':'0');}catch(e){}document.body.classList.toggle('dark',DARK);themeBtn.textContent=DARK?'浅色':'深色';render();};
+const themeBtn=$('#themeBtn');themeBtn.textContent=DARK?'☀️':'🌙';if(DARK)document.body.classList.add('dark');
+themeBtn.onclick=()=>{DARK=!DARK;CJ=DARK?CJD:CJL;MC=DARK?MCD:MCL;RAMP=DARK?RMPD:RMPL;try{localStorage.setItem('td-dark',DARK?'1':'0');}catch(e){}document.body.classList.toggle('dark',DARK);themeBtn.textContent=DARK?'☀️':'🌙';render();};
 </script>
 </body></html>
