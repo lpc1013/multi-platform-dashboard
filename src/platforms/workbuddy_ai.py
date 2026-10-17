@@ -326,9 +326,10 @@ def _headers(tok, stream=False):
 # ══════════════════ 模型目录 ══════════════════
 CATALOG_TTL = 900
 _cat_lock = threading.Lock()
-_catalog = {"ts": 0.0, "models": [], "promos": [], "trial": None}
+_catalog = {"ts": 0.0, "models": [], "promos": [], "trial": None, "trial_start": None}
 # promos: [{model, until(epoch s), days_left, note}] —— modelPromotions 里「限免中」的活动（过滤未开始/已结束）
-# trial:  ModelTrialBanner 首条 {model, target, days} —— 14 天限免特殊模型（起点=首次使用，看板自记录）
+# trial:  ModelTrialBanner 首条 {model, target, days} —— 14 天限免特殊模型
+# trial_start: 服务端记录的首次使用时间（epoch s，/v2/user-asset/portrait；与官方客户端同源）
 
 
 def _parse_iso_ts(s):
@@ -378,7 +379,7 @@ def gw_models(ent, force=False):
                                    "days_left": max(0, int((vu - now) // 86400)),
                                    "note": note[:70]})
             promos.sort(key=lambda x: (x["days_left"], x["model"]))
-            # 试用横幅：14 天限免特殊模型（trialDays 起点为客户端首次使用时间，看板自记录 trial_start）
+            # 试用横幅：14 天限免特殊模型（起点=服务端首次使用时间，官方客户端同源接口）
             banners = (((data.get("productFeaturesConfig") or {}).get("ModelTrialBanner")) or {}).get("banners") or []
             if banners:
                 b = banners[0]
@@ -389,24 +390,41 @@ def gw_models(ent, force=False):
                              "key": str(b.get("firstUseTimeKey") or "")}
                 except (TypeError, ValueError):
                     trial = None
+            # 试用起点：GET /v2/user-asset/portrait?keys=<firstUseTimeKey>（逆向自客户端
+            # renderer contexts-*.js useModelCampaignNotice → createModelCampaignNoticeClient）。
+            # 失败静默，read_account 会回退看板自记录的 trial_start。
+            trial_start = None
+            if trial and trial.get("key"):
+                try:
+                    rp = s.get(BASE + "/v2/user-asset/portrait",
+                               headers=_headers(ent.get("token") or ""),
+                               params={"keys": trial["key"]}, timeout=15, verify=False)
+                    pj = rp.json() if rp.status_code == 200 else {}
+                    items = ((pj.get("data") or {}).get("items") or {})
+                    raw = items.get(trial["key"])
+                    trial_start = float(raw) if raw else None
+                except Exception:
+                    trial_start = None
     except Exception:
         pass
     with _cat_lock:
         if models:
             _catalog.update(ts=now, models=models)
         if promos or trial:
-            _catalog.update(promos=promos, trial=trial)
+            _catalog.update(promos=promos, trial=trial, trial_start=trial_start)
         return _catalog["models"]
 
 
 def promo_state(ent):
-    """返回 (promos, trial)。触发目录刷新（有 TTL 缓存，不额外打请求）。"""
+    """返回 (promos, trial, trial_start)。触发目录刷新（有 TTL 缓存，不额外打请求）。"""
     try:
         gw_models(ent)
     except Exception:
         pass
     with _cat_lock:
-        return list(_catalog["promos"]), (_catalog["trial"] and dict(_catalog["trial"]))
+        return (list(_catalog["promos"]),
+                (_catalog["trial"] and dict(_catalog["trial"])),
+                _catalog["trial_start"])
 
 
 def _model_ids(ent):
@@ -420,7 +438,7 @@ def note_trial_use(name, ent, model):
     try:
         if not name or not model or ent.get("trial_start"):
             return
-        _, trial = promo_state(ent)
+        _, trial, _tstart = promo_state(ent)
         tm = ((trial or {}).get("model") or "").strip()
         hit = (tm and str(model).strip() == tm) or \
               (not tm and str(model).strip().startswith("hy4-preview"))  # config 拉取失败时按当前已知试用模型兜底
@@ -519,27 +537,40 @@ def read_account(name, ent):
             # 即将到期提醒：30 天内到期的积分包数量
             expiring = sum(1 for p in pkgs if p["end"] and p["end"] < time.strftime(
                 "%Y-%m-%d", time.localtime(time.time() + 30 * 86400)) and p["remain"] > 0)
-            # 限免活动倒计时（服务端权威日期）+ 14 天试用剩余（起点=看板观测的首次使用）
+            # 限免活动倒计时（服务端权威日期）+ 14 天试用剩余（起点=服务端首次使用，客户端同源）
             now = time.time()
             ex = {"email": (_jwt_payload(tok).get("preferred_username") or ""),
                   "expiring_in_30d": expiring}
-            pm, trial = promo_state(ent)
+            pm, trial, tstart = promo_state(ent)
             if pm:
                 ex["promos"] = [{"model": p["model"],
                                  "until": time.strftime("%Y-%m-%d", time.localtime(p["until"])),
                                  "days_left": p["days_left"]} for p in pm]
             if trial:
                 t = {"model": trial["model"], "target": trial["target"], "days": trial["days"]}
-                ts = ent.get("trial_start")
-                if ts:
+                st = tstart
+                src = "server"
+                if st is None and ent.get("trial_start"):
+                    src = "local"
                     try:
                         import datetime
-                        st = datetime.datetime.strptime(str(ts)[:16], "%Y-%m-%d %H:%M").timestamp()
-                        left = trial["days"] - int((now - st) // 86400)
-                        t.update(started=True, days_left=max(0, left),
-                                 start=str(ts)[:10])
+                        st = datetime.datetime.strptime(
+                            str(ent["trial_start"])[:16], "%Y-%m-%d %H:%M").timestamp()
                     except Exception:
-                        t.update(started=False)
+                        st = None
+                if st:
+                    # 与客户端口径一致：最后免费日=首用日+trialDays-1（整天），到期=其后一天 00:00；
+                    # 剩余天数向上取整（不足一天按一天计）。
+                    import datetime
+                    d0 = datetime.datetime.fromtimestamp(st).date()
+                    end = datetime.datetime.combine(
+                        d0 + datetime.timedelta(days=trial["days"] + 1),
+                        datetime.time.min).timestamp()
+                    left = max(0, int((end - now + 86399) // 86400))
+                    t.update(started=True, days_left=min(left, trial["days"]),
+                             start=time.strftime("%Y-%m-%d", time.localtime(st)),
+                             until=time.strftime("%Y-%m-%d", time.localtime(end)),
+                             src=src)
                 else:
                     t.update(started=False)
                 ex["trial"] = t
