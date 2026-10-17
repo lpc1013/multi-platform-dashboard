@@ -21,8 +21,8 @@
   --font-ui:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
   --font-mono:ui-monospace,SFMono-Regular,Consolas,Menlo,monospace;
   --fs-display:27px;    --fs-display-sm:22px;
-  --fs-t1:20px;         --fs-t2:17px;         --fs-t3:15px;
-  --fs-body:13.5px;     --fs-aux:12.5px;      --fs-cap:11.5px;   --fs-micro:10.5px;
+  --fs-t1:20px;         --fs-t2:18px;         --fs-t3:16.5px;
+  --fs-body:15px;       --fs-aux:13px;        --fs-cap:11.5px;   --fs-micro:10.5px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 ::selection{background:#e4e1ff;color:#1a1440}
@@ -1297,6 +1297,7 @@ async function load(force, scope){
     if(force) qs.push("force=1");
     if(scope) qs.push("platform="+encodeURIComponent(scope));
     if(qs.length) url += "?" + qs.join("&");
+    const t0 = Date.now();                    // 强刷耗时（完成后给结果 toast）
     if(force) toast(scope ? "正在同步 "+(PLAT_LOCAL_NAME[scope]||scope)+" …" : "正在同步全部账号 …");
     const r = await fetch(url, {cache:"no-store"});
     if(!r.ok) throw new Error("HTTP "+r.status);
@@ -1314,8 +1315,14 @@ async function load(force, scope){
         "· <b>百度搭子 DuMate</b>：点「📱 从本地客户端导入」（解密桌面端 Cookie），或粘贴浏览器 Cookie<br>" +
         "· <b>Trae</b>：点「📱 从本地客户端导入」（解密桌面端登录态，自动带 <code>device_id</code>）<br>" +
         "· <b>Qoder CN / ZCode / CodeArts Agent / OfficeACE / WPS 灵犀</b>：均在「添加账号」弹窗里按分组找到，点「📱 从本地客户端导入」即可（自动解密本机已登录的桌面端凭据）";
+      if(force) toast("后端在线，但未检测到账号凭据", "err");
     }else{
       $("#banner").style.display = "none";
+      if(force){
+        const nAcc = Object.values(real.platforms||{}).reduce((s,p)=>s+(p.accounts?p.accounts.length:0),0);
+        const sec = ((Date.now()-t0)/1000).toFixed(1);
+        toast(`已同步 ✓ ${nAcc} 个账号 · ${sec}s`, "ok");
+      }
     }
     syncTaskBar();
     render();
@@ -1327,6 +1334,7 @@ async function load(force, scope){
     $("#banner").style.display="block";
     $("#banner").innerHTML = "<b>未连接本地后端，当前显示演示数据。</b><br>" +
       "在 dashboard 目录执行 <code>python server.py</code>，然后在浏览器打开 <code>http://127.0.0.1:8799</code> 即可操作真实账号。";
+    if(force) toast("同步失败："+e.message, "err");
     syncTaskBar();
     render();
   }
@@ -1471,6 +1479,18 @@ function platTags(a, pid){
     if(a.energy!=null) t.push(`<span class="tag t-purple">⚡ ${esc(a.energy)}</span>`);
     if(a.streak_days!=null) t.push(`<span class="tag t-gray">🔥 连签 ${esc(a.streak_days)} 天</span>`);
     t.push(buddyTag(a.buddy||{}));
+  } else if(pid==="workbuddy_ai"){
+    // 国际版无签到机制：标签区展示限免倒计时与 14 天试用
+    const ex=a.extra||{};
+    (ex.promos||[]).forEach(p=>{
+      const dl=p.days_left;
+      t.push(`<span class="tag ${dl<=3?'t-red':'t-orange'}">🔥 ${esc(p.model)} 限免 · 剩 ${dl} 天</span>`);
+    });
+    const tr=ex.trial;
+    if(tr) t.push(tr.started
+      ? `<span class="tag ${tr.days_left<=3?'t-red':'t-gray'}">⏱ ${esc(tr.model)} 试用 · 剩 ${tr.days_left} 天</span>`
+      : `<span class="tag t-gray">⏱ ${esc(tr.model)} ${tr.days} 天试用 · 未开始</span>`);
+    if(ex.expiring_in_30d) t.push(`<span class="tag t-orange">⏳ ${esc(ex.expiring_in_30d)} 个积分包 30 天内到期</span>`);
   } else if(pid==="minimax"){
     const ex=a.extra||{};
     // 手机号放最前：MiniMax 只有 2 个登录槽位，多账号常常显示名雷同，靠手机号才分得清
@@ -1545,9 +1565,10 @@ function cardHTML(a, pid){
       : (showCred?`<div class="exp-mini">暂无可用积分</div>`:""));
 
   const tags = [];
-  tags.push(a.signed_today
-    ? `<span class="tag t-green">✓ 今日已签</span>`
-    : `<span class="tag t-orange">○ 今日未签</span>`);
+  if(pid !== "workbuddy_ai")   // 国际版无每日签到机制，不放「今日未签」假状态
+    tags.push(a.signed_today
+      ? `<span class="tag t-green">✓ 今日已签</span>`
+      : `<span class="tag t-orange">○ 今日未签</span>`);
   platTags(a,pid).forEach(x=>tags.push(x));
 
   const credHTML = showCred
@@ -1640,6 +1661,23 @@ function detailHTML(a, pid){
     kv.push(`<div class="kv"><span>已消耗</span><b>${(c.used||0).toLocaleString()}</b></div>`);
     kv.push(`<div class="kv"><span>Buddy 状态</span><b>${{traveling:"旅行中",arrived:"已到达待领",done:"今日已完成（出行+礼物）",idle:"在家待命",limited:"今日次数已用尽",no_buddy:"未领养",unknown:"未知"}[bud.state]||esc(bud.state||"—")}</b></div>`);
     if(bud.location) kv.push(`<div class="kv"><span>目的地</span><b>${esc(bud.location)}</b></div>`);
+    if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
+  } else if(pid==="workbuddy_ai"){
+    // 国际版：无签到，展示限免倒计时 + 14 天试用 + 积分包
+    const ex=a.extra||{};
+    kv.push(`<div class="kv"><span>账号类型</span><b>国际版 SaaS（无每日签到）</b></div>`);
+    if(ex.email) kv.push(`<div class="kv"><span>账号</span><b>${esc(ex.email)}</b></div>`);
+    kv.push(`<div class="kv"><span>积分剩余 / 总量</span><b>${(c.remain||0).toLocaleString()} / ${(c.total||0).toLocaleString()}</b></div>`);
+    kv.push(`<div class="kv"><span>已消耗</span><b>${(c.used||0).toLocaleString()}</b></div>`);
+    (ex.promos||[]).forEach(p=>{
+      const dl=p.days_left;
+      kv.push(`<div class="kv"><span>🔥 ${esc(p.model)} 限免</span><b style="color:${dl<=3?'var(--red)':dl<=7?'var(--orange)':'var(--green)'}">剩 ${dl} 天（至 ${esc(p.until)}）</b></div>`);
+    });
+    const tr=ex.trial;
+    if(tr) kv.push(tr.started
+      ? `<div class="kv"><span>⏱ ${esc(tr.model)} 试用（${tr.days} 天）</span><b style="color:${tr.days_left<=3?'var(--red)':'var(--ink)'}">剩 ${tr.days_left} 天（${esc(tr.start)} 起）</b></div>`
+      : `<div class="kv"><span>⏱ ${esc(tr.model)} 试用</span><b style="color:var(--muted)">${tr.days} 天 · 首次使用起算（未开始）</b></div>`);
+    if(ex.expiring_in_30d) kv.push(`<div class="kv"><span>30 天内到期积分包</span><b style="color:var(--orange)">${esc(ex.expiring_in_30d)} 个</b></div>`);
     if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
   } else if(pid==="minimax"){
     const exp=(a.extra||{}).exp_days;

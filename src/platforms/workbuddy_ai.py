@@ -326,50 +326,123 @@ def _headers(tok, stream=False):
 # ══════════════════ 模型目录 ══════════════════
 CATALOG_TTL = 900
 _cat_lock = threading.Lock()
-_catalog = {"ts": 0.0, "models": []}     # [{id, credit, ctx, free}]
+_catalog = {"ts": 0.0, "models": [], "promos": [], "trial": None}
+# promos: [{model, until(epoch s), days_left, note}] —— modelPromotions 里「限免中」的活动（过滤未开始/已结束）
+# trial:  ModelTrialBanner 首条 {model, target, days} —— 14 天限免特殊模型（起点=首次使用，看板自记录）
+
+
+def _parse_iso_ts(s):
+    """ISO8601（含 +08:00 时区）→ epoch 秒；失败 None。"""
+    if not s:
+        return None
+    try:
+        import datetime
+        return datetime.datetime.fromisoformat(s).timestamp()
+    except Exception:
+        return None
 
 
 def gw_models(ent, force=False):
-    """/v3/config 模型列表（TTL 缓存）。返回 [{id, credit, ctx}, ...]；失败回退缓存。"""
+    """/v3/config 模型列表 + 限免活动 + 试用横幅（TTL 缓存）。模型返回 [{id, credit, ctx}, ...]；失败回退缓存。"""
     now = time.time()
     with _cat_lock:
         if not force and _catalog["models"] and now - _catalog["ts"] < CATALOG_TTL:
             return _catalog["models"]
-    models = []
+    models, promos, trial = [], [], None
     try:
         s = requests.Session(); s.trust_env = False
         r = s.get(BASE + EP_CONFIG, headers=_headers(ent.get("token") or ""),
                   timeout=25, verify=False)
         if r.status_code == 200:
-            for m in ((r.json().get("data") or {}).get("models") or []):
+            data = (r.json().get("data") or {})
+            for m in (data.get("models") or []):
                 mid = str(m.get("modelId") or m.get("id") or "").strip()
                 if not mid:
                     continue
                 models.append({"id": mid,
                                "credit": str(m.get("credits") or "").strip(),
                                "ctx": int(m.get("maxInputTokens") or m.get("maxAllowedSize") or 0)})
+            # 限免活动：enabled 且 当前时间落在 [validFrom, validUntil) 内才算「限免中」
+            for p in (data.get("modelPromotions") or []):
+                if not p.get("enabled"):
+                    continue
+                sch = p.get("schedule") or {}
+                vf = _parse_iso_ts(sch.get("validFrom"))
+                vu = _parse_iso_ts(sch.get("validUntil"))
+                if vu is None or now >= vu or (vf is not None and now < vf):
+                    continue
+                note = str((p.get("hover") or {}).get("textZh") or "").strip()
+                for mid in (p.get("modelIds") or []):
+                    promos.append({"model": str(mid),
+                                   "until": vu,
+                                   "days_left": max(0, int((vu - now) // 86400)),
+                                   "note": note[:70]})
+            promos.sort(key=lambda x: (x["days_left"], x["model"]))
+            # 试用横幅：14 天限免特殊模型（trialDays 起点为客户端首次使用时间，看板自记录 trial_start）
+            banners = (((data.get("productFeaturesConfig") or {}).get("ModelTrialBanner")) or {}).get("banners") or []
+            if banners:
+                b = banners[0]
+                try:
+                    trial = {"model": str(b.get("modelId") or ""),
+                             "target": str(b.get("targetModelId") or ""),
+                             "days": int(b.get("trialDays") or 14),
+                             "key": str(b.get("firstUseTimeKey") or "")}
+                except (TypeError, ValueError):
+                    trial = None
     except Exception:
         pass
     with _cat_lock:
         if models:
             _catalog.update(ts=now, models=models)
+        if promos or trial:
+            _catalog.update(promos=promos, trial=trial)
         return _catalog["models"]
+
+
+def promo_state(ent):
+    """返回 (promos, trial)。触发目录刷新（有 TTL 缓存，不额外打请求）。"""
+    try:
+        gw_models(ent)
+    except Exception:
+        pass
+    with _cat_lock:
+        return list(_catalog["promos"]), (_catalog["trial"] and dict(_catalog["trial"]))
 
 
 def _model_ids(ent):
     return [m["id"] for m in gw_models(ent)]
 
 
+def note_trial_use(name, ent, model):
+    """试用模型（ModelTrialBanner.modelId）首次使用时在凭据条目落盘 trial_start。
+    官方把起点存在客户端内部（firstUseTimeKey），服务端不可读——看板以自己观测到的
+    首次使用为准（经反代或看板任务）。重复调用幂等；失败静默（不影响对话主链路）。"""
+    try:
+        if not name or not model or ent.get("trial_start"):
+            return
+        _, trial = promo_state(ent)
+        tm = ((trial or {}).get("model") or "").strip()
+        hit = (tm and str(model).strip() == tm) or \
+              (not tm and str(model).strip().startswith("hy4-preview"))  # config 拉取失败时按当前已知试用模型兜底
+        if hit:
+            ent["trial_start"] = time.strftime("%Y-%m-%d %H:%M", time.localtime())
+            update_entry(name, dict(ent))
+    except Exception:
+        pass
+
+
 # ══════════════════ 反代 chat（SSE 透传） ══════════════════
 CHAT_TIMEOUT = (15, 600)
 
 
-def chat_stream(ent, openai_body):
+def chat_stream(ent, openai_body, name=None):
     """调国际版 /v2/chat/completions，返回 SSE 行迭代器。
     上游约束：恒流式（11101）；messages 首条必须 system（11128）。
-    OpenAI body 里的非流式参数上游不支持的字段剥掉防 400。"""
+    OpenAI body 里的非流式参数上游不支持的字段剥掉防 400。
+    name 传入时：试用模型首次使用会落盘 trial_start（14 天限免倒计时起点）。"""
     tok = ensure_token(ent)
     b = dict(openai_body)
+    note_trial_use(name, ent, str(b.get("model") or ""))
     for k in ("stream_options", "user", "logit_bias", "logprobs", "top_logprobs",
               "n", "presence_penalty", "frequency_penalty", "seed",
               "response_format", "stop"):
@@ -446,14 +519,37 @@ def read_account(name, ent):
             # 即将到期提醒：30 天内到期的积分包数量
             expiring = sum(1 for p in pkgs if p["end"] and p["end"] < time.strftime(
                 "%Y-%m-%d", time.localtime(time.time() + 30 * 86400)) and p["remain"] > 0)
+            # 限免活动倒计时（服务端权威日期）+ 14 天试用剩余（起点=看板观测的首次使用）
+            now = time.time()
+            ex = {"email": (_jwt_payload(tok).get("preferred_username") or ""),
+                  "expiring_in_30d": expiring}
+            pm, trial = promo_state(ent)
+            if pm:
+                ex["promos"] = [{"model": p["model"],
+                                 "until": time.strftime("%Y-%m-%d", time.localtime(p["until"])),
+                                 "days_left": p["days_left"]} for p in pm]
+            if trial:
+                t = {"model": trial["model"], "target": trial["target"], "days": trial["days"]}
+                ts = ent.get("trial_start")
+                if ts:
+                    try:
+                        import datetime
+                        st = datetime.datetime.strptime(str(ts)[:16], "%Y-%m-%d %H:%M").timestamp()
+                        left = trial["days"] - int((now - st) // 86400)
+                        t.update(started=True, days_left=max(0, left),
+                                 start=str(ts)[:10])
+                    except Exception:
+                        t.update(started=False)
+                else:
+                    t.update(started=False)
+                ex["trial"] = t
             return {"name": name, "ok": True,
                     "level": "intl",
                     "energy": None, "streak_days": None, "signed_today": False,
                     "credits": {"remain": remain, "total": total,
                                 "used": max(0.0, total - remain)},
                     "packages": pkgs,
-                    "extra": {"email": (_jwt_payload(tok).get("preferred_username") or ""),
-                              "expiring_in_30d": expiring},
+                    "extra": ex,
                     "buddy": {"state": "none"}}
         msg = str(d.get("msg") or r.text)[:80]
         return {"name": name, "ok": False, "error": "读积分失败：%s" % msg,
@@ -472,7 +568,7 @@ def run_task(name, ent, task_key):
         return {"ok": False, "msg": "未知任务"}
     try:
         lines = chat_stream(ent, {"model": "fast-model",
-                                  "messages": [{"role": "user", "content": "你好"}]})
+                                  "messages": [{"role": "user", "content": "你好"}]}, name=name)
         txt = ""
         for line in lines:
             if not line.startswith("data:") or "[DONE]" in line:

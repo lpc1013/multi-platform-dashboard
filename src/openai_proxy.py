@@ -430,7 +430,7 @@ def relay(handler, openai_body):
                     wb_body["model"] = mb[len(WBAI_PREFIX):]
                 if not wb_body.get("model"):
                     wb_body["model"] = "auto"
-                lines = wai.chat_stream(ent, wb_body)
+                lines = wai.chat_stream(ent, wb_body, name=name)
             elif provider == "officeace":
                 name, ent = _oa_ent()
                 lines = oac.chat_stream(ent, openai_body)
