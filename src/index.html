@@ -138,6 +138,11 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .phead .pcnt{font-size:var(--fs-aux);color:var(--muted);font-weight:600}
 .phead .ptag{margin-left:auto;font-size:var(--fs-cap);color:var(--green);font-weight:600}
 .phead .ptag.off{color:var(--muted)}
+.phead .phead-btn{margin-left:8px;font:var(--fs-aux)/1 var(--font-ui);font-weight:600;color:var(--brand);
+  background:var(--brand-soft);border:1px solid #c5c0ff;border-radius:99px;padding:6px 14px;cursor:pointer;
+  white-space:nowrap;transition:filter .15s,transform .1s}
+.phead .phead-btn:hover{filter:brightness(.97)}
+.phead .phead-btn:active{transform:translateY(1px)}
 .cards{display:flex;flex-direction:column;gap:14px}
 
 /* ── 账号卡片（长方形） ── */
@@ -340,7 +345,8 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .rail-foot{margin-top:auto;padding:10px 8px 2px;border-top:1px solid var(--line);
   font-size:var(--fs-cap);line-height:1.7;color:var(--muted)}
 /* 主区头部（原 mhead 页头条已整块移除：标题/副标题/连接徽章/三按钮均为冗余，
-   连接与演示状态由 #banner 全幅提示，刷新走左侧「↻ 刷新状态」，API 接入入口在反代用量卡内） */
+   连接与演示状态由 #banner 全幅提示，刷新走左侧「↻ 刷新状态」，
+   API 接入入口：上游状态标题栏常驻「🔌 API 接入」按钮 + 每张上游卡可点击进入） */
 .maincol{flex:1;min-width:0;padding:20px 30px 70px 26px}
 .view{display:none}
 .view.on{display:block;animation:viewin .18s ease}
@@ -378,6 +384,9 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .upcard .uerr{margin-top:6px;font-size:var(--fs-cap);color:var(--red);line-height:1.5}
 .upcard .st.idle{background:#eef2f6;color:var(--muted)}
 .upcard .uidle{margin-top:6px;font-size:var(--fs-cap);color:var(--muted);line-height:1.5}
+.upcard.clickable{cursor:pointer}
+.upcard.clickable:hover{border-color:#cfd7e3}
+.upcard .uhint{margin-top:9px;font-size:var(--fs-cap);color:var(--brand);font-weight:600}
 .upcard.ph{text-align:center;padding:52px 20px;color:var(--muted);grid-column:1/-1}
 .upcard.ph .pht{font-size:var(--fs-t3);font-weight:600;color:var(--ink2);margin-bottom:6px}
 #view-proxy .proxybox{margin-top:18px}
@@ -627,7 +636,7 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
     </div>
 
     <div class="view" id="view-proxy">
-      <div class="phead" style="--pc:var(--brand)"><span class="pdot"></span><span class="pname">上游状态</span><span class="pline"></span><span class="pcnt" id="proxyUpCnt"></span></div>
+      <div class="phead" style="--pc:var(--brand)"><span class="pdot"></span><span class="pname">上游状态</span><span class="pline"></span><span class="pcnt" id="proxyUpCnt"></span><button class="phead-btn" id="apiOpenBtn" type="button">🔌 API 接入</button></div>
       <div class="upgrid" id="proxyStatus"></div>
       <div class="phead" style="--pc:var(--brand)"><span class="pdot"></span><span class="pname">反代用量</span><span class="pline"></span></div>
       <div class="proxybox" id="proxybox"></div>
@@ -2088,13 +2097,18 @@ function renderProxyStatus(I){
     const note = idle
       ? `<div class="uidle">未配置账号 · 可手动接入后启用</div>`
       : (p.error ? `<div class="uerr">⚠ ${p.error}</div>` : "");
-    return `<div class="upcard" data-pid="${p.id}" style="border-top:3px solid ${clr}">
+    const hint = idle ? "🔌 点击查看接入方式" : "🔌 点击查看接入信息 →";
+    return `<div class="upcard clickable" data-pid="${p.id}" style="border-top:3px solid ${clr}">
       <div class="uhead"><span class="dot2" style="background:${clr}"></span>${p.label || p.id}${st}</div>
       <div class="urow"><span class="uk">账号</span><span class="uv">${p.account || "—"}</span></div>
       <div class="urow"><span class="uk">可用模型</span><span class="uv">${(p.models||[]).length} 个</span></div>
       ${dm}${note}
+      <div class="uhint">${hint}</div>
     </div>`;
   }).join("");
+  box.querySelectorAll('.upcard[data-pid]').forEach(c=>{
+    c.addEventListener('click', ()=> openApi(c.dataset.pid));
+  });
   const cnt = $("#proxyUpCnt");
   if(cnt){
     const okN = ps.filter(p=>!p.error).length;
@@ -2186,7 +2200,7 @@ function _apiMetaRefresh(filtered){
       (p.account ? ` · 账号 ${p.account}` : "") + cnt
     : "";
 }
-async function openApi(){
+async function openApi(prefillPid){
   $("#apiMask").style.display = "flex";
     const fill = I => {
     API_INFO = I;                     // 只在成功路径调用；失败不放占位进来
@@ -2210,6 +2224,16 @@ async function openApi(){
       ? (I.api_key || "(后端设置了 Key 但未取到值)") : "（未设置，无需 API Key）";
     $("#apiRate").textContent = I.rate_limit ? `${I.rate_limit.per_min}/分钟（突发 ${I.rate_limit.burst}）` : "—";
     _fillModelSelect($("#apiModelSel").value);
+    // 点击某上游卡进入：自动把模型下拉定位到该上游的默认模型
+    if(prefillPid){
+      const pr = (I.providers||[]).find(x=>x.id===prefillPid);
+      if(pr && pr.default_model){
+        const sel = $("#apiModelSel");
+        if(sel && [...sel.options].some(o=>o.value===pr.default_model)){
+          sel.value = pr.default_model; _apiMetaRefresh();
+        }
+      }
+    }
     renderProxyStatus(I);   // 反代面板的四上游状态卡顺手刷新
     renderListColIfProxy(); // 中栏模型列表顺手同步（可能刚在反代视图打开过弹窗）
   };
@@ -2244,6 +2268,8 @@ document.querySelectorAll("#apiMask .btncopy[data-copy]").forEach(b=>{
     _copyTxt(v, "已复制");
   });
 });
+/* 常驻入口：上游状态标题栏的「🔌 API 接入」按钮（无论今日有无用量都可打开弹窗） */
+$("#apiOpenBtn").addEventListener("click", ()=> openApi());
 /* 【▶ 测试连接】：真发一次 chat 请求，转圈 → ✅/❌ */
 $("#apiTest").addEventListener("click", async ()=>{
   const btn = $("#apiTest"), out = $("#apiTestOut");
