@@ -236,10 +236,17 @@ h1{font-size:var(--fs-aux);font-weight:600;letter-spacing:.2em;color:var(--ink2)
 /* 明细两栏 */
 .wrap{max-width:1400px;margin:0 auto;padding:0 40px;display:grid;grid-template-columns:minmax(0,1fr);gap:44px;align-items:start}
 .blk{background:none;border:none;border-radius:0;border-top:1px solid var(--border2);padding:13px 0 0}
-.blk .sec-h{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}
-.blk .sec-h h2{font-size:var(--fs-body);font-weight:700;color:var(--ink);letter-spacing:.01em}
+.blk .sec-h{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.blk .sec-h h2{font-size:var(--fs-t2);font-weight:700;color:var(--ink);letter-spacing:-.2px}
 .blk .sec-h h2::before{display:none}
 .panel-scroll{max-height:300px;overflow-y:auto;border:none;border-radius:0;padding:0}
+/* 账号消耗分布：标题放大 + 右侧数字不溢出 */
+#acctPanel .lrow{display:grid;grid-template-columns:minmax(110px,1.4fr) 1fr minmax(150px,auto);gap:14px;align-items:center;padding:11px 0}
+#acctPanel .lrow .nm{font-size:var(--fs-body);min-width:0}
+#acctPanel .lrow .bar{min-width:60px;height:10px;border-radius:5px;background:var(--empty);overflow:hidden}
+#acctPanel .lrow .bar i{display:block;height:100%;border-radius:5px;background:var(--blue)}
+#acctPanel .lrow .num{min-width:0;text-align:right;font-size:var(--fs-body);font-weight:700;white-space:nowrap}
+#acctPanel .lrow .num em{display:block;font-size:var(--fs-cap);color:var(--ink3);font-weight:600;margin-left:0;margin-top:2px;line-height:1.35;white-space:normal;word-break:break-all}
 .panel-scroll.tall{max-height:520px}
 .rt-wrap{border:none;border-radius:0;max-height:360px;overflow-y:auto}
 

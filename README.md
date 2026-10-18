@@ -137,6 +137,19 @@ python backup_creds.py load <文件>.creds # 恢复（默认不覆盖已有文�
 
 ---
 
+## Token 消耗面板
+
+看板内置 `/tokens` 路由，汇总本机 WorkBuddy / 各代理的 token 用量：
+
+- **采集内核**：复用 `wb-usage-tracker` 的 Node 内核（`token_dump.js` + 本地 `dashboard` 目录）
+- **渲染模板**：`src/assets/template.html`（仓库内副本，改样式即生效，无需重启）
+- **数据桥接**：`src/token_panel.py` 注入脱敏后的 JSON，做 TTL 缓存与后台刷新
+- **视图分区**：概览、量能趋势、工作空间、时段热力、请求分布、积分消耗
+
+最近一次样式修正：`积分消耗 → 哪个账号在烧` 区块统一标题字号，右侧 token / 积分 / 会话 / 占比元信息换行显示，避免大数字溢出被截断。
+
+---
+
 ## OpenAI 兼容反代（CodeArts 免费额度）
 
 后端内置一个 OpenAI 兼容端点，把 CodeArts Agent 的模型额度（含**每日免费福利额度**）暴露为本机 API。任何支持自定义 OpenAI `base_url` 的客户端（Cherry Studio、ChatBox、openai sdk 等）都可直接接入。
