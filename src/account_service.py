@@ -262,6 +262,7 @@ def _codearts_oauth_save(name, grant):
     rec = {"ak": ak, "sk": sk, "sts_token": sts,
            "expires_at": (grant or {}).get("expires_at") or "",
            "refresh_token": (grant or {}).get("refresh_token") or "",
+           "browser_cookies": (grant or {}).get("browser_cookies") or "",
            "code_verifier": (grant or {}).get("code_verifier") or "",
            "dpop_priv_pem": (grant or {}).get("dpop_priv_pem") or "",
            "dpop_pub_jwk": (grant or {}).get("dpop_pub_jwk") or "",

@@ -281,6 +281,59 @@ class _CodeArtsCBHandler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+# SSO 会话 cookie 白名单域名（华为登录态载体）。
+# ⚠ 2026-10-18 实证：SSOJTC（auth 域）/ devclouddevuibj*_SESSION_ID（portal 域）
+# 全是 persistent=0 的**会话 cookie**，Chrome 不写盘，Playwright 一关浏览器就丢
+# ——持久 profile 根本留不住登录态（四次静默续登全败于「会话已失效」）。
+# 解法：登录成功当场抓出来加密存凭据，续登前 add_cookies 重放。
+_SSO_COOKIE_DOMAINS = ("huaweicloud.com", "huawei.com")
+
+
+def _codearts_grab_sso_cookies(ctx):
+    """提取华为 SSO 会话 cookie → JSON 字符串（失败返回 ""）。"""
+    try:
+        all_ck = ctx.cookies()
+    except Exception:
+        return ""
+    keep = []
+    for c in all_ck:
+        dom = (c.get("domain") or "").lstrip(".")
+        if any(dom == d or dom.endswith("." + d) for d in _SSO_COOKIE_DOMAINS):
+            ck = dict(c)
+            # add_cookies 不接受 expires<=0（会话 cookie 规范值 -1）→ 删键按会话处理
+            try:
+                if ck.get("expires") is not None and float(ck["expires"]) <= 0:
+                    ck.pop("expires", None)
+            except (TypeError, ValueError):
+                ck.pop("expires", None)
+            keep.append(ck)
+    if not keep:
+        return ""
+    try:
+        return json.dumps(keep, ensure_ascii=False)
+    except Exception:
+        return ""
+
+
+def _codearts_replay_sso_cookies(ctx, cookies_json):
+    """把存档的 SSO cookie 注入新浏览器上下文（续登前调用）。
+    返回注入条数；空存档/异常返回 0。"""
+    if not cookies_json:
+        return 0
+    try:
+        cks = json.loads(cookies_json)
+    except Exception:
+        return 0
+    if not isinstance(cks, list) or not cks:
+        return 0
+    try:
+        ctx.add_cookies(cks)
+        return len(cks)
+    except Exception as e:
+        _codearts_debug("silent", "cookie 重放失败：%s" % str(e)[:120])
+        return 0
+
+
 def start_codearts_sms_job(phone, name, on_success):
     """CodeArts 手机号+短信直登（自建 OAuth 会话，refresh_token 归看板独享）。"""
     phone = "".join(ch for ch in str(phone or "") if ch.isdigit())
@@ -507,6 +560,7 @@ def _run_codearts_sms_job(job, phone, name, on_success):
                         grant = {"ak": ak, "sk": sk, "sts_token": sts, "expires_at": exp,
                                  "refresh_token": str(_trae_find_token(
                                      j, ("refresh_token", "refreshToken")) or ""),
+                                 "browser_cookies": _codearts_grab_sso_cookies(ctx),
                                  "code_verifier": verifier,
                                  "dpop_priv_pem": dpop["priv_pem"],
                                  "dpop_pub_jwk": json.dumps(dpop["jwk"]),
@@ -532,6 +586,8 @@ def _run_codearts_sms_job(job, phone, name, on_success):
                         verifier, dpop, port, phone, job=job,
                         sleep_fn=page.wait_for_timeout)
                     if grant:
+                        # 抓 SSO 会话 cookie 存档（续登重放，见 _codearts_grab_sso_cookies）
+                        grant["browser_cookies"] = _codearts_grab_sso_cookies(ctx)
                         try:
                             ok2, nm, msg2 = on_success(grant)
                         except Exception as e:
@@ -560,15 +616,17 @@ def _run_codearts_sms_job(job, phone, name, on_success):
             pass
 
 
-def codearts_silent_renew(on_success):
+def codearts_silent_renew(on_success, cookies=""):
     """CodeArts 静默续登（无 refresh_token 材料时的保活替代路径）。
 
-    原理：短信登录用持久 profile（.codearts_profile/），登录态 cookie 落盘。
-    续期时重开 authorize URL——会话仍活着则 portal 自动 302 回调（无需人工），
-    走 OldLogin secret → ticket 换新 STS 凭据。会话失效（被送回登录页）→
-    立即放弃并说明，绝不弹人工流程。返回 (ok, msg)。
-    on_success(grant) → (ok, msg)。"""
-    if not os.path.isdir(_CODEARTS_PROFILE_DIR) or not os.listdir(_CODEARTS_PROFILE_DIR):
+    原理：短信登录时把 SSO 会话 cookie 存档（_codearts_grab_sso_cookies），
+    续期时重放进浏览器（add_cookies）再开 authorize URL——会话活着则 portal
+    自动 302 回调（无需人工），走 OldLogin secret → ticket 换新 STS 凭据。
+    会话失效（被送回登录页）→ 立即放弃并说明，绝不弹人工流程。
+    cookies：cred 条目里的 browser_cookies（JSON 字符串）。
+    返回 (ok, msg)。on_success(grant) → (ok, msg)。"""
+    if not cookies and (not os.path.isdir(_CODEARTS_PROFILE_DIR)
+                        or not os.listdir(_CODEARTS_PROFILE_DIR)):
         return False, "无浏览器会话存档，请先短信登录一次"
     verifier, challenge = _codearts_pkce()
     dpop = _codearts_dpop_keypair()
@@ -599,10 +657,14 @@ def codearts_silent_renew(on_success):
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
+            os.makedirs(_CODEARTS_PROFILE_DIR, exist_ok=True)
             ctx = p.chromium.launch_persistent_context(
                 _CODEARTS_PROFILE_DIR, headless=False, args=_OFFSCREEN_ARGS,
                 locale="zh-CN", viewport={"width": 520, "height": 800})
             try:
+                n = _codearts_replay_sso_cookies(ctx, cookies)
+                _codearts_debug("silent", "cookie 重放 %d 条%s"
+                                % (n, "（无存档）" if not cookies else ""))
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
                 page.goto(auth_url, wait_until="domcontentloaded", timeout=60000)
                 _codearts_debug("silent", "已打开 authorize url=%s" % (page.url or "")[:150])
@@ -628,6 +690,7 @@ def codearts_silent_renew(on_success):
                             res.get("ticket_id") or ticket_id, sec,
                             verifier, dpop, port, "")
                         if grant:
+                            grant["browser_cookies"] = _codearts_grab_sso_cookies(ctx)
                             try:
                                 ok, msg = on_success(grant)
                             except Exception as e:
@@ -647,6 +710,7 @@ def codearts_silent_renew(on_success):
                             grant = {"ak": ak, "sk": sk, "sts_token": sts, "expires_at": exp,
                                      "refresh_token": str(_trae_find_token(
                                          j, ("refresh_token", "refreshToken")) or ""),
+                                     "browser_cookies": _codearts_grab_sso_cookies(ctx),
                                      "code_verifier": verifier,
                                      "dpop_priv_pem": dpop["priv_pem"],
                                      "dpop_pub_jwk": json.dumps(dpop["jwk"]),

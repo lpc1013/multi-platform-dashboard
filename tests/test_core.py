@@ -19,6 +19,7 @@ sys.argv = [sys.argv[0]]          # server.py 会把 sys.argv[1] 当端口号，
 import server                      # noqa: E402  （导入即加载平台注册表，不做任何网络请求）
 import platforms.minimax as mm     # noqa: E402
 import platforms.codearts as ca    # noqa: E402
+import oauth_codearts as oa        # noqa: E402  （SSO cookie 抓取/重放）
 
 
 def _tmp_cred_file():
@@ -229,6 +230,102 @@ class TestOfficeaceIdentity(unittest.TestCase):
         new = {"ak": "HST3-NEW", "user_id": "01a080ec165be"}
         self.assertEqual(server._ident_of("officeace", old),
                          server._ident_of("officeace", new))
+
+
+class TestCodeartsSsoCookies(unittest.TestCase):
+    """2026-10-18 回归：CodeArts SSO 会话 cookie 抓取/重放。
+
+    根因：华为 SSOJTC / *_SESSION_ID 全是 persistent=0 会话 cookie，
+    Playwright 持久 profile 重启后登录态即被清除 → 静默续登四次全败。
+    修复改为「抓取→存档→重放」，本组测试锁死两个函数的过滤/容错行为。"""
+
+    @staticmethod
+    def _ctx(cookies):
+        class _Ctx(object):
+            def __init__(self, cks):
+                self._cks = cks
+                self.added = None
+
+            def cookies(self):
+                return self._cks
+
+            def add_cookies(self, cks):
+                self.added = cks
+
+        return _Ctx(cookies)
+
+    def test_grab_keeps_only_huawei_domains(self):
+        cks = [
+            {"name": "SSOJTC", "domain": ".huaweicloud.com", "path": "/", "value": "v1"},
+            {"name": "SESSION", "domain": ".codearts.huaweicloud.com", "path": "/", "value": "v2"},
+            {"name": "OTHER", "domain": ".example.com", "path": "/", "value": "x"},
+            {"name": "HUAWEI", "domain": "www.huawei.com", "path": "/", "value": "v3"},
+        ]
+        out = oa._codearts_grab_sso_cookies(self._ctx(cks))
+        names = sorted(c["name"] for c in json.loads(out))
+        self.assertEqual(names, ["HUAWEI", "SESSION", "SSOJTC"])
+
+    def test_grab_drops_session_expires(self):
+        """会话 cookie expires=-1 必须删键（add_cookies 不接受 <=0）。"""
+        cks = [
+            {"name": "SSOJTC", "domain": ".huaweicloud.com", "path": "/",
+             "value": "v1", "expires": -1},
+            {"name": "LANG", "domain": ".codearts.huaweicloud.com", "path": "/",
+             "value": "zh", "expires": 1893456000},
+        ]
+        by = {c["name"]: c for c in json.loads(oa._codearts_grab_sso_cookies(self._ctx(cks)))}
+        self.assertNotIn("expires", by["SSOJTC"])
+        self.assertEqual(by["LANG"]["expires"], 1893456000)
+
+    def test_grab_handles_bad_expires_type(self):
+        cks = [{"name": "A", "domain": ".huaweicloud.com", "path": "/",
+                "value": "v", "expires": "not-a-number"}]
+        by = json.loads(oa._codearts_grab_sso_cookies(self._ctx(cks)))[0]
+        self.assertNotIn("expires", by)
+
+    def test_grab_empty_when_cookies_raises(self):
+        class _Boom(object):
+            def cookies(self):
+                raise RuntimeError("context closed")
+
+        self.assertEqual(oa._codearts_grab_sso_cookies(_Boom()), "")
+
+    def test_grab_empty_when_no_huawei_cookie(self):
+        cks = [{"name": "OTHER", "domain": ".example.com", "path": "/", "value": "x"}]
+        self.assertEqual(oa._codearts_grab_sso_cookies(self._ctx(cks)), "")
+
+    def test_replay_empty_and_bad_json(self):
+        ctx = self._ctx([])
+        self.assertEqual(oa._codearts_replay_sso_cookies(ctx, ""), 0)
+        self.assertEqual(oa._codearts_replay_sso_cookies(ctx, "not-json"), 0)
+        self.assertEqual(oa._codearts_replay_sso_cookies(ctx, '{"a":1}'), 0)  # 非 list
+        self.assertEqual(oa._codearts_replay_sso_cookies(ctx, "[]"), 0)
+        self.assertIsNone(ctx.added)          # 无效输入一律不得注入
+
+    def test_replay_injects_and_counts(self):
+        cks = [{"name": "SSOJTC", "domain": ".huaweicloud.com", "path": "/", "value": "v"}]
+        ctx = self._ctx([])
+        self.assertEqual(oa._codearts_replay_sso_cookies(ctx, json.dumps(cks)), 1)
+        self.assertEqual(ctx.added, cks)
+
+    def test_replay_add_cookies_failure_returns_zero(self):
+        class _Bad(object):
+            def add_cookies(self, cks):
+                raise RuntimeError("bad cookie")
+
+        cks = [{"name": "SSOJTC", "domain": ".huaweicloud.com", "path": "/", "value": "v"}]
+        self.assertEqual(oa._codearts_replay_sso_cookies(_Bad(), json.dumps(cks)), 0)
+
+    def test_roundtrip_grab_then_replay(self):
+        cks = [{"name": "SSOJTC", "domain": ".huaweicloud.com", "path": "/",
+                "value": "v1", "expires": -1}]
+        blob = oa._codearts_grab_sso_cookies(self._ctx(cks))
+        ctx = self._ctx([])
+        self.assertEqual(oa._codearts_replay_sso_cookies(ctx, blob), 1)
+        injected = ctx.added[0]
+        self.assertNotIn("expires", injected)  # 抓取时已删，重放不再补回
+        self.assertEqual(injected["name"], "SSOJTC")
+        self.assertEqual(injected["value"], "v1")
 
 
 if __name__ == "__main__":

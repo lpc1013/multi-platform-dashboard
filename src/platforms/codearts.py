@@ -257,7 +257,8 @@ def load_accounts():
     #    refresh_token 与 client_id=codearts-agent、DPoP 私钥绑定，与当前 STS 无关；
     #    客户端导入的新鲜 AK/SK + 自建的 refresh_token 可以组合使用，且刷新成功
     #    后 _persist_entry 会把续期材料固化回 codearts_accounts.json）
-    _PRESERVE = ("refresh_token", "dpop_priv_pem", "dpop_pub_jwk", "code_verifier")
+    _PRESERVE = ("refresh_token", "dpop_priv_pem", "dpop_pub_jwk", "code_verifier",
+                 "browser_cookies")   # browser_cookies：SSO 会话 cookie 存档（2026-10-18）
     try:
         import local_import
         ok, _msg, live = local_import.read_codearts()
@@ -441,7 +442,7 @@ def _silent_renew_via_browser(name, ent):
 
     def _save(grant):
         for k in ("ak", "sk", "sts_token", "expires_at", "refresh_token",
-                  "code_verifier", "dpop_priv_pem", "dpop_pub_jwk"):
+                  "browser_cookies", "code_verifier", "dpop_priv_pem", "dpop_pub_jwk"):
             if grant.get(k):
                 ent[k] = grant[k]
         uid, uname = _caller_identity(ent)
@@ -453,7 +454,7 @@ def _silent_renew_via_browser(name, ent):
         return True, "已静默续期至 %s" % (ent.get("expires_at") or "")[:19]
 
     try:
-        ok, msg = codearts_silent_renew(_save)
+        ok, msg = codearts_silent_renew(_save, cookies=ent.get("browser_cookies") or "")
     except Exception as e:
         ok, msg = False, "静默续登异常：%s" % str(e)[:120]
     _SILENT_STATE["msg"] = msg
