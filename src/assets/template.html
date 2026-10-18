@@ -239,7 +239,9 @@ h1{font-size:var(--fs-aux);font-weight:600;letter-spacing:.2em;color:var(--ink2)
 .blk .sec-h{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
 .blk .sec-h h2{font-size:var(--fs-t2);font-weight:700;color:var(--ink);letter-spacing:-.2px}
 .blk .sec-h h2::before{display:none}
-.panel-scroll{max-height:300px;overflow-y:auto;border:none;border-radius:0;padding:0}
+.panel-scroll{max-height:300px;overflow-y:auto;border:none;border-radius:0;padding:0 14px 0 0;scrollbar-gutter:stable}
+/* 2026-10-18 修复：padding-right + scrollbar-gutter:stable 预留滚动条位置，
+   行内容（右侧数字列）不再与竖向滚动条重合（实测曾贴齐 x=692=滚动条左缘） */
 /* 账号消耗分布：标题放大 + 右侧数字不溢出 */
 #acctPanel .lrow{display:grid;grid-template-columns:minmax(110px,1.4fr) 1fr minmax(150px,auto);gap:14px;align-items:center;padding:11px 0}
 #acctPanel .lrow .nm{font-size:var(--fs-body);min-width:0}
