@@ -270,14 +270,21 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .logbox{margin-top:26px;background:#0a2540;border-radius:14px;padding:16px 18px;color:#c3d0e0;
   font:var(--fs-cap)/1.75 var(--font-mono);max-height:230px;overflow:auto;white-space:pre-wrap}
 .logbox:empty{display:none}
-.proxybox{margin-top:26px;background:#0a2540;border-radius:14px;padding:14px 18px;color:#c3d0e0}
+.proxybox{margin-top:18px;background:var(--card);border:1px solid var(--line);border-radius:16px;
+  padding:18px 20px;color:var(--ink2);box-shadow:var(--shadow)}
 .proxybox:empty{display:none}
-.proxybox .ptitle{font-size:var(--fs-cap);font-weight:700;color:#8ab4d8;letter-spacing:.04em;margin-bottom:8px}
-.proxybox table{width:100%;border-collapse:collapse;font:var(--fs-cap)/1.9 var(--font-mono)}
-.proxybox td{padding:0 8px 0 0;white-space:nowrap}
-.proxybox td.num{text-align:right;color:#fff;font-weight:600}
-.proxybox td.dim{color:#7e93aa}
-.proxybox .sum{margin-top:6px;font-size:var(--fs-cap);color:#fff;font-weight:600}
+.proxybox .ptitle{font-size:var(--fs-t3);font-weight:700;color:var(--ink);letter-spacing:-.1px;margin-bottom:12px;
+  display:flex;align-items:center;gap:8px}
+.proxybox table{width:100%;border-collapse:collapse;font:var(--fs-aux)/1.9 var(--font-mono)}
+.proxybox td{padding:5px 10px 5px 0;white-space:nowrap;border-bottom:1px solid var(--line)}
+.proxybox tr:last-child td{border-bottom:0}
+.proxybox td.num{text-align:right;color:var(--ink);font-weight:600}
+.proxybox td.dim{color:var(--muted)}
+.proxybox .sum{margin-top:12px;font-size:var(--fs-aux);color:var(--ink2);font-weight:600;
+  display:flex;flex-wrap:wrap;gap:6px;align-items:center;line-height:1.6}
+.proxybox .sum .dim{color:var(--muted);font-weight:500}
+.proxybox .sum a{color:var(--brand);font-weight:600;text-decoration:none}
+.proxybox .sum a:hover{text-decoration:underline}
 /* ── 两栏布局：左侧导航（看板 / 反代 / Token 消耗）+ 右侧主区 ── */
 .qq{display:flex;gap:0;align-items:flex-start}
 /* 左导航：贴左缘满高、固定宽度（原 212px 的 1.6 倍 = 340px），只放三个一级入口 */
@@ -369,6 +376,8 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .upcard .uk{color:var(--muted);flex:none}
 .upcard .uv{font-variant-numeric:tabular-nums;text-align:right;word-break:break-all}
 .upcard .uerr{margin-top:6px;font-size:var(--fs-cap);color:var(--red);line-height:1.5}
+.upcard .st.idle{background:#eef2f6;color:var(--muted)}
+.upcard .uidle{margin-top:6px;font-size:var(--fs-cap);color:var(--muted);line-height:1.5}
 .upcard.ph{text-align:center;padding:52px 20px;color:var(--muted);grid-column:1/-1}
 .upcard.ph .pht{font-size:var(--fs-t3);font-weight:600;color:var(--ink2);margin-bottom:6px}
 #view-proxy .proxybox{margin-top:18px}
@@ -618,7 +627,9 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
     </div>
 
     <div class="view" id="view-proxy">
+      <div class="phead" style="--pc:var(--brand)"><span class="pdot"></span><span class="pname">上游状态</span><span class="pline"></span><span class="pcnt" id="proxyUpCnt"></span></div>
       <div class="upgrid" id="proxyStatus"></div>
+      <div class="phead" style="--pc:var(--brand)"><span class="pdot"></span><span class="pname">反代用量</span><span class="pline"></span></div>
       <div class="proxybox" id="proxybox"></div>
     </div>
 
@@ -1053,6 +1064,7 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
     <div class="modal-body" style="padding:0 24px 8px;overflow-y:auto">
 
       <div class="apierr" id="apiErr"></div>
+      <div class="hint-sm" id="apiNote" style="display:none;margin:0 0 10px"></div>
 
       <div class="field" style="margin-bottom:6px">
         <label>任意 OpenAI 客户端的三件套</label>
@@ -1091,8 +1103,8 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
       </div>
 
       <div class="hint-sm" style="margin:6px 0 10px">
-        反代把三个上游统一暴露为本机 OpenAI API：<b style="color:#0369a1">CodeArts Agent</b>（华为免费额度模型）、
-        <b style="color:#be185d">TeleAgent</b>（星辰）与 <b style="color:#c2410c">OfficeACE</b>（华为云果办）——
+        反代把上游统一暴露为本机 OpenAI API：<b>CodeArts Agent</b>（华为免费额度模型）、
+        <b>TeleAgent</b>（星辰）与 <b>OfficeACE</b>（华为云果办）——
         <b>模型名即路由</b>：<code>chat-*</code> / <code>deepseek-v3</code> 等走星辰；
         <code>GLM-5.2</code> 等内置模型与福利模型（<code>deepseek-v4.1-flash</code> 等 5 个交集）走 CodeArts
         （福利模型吃每日免费额度，内置模型计积分）；
@@ -1834,7 +1846,12 @@ async function loadProxyUsage(){
     const box = $("#proxybox");
     const rb = $("#railBadgeProxy");   // 图标栏「反代」未读式角标
     const fmt = x => x>=1e6 ? (x/1e6).toFixed(1)+"M" : x>=1000 ? (x/1000).toFixed(1)+"k" : String(x);
-    if(!models.length){ box.innerHTML=""; if(rb) rb.textContent=""; renderListColIfProxy(); return; }
+    if(!models.length){
+      box.innerHTML = `<div class="ptitle">今日 token 消耗</div><div class="empty" style="padding:28px 20px;background:transparent;border:0">今日暂无调用记录 · 使用反代后此处会显示明细</div>`;
+      if(rb) rb.textContent="";
+      renderListColIfProxy();
+      return;
+    }
     let allN=0, allT=0;
     for(const day in d) for(const m in d[day]){
       allN += d[day][m].calls||0;
@@ -1849,9 +1866,9 @@ async function loadProxyUsage(){
     }
     if(rb) rb.textContent = sumN>99 ? "99+" : String(sumN);
     renderListColIfProxy();           // 今日次数变了 → 中栏模型列表同步
-    box.innerHTML = `<div class="ptitle">⚡ CodeArts 反代 · 今日 token 消耗</div>
+    box.innerHTML = `<div class="ptitle">今日 token 消耗</div>
       <table>${rows}</table>
-      <div class="sum">今日 ${sumN} 次 · ${fmt(sumT)} tokens　<span class="dim">｜ 30 天累计 ${allN} 次 · ${fmt(allT)} tokens · <a href="#" id="apiLinkInBox" style="color:#8ab4d8">接入方式</a></span></div>`;
+      <div class="sum">今日 ${sumN} 次 · ${fmt(sumT)} tokens　<span class="dim">｜ 30 天累计 ${allN} 次 · ${fmt(allT)} tokens · <a href="#" id="apiLinkInBox">接入方式</a></span></div>`;
     const lb = $("#apiLinkInBox");
     if(lb) lb.addEventListener("click", e=>{ e.preventDefault(); openApi(); });
   }catch(e){ /* 用量卡片失败静默，不影响主流程 */ }
@@ -2060,16 +2077,32 @@ function renderProxyStatus(I){
   }
   box.innerHTML = ps.map(p=>{
     const clr = PLAT_CLR[p.id] || "#5f5e5a";
-    const st = p.error ? `<span class="st bad">异常</span>` : `<span class="st ok">可用</span>`;
+    // TeleAgent 为「有意保留的可配置上游」：无账号时显中性「未配置」，不报红色异常
+    const idle = (p.id === "teleagent" && !p.account);
+    let stCls = "ok", stTxt = "可用";
+    if(idle){ stCls = "idle"; stTxt = "未配置"; }
+    else if(p.error){ stCls = "bad"; stTxt = "异常"; }
+    const st = `<span class="st ${stCls}">${stTxt}</span>`;
     const dm = p.default_model
       ? `<div class="urow"><span class="uk">默认模型</span><span class="uv">${p.default_model}</span></div>` : "";
+    const note = idle
+      ? `<div class="uidle">未配置账号 · 可手动接入后启用</div>`
+      : (p.error ? `<div class="uerr">⚠ ${p.error}</div>` : "");
     return `<div class="upcard" data-pid="${p.id}" style="border-top:3px solid ${clr}">
       <div class="uhead"><span class="dot2" style="background:${clr}"></span>${p.label || p.id}${st}</div>
       <div class="urow"><span class="uk">账号</span><span class="uv">${p.account || "—"}</span></div>
       <div class="urow"><span class="uk">可用模型</span><span class="uv">${(p.models||[]).length} 个</span></div>
-      ${dm}${p.error ? `<div class="uerr">⚠ ${p.error}</div>` : ""}
+      ${dm}${note}
     </div>`;
   }).join("");
+  const cnt = $("#proxyUpCnt");
+  if(cnt){
+    const okN = ps.filter(p=>!p.error).length;
+    const idleN = ps.filter(p=>p.id==="teleagent" && !p.account).length;
+    const parts = [`${ps.length} 个上游`, `${okN} 可用`];
+    if(idleN) parts.push(`${idleN} 未配置`);
+    cnt.textContent = parts.join(" · ");
+  }
 }
 async function refreshProxyStatus(){
   const box = $("#proxyStatus");
@@ -2147,20 +2180,31 @@ function _apiMetaRefresh(filtered){
   const cnt = (filtered != null && filtered !== total) ? `（匹配 ${filtered}/${total}）` : "";
   const clr = PLAT_CLR[pid] || "";
   const lbl = p.label || pid;
+  const dot = clr ? `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${clr};margin-right:5px;vertical-align:2px"></span>` : "";
   $("#apiMeta").innerHTML = m
-    ? `当前模型 <b>${m}</b> → 走 <span style="color:${clr};font-weight:700">${lbl}</span>` +
+    ? `当前模型 <b>${m}</b> → 走 ${dot}<b>${lbl}</b>` +
       (p.account ? ` · 账号 ${p.account}` : "") + cnt
     : "";
 }
 async function openApi(){
   $("#apiMask").style.display = "flex";
-  const fill = I => {
+    const fill = I => {
     API_INFO = I;                     // 只在成功路径调用；失败不放占位进来
     $("#apiErr").textContent = "";
+    $("#apiNote").textContent = ""; $("#apiNote").style.display = "none";
     // 逐上游报错（哪个上游不可用就提示哪个，不整弹窗报错）
-    const errs = (I.providers||[]).filter(p=>p.error)
-      .map(p=>`⚠ ${p.label}：${p.error}`);
+    // TeleAgent 为「有意保留的可配置上游」：无账号时只给中性提示，不报红错
+    const errs = [], notes = [];
+    for(const p of (I.providers||[])){
+      if(!p.error) continue;
+      if(p.id === "teleagent" && !p.account){
+        notes.push(`ℹ ${p.label}：未配置账号，接入后可用`);
+      } else {
+        errs.push(`⚠ ${p.label}：${p.error}`);
+      }
+    }
     $("#apiErr").textContent = errs.join("\n");
+    if(notes.length){ $("#apiNote").textContent = notes.join("\n"); $("#apiNote").style.display = "block"; }
     $("#apiUrl").value = I.base_url || "";
     $("#apiKey").value = I.auth_required
       ? (I.api_key || "(后端设置了 Key 但未取到值)") : "（未设置，无需 API Key）";
