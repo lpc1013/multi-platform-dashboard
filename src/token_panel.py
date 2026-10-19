@@ -20,9 +20,13 @@ import os
 import sys
 import json
 import time
+import glob
+import shutil
+import sqlite3
+import hashlib
+import tempfile
 import threading
 import subprocess
-import shutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -88,6 +92,157 @@ def _run_dump():
     return json.loads(out.stdout)
 
 
+# ── Qoder 用量合并 ───────────────────────────────────────────────────────
+# 数据源（GitHub 经验，ChanningYuan/usageBar 与 TokenTracker 同口径）：
+#   Qoder IDE → %APPDATA%\Qoder(CN)\SharedClientCache\cache\db\local.db
+#               chat_message.token_info = {prompt_tokens, completion_tokens,
+#                                          cached_tokens, max_input_tokens}
+#   Qoder CLI → ~/.qoder-cn/projects/**/*.jsonl（但该 transcript 的 tokens 恒为 0，
+#               只有 credits，故 token 统计以 SQLite 为准；credits 不混入本表）
+# 采集内核（wb-usage-tracker）只认 WorkBuddy / Codex，Qoder 在 Python 侧合并。
+_QODER_DB_GLOBS = [
+    os.path.join(os.environ.get("APPDATA", ""), "QoderCN",
+                 "SharedClientCache", "cache", "db", "local.db"),
+    os.path.join(os.environ.get("APPDATA", ""), "Qoder",
+                 "SharedClientCache", "cache", "db", "local.db"),
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Qoder CN",
+                 "SharedClientCache", "cache", "db", "local.db"),
+]
+
+
+def _qoder_rows():
+    """读所有 Qoder 本地库的 chat_message，返回 [{sid,title,proj,model,ts,it,ot,ch}]。
+    库可能被运行中的 Qoder 独占 → 先复制到临时目录再只读打开。"""
+    rows, seen_msg = [], set()
+    for db in _QODER_DB_GLOBS:
+        if not db or not os.path.isfile(db):
+            continue
+        tmp = os.path.join(tempfile.gettempdir(), "_qoder_%s.db" % abs(hash(db)))
+        try:
+            shutil.copy2(db, tmp)
+        except Exception:
+            continue
+        try:
+            con = sqlite3.connect(tmp)
+            cur = con.cursor()
+            cur.execute("""
+                SELECT m.id, m.session_id, m.model_info, m.token_info, m.gmt_create,
+                       s.session_title, s.project_name
+                  FROM chat_message m
+                  LEFT JOIN chat_session s ON s.session_id = m.session_id
+                 WHERE m.token_info IS NOT NULL AND m.token_info != ''
+            """)
+            for mid, sid, mi, ti, ts, title, proj in cur.fetchall():
+                if mid in seen_msg:
+                    continue
+                try:
+                    t = json.loads(ti or "{}")
+                    it = int(t.get("prompt_tokens") or 0)
+                    ot = int(t.get("completion_tokens") or 0)
+                    ch = int(t.get("cached_tokens") or 0)
+                except Exception:
+                    continue
+                if it <= 0 and ot <= 0:
+                    continue
+                try:
+                    mk = (json.loads(mi or "{}") or {}).get("model_key") or "qoder"
+                except Exception:
+                    mk = "qoder"
+                seen_msg.add(mid)
+                rows.append({"sid": sid, "title": title or "", "proj": proj or "",
+                             "model": str(mk), "ts": int(ts or 0),
+                             "it": it, "ot": ot, "ch": ch})
+            con.close()
+        except Exception:
+            continue
+    return rows
+
+
+def _merge_qoder(data):
+    """把 Qoder 会话并入 DATA（与内核同构：sess/models/ws/accts/_daily/_stat）。"""
+    if not isinstance(data, dict):
+        return data
+    try:
+        rows = _qoder_rows()
+    except Exception:
+        return data
+    if not rows:
+        return data
+
+    ws = data.setdefault("ws", [])
+    models = data.setdefault("models", [])
+    sess = data.setdefault("sess", [])
+    accts = data.setdefault("accts", [])
+    daily = data.setdefault("_daily", [])
+
+    # 账号：Qoder 单独一栏（脱敏，只写产品名）
+    if "Qoder" not in accts:
+        accts.append("Qoder")
+    aidx = accts.index("Qoder")
+
+    def model_idx(name):
+        key = "Qoder·" + name
+        if key not in models:
+            models.append(key)
+        return models.index(key)
+
+    def ws_idx(name):
+        key = "Qoder · " + (name or "会话")
+        if key not in ws:
+            ws.append(key)
+        return ws.index(key)
+
+    by_sid = {}
+    for r in rows:
+        by_sid.setdefault(r["sid"], []).append(r)
+
+    daily_map = {d.get("m"): d for d in daily if isinstance(d, dict)}
+    n_req = 0
+    for sid, rs in by_sid.items():
+        recs = []
+        for r in rs:
+            minute = int(r["ts"] / 60000)
+            recs.append([minute, model_idx(r["model"]),
+                         r["it"] + r["ot"], r["it"], r["ot"], r["ch"], 0, None])
+        if not recs:
+            continue
+        recs.sort(key=lambda x: x[0])
+        n_req += len(recs)
+        sess.append({
+            "w": ws_idx(rs[0]["proj"] or rs[0]["title"]),
+            "id": "qoder" + hashlib.md5(str(sid).encode("utf-8")).hexdigest()[:6],
+            "t": (rs[0]["title"] or "(无标题会话)")[:42],
+            "st": recs[0][0], "r": recs, "by": 0, "tk": {}, "a": aidx,
+        })
+        seen_days = set()
+        for rec in recs:
+            t = time.localtime(rec[0] * 60)
+            dk = time.strftime("%Y-%m-%d", t)
+            mid = int(time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1)) * 1000)
+            d = daily_map.get(mid)
+            if d is None:
+                d = {"m": mid, "ocred": 0, "tot": 0, "turns": 0, "nsess": 0}
+                daily_map[mid] = d
+                daily.append(d)
+            d["tot"] += rec[2]
+            d["turns"] += 1
+            seen_days.add(mid)
+        for mid in seen_days:
+            daily_map[mid]["nsess"] += 1
+
+    sess.sort(key=lambda s: s.get("st") or 0)
+    daily.sort(key=lambda d: d.get("m") or 0)
+
+    st = data.setdefault("_stat", {})
+    st["sessions"] = st.get("sessions", 0) + len(by_sid)
+    st["requests"] = st.get("requests", 0) + n_req
+    st["qoderRequests"] = n_req
+    sysname = str(data.get("_sys") or "")
+    if "Qoder" not in sysname:
+        data["_sys"] = (sysname + " + Qoder") if sysname else "Qoder"
+    return data
+
+
 def collect(force=False):
     """取数据：优先返回新鲜缓存；过期/强制则重新扫描（与后台线程去重）。"""
     now = time.time()
@@ -106,7 +261,7 @@ def collect(force=False):
 
     if do_scan:
         try:
-            data = _run_dump()
+            data = _merge_qoder(_run_dump())
         except Exception as e:
             with _lock:
                 _cache["err"] = str(e)
