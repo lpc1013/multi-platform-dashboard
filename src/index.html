@@ -372,7 +372,7 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 /* 反代面板：上游状态卡（固定结构：每行「标签一行 + 值一行」，同行卡片等高） */
 .upgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;align-items:stretch}
 .upcard{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow);
-  scroll-margin-top:12px;display:flex;flex-direction:column;transition:transform .16s,box-shadow .16s}
+  scroll-margin-top:12px;display:flex;flex-direction:column;transition:transform .16s,box-shadow .16s,padding .18s,border-radius .18s}
 .upcard:hover{transform:translateY(-1px);box-shadow:var(--shadow-lg)}
 .upcard .uhead{display:flex;align-items:center;gap:8px;font-size:var(--fs-t3);font-weight:600;margin-bottom:10px}
 .upcard .dot2{width:9px;height:9px;border-radius:50%;flex:none}
@@ -392,6 +392,17 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .upcard .uhint{margin-top:auto;padding-top:10px;font-size:var(--fs-cap);color:var(--brand);font-weight:600}
 .upcard.ph{text-align:center;padding:52px 20px;color:var(--muted);grid-column:1/-1}
 .upcard.ph .pht{font-size:var(--fs-t3);font-weight:600;color:var(--ink2);margin-bottom:6px}
+/* 小图标（紧凑）模式：只留「名称 + 状态 + 模型数」，卡片矮胖、栅格更密；切换有过渡动画 */
+.upgrid.compact{grid-template-columns:repeat(auto-fit,minmax(152px,1fr));gap:10px}
+.upgrid.compact .upcard{padding:10px 12px;border-radius:10px;box-shadow:none}
+.upgrid.compact .upcard:hover{transform:none;box-shadow:var(--shadow)}
+.upgrid.compact .upcard .uhead{margin-bottom:0;font-size:var(--fs-aux)}
+.upgrid.compact .upcard .urow{display:none}
+.upgrid.compact .upcard .urow.keep{display:flex;align-items:baseline;gap:6px;padding:5px 0 0}
+.upgrid.compact .upcard .urow.keep .uk{display:inline}
+.upgrid.compact .upcard .urow.keep .uv{display:inline;font-size:var(--fs-cap);font-weight:600}
+.upgrid.compact .upcard .uhint{display:none}
+.upgrid.compact .upcard .uerr,.upgrid.compact .upcard .uidle{margin-top:4px}
 /* 刷新按钮忙碌态（图标旋转 + 防重复点击） */
 .phead-btn.busy{opacity:.75;pointer-events:none}
 .phead-btn.busy .rb-ico{display:inline-block;animation:apispin .7s linear infinite}
@@ -642,7 +653,7 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
     </div>
 
     <div class="view" id="view-proxy">
-      <div class="phead" style="--pc:var(--brand)"><span class="pdot"></span><span class="pname">上游状态</span><span class="pline"></span><button class="phead-btn" id="proxyRefreshBtn" type="button" title="重新读取上游状态"><span class="rb-ico">⟳</span>刷新</button><button class="phead-btn" id="apiOpenBtn" type="button">🔌 API 接入</button></div>
+      <div class="phead" style="--pc:var(--brand)"><span class="pdot"></span><span class="pname">上游状态</span><span class="pline"></span><button class="phead-btn" id="proxyRefreshBtn" type="button" title="重新读取上游状态"><span class="rb-ico">⟳</span>刷新</button><button class="phead-btn" id="proxyViewBtn" type="button" title="切换上游卡片展示方式">▦ 大图标</button></div>
       <div class="upgrid" id="proxyStatus"></div>
       <div class="phead" style="--pc:var(--brand)"><span class="pdot"></span><span class="pname">反代用量</span><span class="pline"></span></div>
       <div class="proxybox" id="proxybox"></div>
@@ -2165,7 +2176,7 @@ function renderProxyStatus(I){
     return `<div class="upcard clickable" data-pid="${p.id}" style="border-top:3px solid ${clr}">
       <div class="uhead"><span class="dot2" style="background:${clr}"></span>${p.label || p.id}${st}</div>
       <div class="urow"><span class="uk">账号</span><span class="uv">${p.account || "—"}</span></div>
-      <div class="urow"><span class="uk">可用模型</span><span class="uv">${(p.models||[]).length} 个</span></div>
+      <div class="urow keep"><span class="uk">可用模型</span><span class="uv">${(p.models||[]).length} 个</span></div>
       ${dm}${note}
       <div class="uhint">${hint}</div>
     </div>`;
@@ -2332,8 +2343,25 @@ document.querySelectorAll("#apiMask .btncopy[data-copy]").forEach(b=>{
     _copyTxt(v, "已复制");
   });
 });
-/* 常驻入口：上游状态标题栏的「🔌 API 接入」按钮（无论今日有无用量都可打开弹窗） */
-$("#apiOpenBtn").addEventListener("click", ()=> openApi());
+/* 上游卡片展示方式切换：大图标（详细卡）⇄ 小图标（紧凑卡），选择记忆到 localStorage。
+   「API 接入」入口随之收起：点击任一上游卡仍可打开接入弹窗，左栏「反代面板」亦可。 */
+const PROXY_VIEW_KEY = "proxyViewMode";
+function proxyViewMode(){ return localStorage.getItem(PROXY_VIEW_KEY) === "small" ? "small" : "large"; }
+function applyProxyView(){
+  const grid = $("#proxyStatus"), btn = $("#proxyViewBtn");
+  const small = proxyViewMode() === "small";
+  if(grid) grid.classList.toggle("compact", small);
+  if(btn){
+    btn.innerHTML = small ? "▤ 小图标" : "▦ 大图标";
+    btn.title = small ? "当前：小图标紧凑视图 · 点击切换为大图标" : "当前：大图标详细视图 · 点击切换为小图标";
+  }
+}
+$("#proxyViewBtn").addEventListener("click", ()=>{
+  localStorage.setItem(PROXY_VIEW_KEY, proxyViewMode() === "small" ? "large" : "small");
+  applyProxyView();
+  toast(proxyViewMode() === "small" ? "已切换为小图标紧凑视图" : "已切换为大图标详细视图", "ok");
+});
+applyProxyView();
 /* 「⟳ 刷新」：手动重拉 /api/proxy_info（转圈防重复，成功/失败均 toast） */
 $("#proxyRefreshBtn").addEventListener("click", async ()=>{
   const btn = $("#proxyRefreshBtn");
