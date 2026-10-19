@@ -209,9 +209,9 @@ class TestChatStream(unittest.TestCase):
         self.assertTrue(lines[-1].startswith("data:") and "[DONE]" in lines[-1])
         chs = self._chunks(lines)
         text = "".join(c["choices"][0]["delta"].get("content", "") for c in chs)
-        reason = "".join(c["choices"][0]["delta"].get("reasoning_content", "") for c in chs)
-        self.assertEqual(text, "你好")                    # 正文只聚合 message_chunk
-        self.assertEqual(reason, "想想")                  # thinking 进 reasoning_content
+        self.assertEqual(text, "<think>\n想想\n</think>\n\n你好")   # 思考并入正文流
+        self.assertNotIn("reasoning_content",
+                         "".join(str(c["choices"][0]["delta"]) for c in chs))
         self.assertTrue(any(c.get("usage") for c in chs))
         self.assertTrue(any(c["choices"][0].get("finish_reason") for c in chs))
         self.assertTrue(all(c["object"] == "chat.completion.chunk" for c in chs))
@@ -220,11 +220,23 @@ class TestChatStream(unittest.TestCase):
         # 回归：event: 变量曾跨帧泄漏（首帧 thinking 污染后续无 event: 行的 data 帧）
         tbt.requests = _FakeRequests(_FakeResp(UPSTREAM))
         lines = list(tbt.chat_stream(self.ent, dict(self.body)))
-        # 第二条 data（{"type":"message_chunk","content":"你"}）必须是正文不是思考
-        # （chunks[0] 是初始 role 帧，chunks[1]=thinking，chunks[2]=正文「你」）
-        second = self._chunks(lines)[2]
+        # 正文帧不得被思考块污染：chunks[0]=role，[1]="<think>\n"，[2]="想想"，
+        # [3]="\n</think>\n\n"，[4]=正文「你」
+        second = self._chunks(lines)[4]
         self.assertEqual(second["choices"][0]["delta"].get("content"), "你")
         self.assertNotIn("reasoning_content", second["choices"][0]["delta"])
+
+    def test_thinking_only_still_closes_block(self):
+        # 边界：上游只吐思考没有正文 → </think> 也要在 stop 前补上
+        up = ['event: thinking\ndata: {"content":"只想不想说"}',
+              'data: {"type":"message_finish"}', 'data: [DONE]']
+        tbt.requests = _FakeRequests(_FakeResp(up))
+        lines = list(tbt.chat_stream(self.ent, dict(self.body)))
+        chs = self._chunks(lines)
+        text = "".join(c["choices"][0]["delta"].get("content", "") for c in chs)
+        self.assertEqual(text, "<think>\n只想不想说\n</think>\n\n")
+        self.assertTrue(any(c["choices"][0].get("finish_reason") == "stop"
+                            for c in chs))
 
     def test_error_event_mapped_to_chinese(self):
         up = ['data: {"type":"error","code":492,"message":"premium only"}', 'data: [DONE]']
@@ -254,7 +266,7 @@ class TestChatStream(unittest.TestCase):
         self.assertEqual(tbt.requests.n, 2)
         chs = self._chunks(lines)
         text = "".join(c["choices"][0]["delta"].get("content", "") for c in chs)
-        self.assertEqual(text, "你好")
+        self.assertEqual(text, "<think>\n想想\n</think>\n\n你好")
 
     def test_http_401_maps_to_503_actionable(self):
         tbt.requests = _FakeRequests(_FakeResp([], status=401))
@@ -287,7 +299,7 @@ class TestChatStream(unittest.TestCase):
         chs = self._chunks(lines)
         self.assertFalse([c for c in chs if c.get("error_code")])
         text = "".join(c["choices"][0]["delta"].get("content", "") for c in chs)
-        self.assertEqual(text, "你好")                        # 重试后正常出文
+        self.assertEqual(text, "<think>\n想想\n</think>\n\n你好")  # 重试后正常出文
 
     def test_missing_cookie(self):
         with self.assertRaises(tbt.UpstreamError):

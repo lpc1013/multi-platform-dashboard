@@ -568,6 +568,8 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
     model 字段：调用方（openai_proxy）已剥掉 "tb:" 前缀；空 → "Default"。
     会话：每次聊天现场 POST /panel/session 建新空会话（无状态不串上下文）；
           若上游秒拒「会话未登记」（无 code + AI服务暂时不可用），换新会话重试一次。
+    思考：thinking 事件以 <think>…</think> 包裹并入正文流（多数客户端不渲染
+          reasoning_content，会「转圈半天不吐字」——2026-10-20 修复）。
     错误处理：HTTP/SSE error 事件 → 产出 OpenAI error chunk（含 error_code），
     调用方流式透传 / 非流式抛错。cookie 失效类错误在消息里给可操作指引。
     """
@@ -662,8 +664,17 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
         return None
 
     def _convert(evgen, first):
-        """事件流 → OpenAI chunk 行（恒以 data: [DONE] 收尾）。"""
+        """事件流 → OpenAI chunk 行（恒以 data: [DONE] 收尾）。
+
+        thinking 事件并入正文流（<think>…</think> 包裹，逐帧透传）：
+        上游思考常达 10-60s 且 reasoning_content 字段多数客户端不渲染，
+        观感是「转圈半天不吐字」（2026-10-20 实测：复杂问题前 8.6s 全是
+        思考、2435 字）。<think> 标签被主流客户端折叠渲染；不认的客户端
+        至少立刻见字，不再白屏等待。
+        """
         usage, done = None, False
+        think_open = False       # 当前思考块是否已发 <think> 开头
+        think_pending = False    # 思考帧已产出、待补 </think> 闭合
         queue = [first] if first else []
         try:
             while True:
@@ -677,15 +688,29 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
                 if ev == "message_chunk":
                     c = j.get("content")
                     if c:
+                        if think_pending:
+                            yield _openai_chunk(cid, created, model,
+                                                {"content": "\n</think>\n\n"})
+                            think_pending = False
+                            think_open = False
                         yield _openai_chunk(cid, created, model, {"content": c})
                 elif ev == "thinking":
                     t = _thinking_text(j)
                     if t:
-                        yield _openai_chunk(cid, created, model,
-                                            {"reasoning_content": t})
+                        if not think_open:
+                            yield _openai_chunk(cid, created, model,
+                                                {"content": "<think>\n"})
+                            think_open = True
+                        think_pending = True
+                        yield _openai_chunk(cid, created, model, {"content": t})
                 elif ev == "usage":
                     usage = _normalize_usage(j.get("usage") or j) or usage
                 elif ev in ("message_finish", "finish"):
+                    if think_pending:
+                        yield _openai_chunk(cid, created, model,
+                                            {"content": "\n</think>\n\n"})
+                        think_pending = False
+                        think_open = False
                     yield _openai_chunk(cid, created, model, {}, "stop", usage)
                     done = True
                 elif ev == "error":
@@ -698,6 +723,10 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
                         _, msg = _map_upstream_error(int(code), raw)
                     else:
                         msg = raw
+                    if think_pending:    # 思考中出错也要闭合，防后续被当思考吞掉
+                        yield _openai_chunk(cid, created, model,
+                                            {"content": "\n</think>\n\n"})
+                        think_pending = False
                     yield _err_chunk(cid, created, model, msg, code)
                     done = True
                 elif ev in ("close", "cancel"):
@@ -705,6 +734,10 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
         except Exception:
             pass                                # 客户端断开等 IO 错误：收尾
         finally:
+            if think_pending:                   # 流意外中断同样闭合思考块
+                yield _openai_chunk(cid, created, model,
+                                    {"content": "\n</think>\n\n"})
+                think_pending = False
             if not done:
                 yield _openai_chunk(cid, created, model, {}, "stop", usage)
             yield "data: [DONE]"
