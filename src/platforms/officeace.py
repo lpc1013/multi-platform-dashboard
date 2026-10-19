@@ -266,7 +266,12 @@ def _service_stop():
     ⚠ 2026-10-12 新增，勿回退：无头实例常驻会独占 runtime-state 的 HostPid 归属，
     用户之后打开 GUI 客户端时其服务（新 pid）校验状态归属失败 →
     NATIVE_SERVICE_STATE_INVALID 弹窗拒绝启动（实测 21:31 复现）。
-    所以看板自己拉起的服务，用完必须回收；用户/客户端自己启动的绝不动。"""
+    所以看板自己拉起的服务，用完必须回收；用户/客户端自己启动的绝不动。
+
+    ⚠ 2026-10-19 补充：杀掉进程还不够——runtime-state.json 里仍留着死 pid，
+    官方客户端下次启动时新 host 写状态前先读到旧文件 → 直接抛
+    「expected pid=A, actual pid=B」拒绝启动（实测 19:58/20:03 复现）。
+    因此回收后必须把指向该 pid 的状态文件一并清掉，让客户端重新生成。"""
     pid = _runtime_host_pid()
     if not pid:
         return False
@@ -274,6 +279,24 @@ def _service_stop():
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
                        capture_output=True,
                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception:
+        return False
+    _clear_stale_state(pid)
+    return True
+
+
+def _clear_stale_state(pid):
+    """删除仍指向已退出 host 的 runtime-state.json（客户端启动时会重新生成）。"""
+    st = os.path.join(_SERVICE_ROOT, ".office-claw", "run", "windows",
+                      "runtime-state.json")
+    try:
+        with open(st, encoding="utf-8") as f:
+            if int(json.load(f).get("HostPid") or 0) != int(pid):
+                return False
+    except Exception:
+        return False
+    try:
+        os.remove(st)
         return True
     except Exception:
         return False

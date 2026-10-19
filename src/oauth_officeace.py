@@ -93,6 +93,13 @@ def _officeace_maybe_teardown():
             if pid:
                 subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
                                capture_output=True)
+                # 2026-10-19：光杀进程不够——状态文件仍记着死 pid，客户端下次启动
+                # 会抛 NATIVE_SERVICE_STATE_INVALID（expected/actual 不匹配）。
+                try:
+                    if int(json.load(open(st, encoding="utf-8")).get("HostPid") or 0) == pid:
+                        os.remove(st)
+                except Exception:
+                    pass
                 return True
     except Exception:
         pass
