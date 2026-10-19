@@ -369,27 +369,32 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 /* 中栏定位到主区卡片时的高亮闪烁 */
 @keyframes cardflash{0%,100%{box-shadow:var(--shadow-lg)}35%{box-shadow:0 0 0 4px rgba(99,91,255,.38)}}
 .card.flashcard{animation:cardflash 1.2s ease 2}
-/* 反代面板：四上游状态卡 */
-.upgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+/* 反代面板：上游状态卡（固定结构：每行「标签一行 + 值一行」，同行卡片等高） */
+.upgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;align-items:stretch}
 .upcard{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow);
-  scroll-margin-top:12px;transition:transform .16s,box-shadow .16s}
+  scroll-margin-top:12px;display:flex;flex-direction:column;transition:transform .16s,box-shadow .16s}
 .upcard:hover{transform:translateY(-1px);box-shadow:var(--shadow-lg)}
-.upcard .uhead{display:flex;align-items:center;gap:8px;font-size:var(--fs-t3);font-weight:600;margin-bottom:8px}
+.upcard .uhead{display:flex;align-items:center;gap:8px;font-size:var(--fs-t3);font-weight:600;margin-bottom:10px}
 .upcard .dot2{width:9px;height:9px;border-radius:50%;flex:none}
 .upcard .st{margin-left:auto;font-size:var(--fs-cap);font-weight:600;padding:2px 9px;border-radius:99px}
 .upcard .st.ok{background:var(--green-soft);color:var(--green)}
 .upcard .st.bad{background:var(--red-soft);color:var(--red)}
-.upcard .urow{display:flex;justify-content:space-between;gap:10px;font-size:var(--fs-aux);padding:3px 0;color:var(--ink2)}
-.upcard .uk{color:var(--muted);flex:none}
-.upcard .uv{font-variant-numeric:tabular-nums;text-align:right;word-break:break-all}
-.upcard .uerr{margin-top:6px;font-size:var(--fs-cap);color:var(--red);line-height:1.5}
 .upcard .st.idle{background:#eef2f6;color:var(--muted)}
+/* 行结构：标签独占一行（小号 muted），值独占下一行占满卡宽——不再右对齐挤压、不中途截断 */
+.upcard .urow{padding:5px 0;color:var(--ink2);font-size:var(--fs-aux);line-height:1.45}
+.upcard .uk{display:block;color:var(--muted);font-size:var(--fs-cap);font-weight:600;letter-spacing:.3px}
+.upcard .uv{display:block;font-variant-numeric:tabular-nums;overflow-wrap:break-word}
+.upcard .uerr{margin-top:6px;font-size:var(--fs-cap);color:var(--red);line-height:1.5}
 .upcard .uidle{margin-top:6px;font-size:var(--fs-cap);color:var(--muted);line-height:1.5}
 .upcard.clickable{cursor:pointer}
 .upcard.clickable:hover{border-color:#cfd7e3}
-.upcard .uhint{margin-top:9px;font-size:var(--fs-cap);color:var(--brand);font-weight:600}
+/* hint 吸底：可选行（默认模型缺失等）不同也不影响各行卡片底部对齐 */
+.upcard .uhint{margin-top:auto;padding-top:10px;font-size:var(--fs-cap);color:var(--brand);font-weight:600}
 .upcard.ph{text-align:center;padding:52px 20px;color:var(--muted);grid-column:1/-1}
 .upcard.ph .pht{font-size:var(--fs-t3);font-weight:600;color:var(--ink2);margin-bottom:6px}
+/* 刷新按钮忙碌态（图标旋转 + 防重复点击） */
+.phead-btn.busy{opacity:.75;pointer-events:none}
+.phead-btn.busy .rb-ico{display:inline-block;animation:apispin .7s linear infinite}
 #view-proxy .proxybox{margin-top:18px}
 @media (max-width:960px){
   /* 窄屏：左导航转为顶部横条（只图标），主区全宽 */
@@ -637,7 +642,7 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
     </div>
 
     <div class="view" id="view-proxy">
-      <div class="phead" style="--pc:var(--brand)"><span class="pdot"></span><span class="pname">上游状态</span><span class="pline"></span><span class="pcnt" id="proxyUpCnt"></span><button class="phead-btn" id="apiOpenBtn" type="button">🔌 API 接入</button></div>
+      <div class="phead" style="--pc:var(--brand)"><span class="pdot"></span><span class="pname">上游状态</span><span class="pline"></span><button class="phead-btn" id="proxyRefreshBtn" type="button" title="重新读取上游状态"><span class="rb-ico">⟳</span>刷新</button><button class="phead-btn" id="apiOpenBtn" type="button">🔌 API 接入</button></div>
       <div class="upgrid" id="proxyStatus"></div>
       <div class="phead" style="--pc:var(--brand)"><span class="pdot"></span><span class="pname">反代用量</span><span class="pline"></span></div>
       <div class="proxybox" id="proxybox"></div>
@@ -2151,8 +2156,8 @@ function renderProxyStatus(I){
     if(idle){ stCls = "idle"; stTxt = "未配置"; }
     else if(p.error){ stCls = "bad"; stTxt = "异常"; }
     const st = `<span class="st ${stCls}">${stTxt}</span>`;
-    const dm = p.default_model
-      ? `<div class="urow"><span class="uk">默认模型</span><span class="uv">${p.default_model}</span></div>` : "";
+    // 默认模型行恒显（缺失显示 —）：五张卡行结构完全一致，高度才对得齐
+    const dm = `<div class="urow"><span class="uk">默认模型</span><span class="uv">${p.default_model || "—"}</span></div>`;
     const note = idle
       ? `<div class="uidle">未配置账号 · 可手动接入后启用</div>`
       : (p.error ? `<div class="uerr">⚠ ${p.error}</div>` : "");
@@ -2168,13 +2173,13 @@ function renderProxyStatus(I){
   box.querySelectorAll('.upcard[data-pid]').forEach(c=>{
     c.addEventListener('click', ()=> openApi(c.dataset.pid));
   });
-  const cnt = $("#proxyUpCnt");
+  const cnt = $("#proxyRefreshBtn");
   if(cnt){
     const okN = ps.filter(p=>!p.error).length;
     const idleN = ps.filter(p=>p.id==="teleagent" && !p.account).length;
-    const parts = [`${ps.length} 个上游`, `${okN} 可用`];
-    if(idleN) parts.push(`${idleN} 未配置`);
-    cnt.textContent = parts.join(" · ");
+    let tip = `${ps.length} 个上游 · ${okN} 可用`;
+    if(idleN) tip += ` · ${idleN} 未配置`;
+    cnt.title = tip;
   }
 }
 async function refreshProxyStatus(){
@@ -2329,6 +2334,17 @@ document.querySelectorAll("#apiMask .btncopy[data-copy]").forEach(b=>{
 });
 /* 常驻入口：上游状态标题栏的「🔌 API 接入」按钮（无论今日有无用量都可打开弹窗） */
 $("#apiOpenBtn").addEventListener("click", ()=> openApi());
+/* 「⟳ 刷新」：手动重拉 /api/proxy_info（转圈防重复，成功/失败均 toast） */
+$("#proxyRefreshBtn").addEventListener("click", async ()=>{
+  const btn = $("#proxyRefreshBtn");
+  btn.classList.add("busy");
+  try{
+    await refreshProxyStatus();
+    toast(API_MODELS_ERR ? "刷新失败：后端未连接" : "上游状态已刷新", API_MODELS_ERR ? "err" : "ok");
+  }finally{
+    btn.classList.remove("busy");
+  }
+});
 /* 【▶ 测试连接】：真发一次 chat 请求，转圈 → ✅/❌ */
 $("#apiTest").addEventListener("click", async ()=>{
   const btn = $("#apiTest"), out = $("#apiTestOut");
