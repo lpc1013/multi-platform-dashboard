@@ -300,11 +300,10 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .rail-brand{display:flex;align-items:center;gap:11px;padding:2px 8px 16px;margin-bottom:8px;
   border-bottom:1px solid var(--line)}
 .rail-logo{width:36px;height:36px;border-radius:11px;flex:none;display:grid;place-items:center;color:#fff;
-  font-size:var(--fs-t3);font-weight:700;background:linear-gradient(135deg,#635bff,#8b7dff);
-  box-shadow:0 3px 9px rgba(99,91,255,.28)}
+  font-size:var(--fs-t3);font-weight:700;background:var(--brand)}
 .rail-brand .bt{font-size:var(--fs-t3);font-weight:700;letter-spacing:-.2px;color:var(--ink);line-height:1.3}
 .rail-brand .bs{font-size:var(--fs-cap);color:var(--muted);margin-top:3px}
-.rail-nav{display:flex;flex-direction:column;gap:4px;width:100%}
+.rail-nav{display:flex;flex-direction:column;gap:4px;width:100%;min-height:0;overflow-y:auto;scrollbar-width:thin}
 /* 导航项：图标 + 主标题 + 副标题，整行通铺高亮；选中项左侧加品牌色指示条 */
 .rit{position:relative;width:100%;padding:11px 12px;border:0;background:transparent;cursor:pointer;
   display:flex;align-items:center;gap:12px;color:var(--ink2);text-align:left;
@@ -312,14 +311,16 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .rit.on::before{content:"";position:absolute;left:0;top:24%;bottom:24%;width:3px;border-radius:99px;background:var(--brand)}
 .rit:hover{background:#f4f6fa;color:var(--ink)}
 .rit.on{background:var(--brand-soft);color:var(--brand)}
-.rico{position:relative;flex:none;width:24px;text-align:center;font-size:18px;line-height:1}
+/* 导航图标：内联 SVG（stroke=currentColor），默认灰、选中随文字变品牌色——不用 emoji */
+.rico{position:relative;flex:none;width:24px;height:22px;display:flex;align-items:center;justify-content:center;color:var(--muted)}
+.rit.on .rico{color:var(--brand)}
+.rico svg{display:block}
 .rbody{flex:1;min-width:0;display:block}
 .rtxt{display:block;font-size:var(--fs-t3);font-weight:600;letter-spacing:-.1px;white-space:nowrap}
 .rsub{display:block;font-size:var(--fs-aux);font-weight:500;color:var(--muted);margin-top:3px;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
 .rit.on .rsub{color:#7c74e8}
-/* 子导航展开后隐藏一级项副标题：内容与子导航重复，只保留一份 */
-.rgroup.active .rsub{display:none}
+/* 副标题恒显：选中不隐藏——否则选中项比其他项矮一行，高度跳变 */
 /* ── 左侧导航树：每个一级模块可展开子类（平台 / 上游 / Token 分区），点击即定位 ── */
 .rgroup{display:flex;flex-direction:column}
 .rchev{flex:none;font-size:var(--fs-cap);color:var(--muted);transition:transform .16s}
@@ -603,7 +604,7 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
         <div class="rgroup active" data-group="home">
           <button class="rit on" data-view="home">
             <span class="rchev">▾</span>
-            <span class="rico">🖥</span>
+            <span class="rico"><svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.2" y="2.2" width="5" height="5" rx="1.3"/><rect x="8.8" y="2.2" width="5" height="5" rx="1.3"/><rect x="2.2" y="8.8" width="5" height="5" rx="1.3"/><rect x="8.8" y="8.8" width="5" height="5" rx="1.3"/></svg></span>
             <span class="rbody"><span class="rtxt">平台看板</span><span class="rsub">账号状态 · 积分总览</span></span>
           </button>
           <div class="rsubnav" id="sub-home"></div>
@@ -611,7 +612,7 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
         <div class="rgroup" data-group="proxy">
           <button class="rit" data-view="proxy">
             <span class="rchev">▾</span>
-            <span class="rico">⚡<i class="rbadge" id="railBadgeProxy"></i></span>
+            <span class="rico"><svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 5.5h9.5"/><path d="M9.3 2.9 12.1 5.5 9.3 8.1"/><path d="M13.5 10.5H4"/><path d="M6.7 7.9 3.9 10.5l2.8 2.6"/></svg><i class="rbadge" id="railBadgeProxy"></i></span>
             <span class="rbody"><span class="rtxt">反代面板</span><span class="rsub">上游状态 · 今日用量</span></span>
           </button>
           <div class="rsubnav" id="sub-proxy"></div>
@@ -619,13 +620,13 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
         <div class="rgroup" data-group="tokens">
           <button class="rit" data-view="tokens">
             <span class="rchev">▾</span>
-            <span class="rico">📊</span>
+            <span class="rico"><svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M2.5 13.5h11"/><path d="M5 13.5V8.5"/><path d="M8 13.5V4.5"/><path d="M11 13.5V7"/></svg></span>
             <span class="rbody"><span class="rtxt">Token 消耗</span><span class="rsub">各模型用量明细</span></span>
           </button>
           <div class="rsubnav" id="sub-tokens"></div>
         </div>
       </nav>
-      <div class="rail-foot">🔒 数据仅存本机<br>不经外网</div>
+      <div class="rail-foot">数据仅存本机<br>不经外网</div>
     </aside>
     <main class="maincol">
       <div id="banner" class="banner" style="display:none"></div>
@@ -2007,7 +2008,8 @@ function showView(name){
   if(!VIEWS.includes(name)) name = "home";
   document.querySelectorAll(".view").forEach(v=>v.classList.toggle("on", v.id==="view-"+name));
   document.querySelectorAll(".rit[data-view]").forEach(b=>b.classList.toggle("on", b.dataset.view===name));
-  document.querySelectorAll(".rgroup").forEach(g=>g.classList.toggle("active", g.dataset.group===name));
+  // 只展开当前组、不收起其他组：点一个标题不该把别的缩回去（用户明确不喜欢互斥折叠）
+  document.querySelectorAll(".rgroup").forEach(g=>{ if(g.dataset.group===name) g.classList.add("active"); });
   if(location.hash !== "#"+name) history.replaceState(null, "", "#"+name);
   if(name === "proxy") refreshProxyStatus();
   if(name === "tokens"){ loadTokensFrame(); }
@@ -2041,8 +2043,10 @@ const TOKEN_SECTIONS = [
   {v:"dist",       t:"请求分布"},
   {v:"credit",     t:"积分消耗"}
 ];
+/* 左栏只保留两种颜色：中性灰（默认/圆点）+ 品牌紫（选中）。圆点统一灰，不再按平台上彩色 */
+const RAIL_DOT = "#c4cbd6";
 function _rsitem(dot, label, count, extra){
-  const dotHtml = `<span class="rdot" style="background:${dot||"transparent"}"></span>`;
+  const dotHtml = `<span class="rdot" style="background:${dot||RAIL_DOT}"></span>`;
   const cntHtml = count ? `<span class="rn">${count}</span>` : "";
   return `<button class="rsitem"${extra||""}>${dotHtml}<span class="rlabel">${label}</span>${cntHtml}</button>`;
 }
@@ -2064,8 +2068,7 @@ function buildRailTree(){
     const h = pids.length
       ? pids.map(pid=>{
           const p = plats[pid];
-          const clr = PLAT_CLR[pid] || "#8792a2";
-          return _rsitem(clr, esc(p.label||pid), p.accounts.length+" 账号", ` data-jump="home" data-pid="${pid}"`);
+          return _rsitem("", esc(p.label||pid), p.accounts.length+" 账号", ` data-jump="home" data-pid="${pid}"`);
         }).join("")
       : `<div class="rsempty">暂无平台</div>`;
     _setSub(home, "home", h);
@@ -2075,10 +2078,9 @@ function buildRailTree(){
   if(px){
     const ps = (API_MODELS && API_MODELS.providers) || [];
     const h = ps.length
-      ? ps.map(p=>{
-          const clr = PLAT_CLR[p.id] || "#5f5e5a";
-          return _rsitem(clr, esc(p.label||p.id), "", ` data-jump="proxy" data-pid="${p.id}"`);
-        }).join("")
+      ? ps.map(p=>
+          _rsitem("", esc(p.label||p.id), "", ` data-jump="proxy" data-pid="${p.id}"`)
+        ).join("")
       : `<div class="rsempty">进入反代后加载</div>`;
     _setSub(px, "proxy", h);
   }
@@ -2086,7 +2088,7 @@ function buildRailTree(){
   const tk = $("#sub-tokens");
   if(tk && _railSig.token === null){
     _setSub(tk, "token", TOKEN_SECTIONS.map(s=>
-      _rsitem("var(--brand)", s.t, "", ` data-jump="token" data-view="${s.v}"`)).join(""));
+      _rsitem("", s.t, "", ` data-jump="token" data-view="${s.v}"`)).join(""));
   }
   wireSubItems();
 }
