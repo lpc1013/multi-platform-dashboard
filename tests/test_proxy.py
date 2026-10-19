@@ -231,7 +231,8 @@ class TestRelayAggregate(unittest.TestCase):
 
     def test_load_ent_error_no_network(self):
         h = _FakeHandler()
-        with mock.patch.object(ox, "_load_ent",
+        # 2026-10-19 起 codearts 走统一账号池：凭据过期报错来自 _pool_ents（非 _load_ent）
+        with mock.patch.object(ox, "_pool_ents",
                                side_effect=ox.UpstreamError(503, "凭证已过期")):
             ox.relay(h, {"model": "x", "messages": []})
         self.assertEqual(h.sent[0][0], 503)          # 503 原样透传给客户端

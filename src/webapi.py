@@ -8,6 +8,7 @@ server.py 保留启动编排（Server / _already_running / main），只负责�
 import os
 import sys
 import json
+import time
 import threading
 import http.server
 import urllib.parse
@@ -396,7 +397,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         for p in (ca, ta, oa, wb, tb):
             try:
                 st = ox._pool_status(_POOL_ID.get(p["id"], p["id"]))
-                p["pool"] = {"n": st["n"], "cool": st["cool"]}
+                p["pool"] = {"n": st["n"], "names": st["names"], "cool": st["cool"]}
             except Exception:
                 p["pool"] = {"n": 0, "cool": {}}
         # wb 补充：每账号额度健康度（0=还有免费包 1=仅积分 2=无）+ auto 链顺序
@@ -411,6 +412,55 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         out["providers"] = [ca, ta, oa, wb, tb]
         self._send(200, out)
+
+    # 每上游每账号额度：60s 模块级缓存（read_account 会打上游，防前端狂点狂打）
+    _PQ_CACHE = {}
+    _PQ_TTL = 60
+
+    def _r_api_pool_quota(self):
+        """每上游每账号额度详情（百分比 + 包明细）。前端展开/刷新时按上游拉取，
+        read_account 打上游秒级返回；无额度接口的平台如实返回 pct=null。"""
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        pid = (q.get("provider") or [""])[0]
+        force = (q.get("force") or [""])[0] == "1"
+        key = {"workbuddy_intl": "wbai"}.get(pid, pid)
+        now = time.time()
+        c = Handler._PQ_CACHE.get(pid)
+        if not force and c and now - c[0] < Handler._PQ_TTL:
+            self._send(200, c[1])
+            return
+        try:
+            import openai_proxy as ox
+            load = ox._pool_spec(key)[0]
+            mod = {"codearts": ox.cap, "teleagent": ox.tat, "officeace": ox.oac,
+                   "tabbit": ox.tbt, "wbai": ox.wai}.get(key)
+            accs = load() or {}
+        except Exception as e:
+            self._send(200, {"provider": pid, "accounts": [],
+                             "error": str(e)[:120]})
+            return
+        out = []
+        for name, ent in accs.items():
+            row = {"name": name, "ok": False, "error": None, "pct": None,
+                   "remain": None, "total": None, "packages": []}
+            try:
+                if mod is None or not isinstance(ent, dict):
+                    raise RuntimeError("无额度查询能力")
+                r = mod.read_account(name, ent) or {}
+                row["ok"] = bool(r.get("ok"))
+                row["error"] = r.get("error")
+                cr = r.get("credits") or {}
+                tot = float(cr.get("total") or 0)
+                rem = float(cr.get("remain") or 0)
+                row["total"], row["remain"] = tot, rem
+                row["pct"] = round(rem * 100.0 / tot) if tot > 0 else None
+                row["packages"] = r.get("packages") or []
+            except Exception as e:
+                row["error"] = str(e)[:100]
+            out.append(row)
+        resp = {"provider": pid, "accounts": out}
+        Handler._PQ_CACHE[pid] = (now, resp)
+        self._send(200, resp)
 
     def _r_api_progress(self):
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -1069,6 +1119,7 @@ _GET_ROUTES = {
     "/v1/models": Handler._r_v1_models,
     "/api/proxy_usage": Handler._r_api_proxy_usage,
     "/api/proxy_info": Handler._r_api_proxy_info,
+    "/api/pool_quota": Handler._r_api_pool_quota,
     "/api/progress": Handler._r_api_progress,
     "/api/log": Handler._r_api_log,
     "/api/account/browser_login_status": Handler._r_api_account_browser_login_status,

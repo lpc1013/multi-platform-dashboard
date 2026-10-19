@@ -287,23 +287,25 @@ def _pool_ents(provider):
     return fresh + cold
 
 
-def _pool_cool(provider, name, why):
-    """账号冷却（额度耗尽 / 鉴权失效），窗口内优先用别的号。"""
+def _pool_cool(provider, name, why, sec=None):
+    """账号冷却（额度耗尽 / 鉴权失效），窗口内优先用别的号。
+    sec 可指定短冷却：瞬时态错误（如并发上限）不该拉黑 30 分钟。"""
+    sec = int(sec or _POOL_COOL_SEC)
     with _POOL_LOCK:
-        _POOL_COOL.setdefault(provider, {})[name] = time.time() + _POOL_COOL_SEC
+        _POOL_COOL.setdefault(provider, {})[name] = time.time() + sec
     try:
         import server as srv
         srv.log("[proxy:%s] 账号 %s 冷却 %ds（%s）"
-                % (provider, name, _POOL_COOL_SEC, str(why)[:60]))
+                % (provider, name, sec, str(why)[:60]))
     except Exception:
         pass
 
 
 def _pool_switchable(provider, status, msg):
-    """该错误是否值得换号（账号级硬限），而不是模型/参数/并发问题。"""
+    """该错误是否值得换号（账号级硬限），而不是模型/参数问题。
+    TM.00001041（并发上限）也换号：每号并发配额独立，换号立即可用；
+    配额是瞬时态，配合 60s 短冷却（见 _open_pool），全号都满时外层再退避重试。"""
     m = str(msg or "")
-    if provider == "codearts" and "TM.00001041" in m:
-        return False                      # 并发上限：交给外层退避重试，换号无用
     if status in (401, 403, 429):
         return True
     low = m.lower()
@@ -386,7 +388,9 @@ def _open_pool(provider, openai_body):
             st = getattr(e, "status", None)
             msg = getattr(e, "message", None) or str(e)
             if st is not None and _pool_switchable(provider, st, msg):
-                _pool_cool(provider, name, msg)
+                # 并发上限是瞬时态：60s 短冷却跳过即可，别拉黑 30 分钟
+                short = "TM.00001041" in str(msg) or "并发会话" in str(msg)
+                _pool_cool(provider, name, msg, sec=60 if short else None)
                 last_err = UpstreamError(int(st), str(msg))
                 continue
             if isinstance(e, UpstreamError):
@@ -405,7 +409,8 @@ def _open_pool(provider, openai_body):
             st = getattr(e, "status", None)
             msg = getattr(e, "message", None) or str(e)
             if st is not None and _pool_switchable(provider, st, msg):
-                _pool_cool(provider, name, msg)
+                short = "TM.00001041" in str(msg) or "并发会话" in str(msg)
+                _pool_cool(provider, name, msg, sec=60 if short else None)
                 last_err = UpstreamError(int(st), str(msg))
                 continue
             last_err = UpstreamError(502, str(msg)[:200])
@@ -917,23 +922,15 @@ def relay(handler, openai_body):
     while True:
         try:
             if provider == "teleagent":
-                name, ent = _ta_ent()
-                lines = tat.chat_stream(ent, openai_body)
+                name, lines = _open_pool("teleagent", openai_body)
             elif provider == "wbai":
                 name, lines = _open_wbai(openai_body)
             elif provider == "officeace":
-                name, ent = _oa_ent()
-                lines = oac.chat_stream(ent, openai_body)
+                name, lines = _open_pool("officeace", openai_body)
             elif provider == "tabbit":
-                name, ent = _tb_ent()
-                tb_body = dict(openai_body)
-                mb = str(tb_body.get("model") or "").strip()
-                if mb.lower().startswith(TB_PREFIX):
-                    tb_body["model"] = mb[len(TB_PREFIX):]
-                lines = tbt.chat_stream(ent, tb_body)
+                name, lines = _open_pool("tabbit", openai_body)
             else:
-                name, ent = _load_ent()
-                lines = _chat_stream(ent, openai_body)
+                name, lines = _open_pool("codearts", openai_body)
             break
         except UpstreamError as e:
             _ca_release()

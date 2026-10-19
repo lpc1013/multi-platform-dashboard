@@ -387,6 +387,16 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .upcard .uv{display:block;font-variant-numeric:tabular-nums;overflow-wrap:break-word}
 .upcard .uerr{margin-top:6px;font-size:var(--fs-cap);color:var(--red);line-height:1.5}
 .upcard .uidle{margin-top:6px;font-size:var(--fs-cap);color:var(--muted);line-height:1.5}
+/* 账号池：每号一行（名 + 剩余额度条 + 百分比），点击行展开包明细 */
+.upcard .acctrow{display:flex;align-items:center;gap:7px;padding:3px 0;cursor:pointer;font-size:var(--fs-cap);color:var(--ink2)}
+.upcard .acctrow:hover{color:var(--ink)}
+.upcard .acctrow .anm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upcard .abar{width:64px;height:5px;border-radius:3px;background:var(--line,#e6e4de);overflow:hidden;flex:none}
+.upcard .abar i{display:block;height:100%;background:var(--brand,#008BA3);border-radius:3px}
+.upcard .abar.low i{background:var(--red,#c0392b)}
+.upcard .apct{width:38px;text-align:right;font-variant-numeric:tabular-nums;flex:none}
+.upcard .adetail{padding:4px 0 2px 10px;font-size:var(--fs-cap);color:var(--muted);line-height:1.55;border-left:2px solid var(--line,#e6e4de);margin-left:2px}
+.upcard .adetail b{color:var(--ink2);font-weight:600}
 .upcard.clickable{cursor:pointer}
 .upcard.clickable:hover{border-color:#cfd7e3}
 /* hint 吸底：可选行（默认模型缺失等）不同也不影响各行卡片底部对齐 */
@@ -654,7 +664,7 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
     </div>
 
     <div class="view" id="view-proxy">
-      <div class="phead" style="--pc:var(--brand)"><span class="pdot"></span><span class="pname">上游状态</span><span class="pline"></span><button class="phead-btn" id="proxyRefreshBtn" type="button" title="重新读取上游状态"><span class="rb-ico">⟳</span>刷新</button><button class="phead-btn" id="proxyViewBtn" type="button" title="切换上游卡片展示方式">▦ 大图标</button></div>
+      <div class="phead" style="--pc:var(--brand)"><span class="pdot"></span><span class="pname">上游状态</span><span class="pline"></span><button class="phead-btn" id="apiEntranceBtn" type="button" title="OpenAI 兼容反代接入信息（URL / Key / 模型名）"><span class="rb-ico">🔌</span>API 接入</button><button class="phead-btn" id="proxyRefreshBtn" type="button" title="重新读取上游状态"><span class="rb-ico">⟳</span>刷新</button><button class="phead-btn" id="proxyViewBtn" type="button" title="切换上游卡片展示方式">▦ 大图标</button></div>
       <div class="upgrid" id="proxyStatus"></div>
       <div class="phead" style="--pc:var(--brand)"><span class="pdot"></span><span class="pname">反代用量</span><span class="pline"></span></div>
       <div class="proxybox" id="proxybox"></div>
@@ -2181,6 +2191,30 @@ window.addEventListener("hashchange", ()=>{
   const h = (location.hash || "").replace("#","");
   if(VIEWS.includes(h)) showView(h);
 });
+/* 每上游每账号额度（/api/pool_quota，60s 后端缓存；⟳ 刷新时带 force 重拉） */
+const POOL_QUOTA = {};
+function fetchPoolQuota(pid, force){
+  return fetch("/api/pool_quota?provider=" + encodeURIComponent(pid) + (force ? "&force=1" : ""), {cache:"no-store"})
+    .then(r=>r.json())
+    .then(d=>{ if(d && (d.accounts || []).length) POOL_QUOTA[pid] = d; return d || null; })
+    .catch(()=>null);
+}
+function _poolDetailHtml(pid, name){
+  const a = (((POOL_QUOTA[pid] || {}).accounts || []).find(x=>x.name===name)) || {};
+  if(a.error && !a.ok) return `⚠ ${esc(a.error)}`;
+  const fmt = v => (v == null ? "—" : (Math.round(v * 10) / 10).toLocaleString("zh-CN"));
+  let html = "";
+  if((a.packages || []).length){
+    html = a.packages.map(pk=>
+      `<div><b>${esc(pk.name || pk.label || "积分包")}</b>　余 ${fmt(pk.remain != null ? pk.remain : pk.remain_credit)} / ${fmt(pk.amount != null ? pk.amount : pk.total)}${pk.end ? " · 至 " + esc(String(pk.end)) : ""}</div>`
+    ).join("");
+  } else if(a.total != null && a.total > 0){
+    html = `<div><b>总额度</b>　余 ${fmt(a.remain)} / ${fmt(a.total)}</div>`;
+  } else {
+    html = `<div>暂无额度明细${a.ok ? "" : "（账号状态异常）"}</div>`;
+  }
+  return html;
+}
 function renderProxyStatus(I){
   const box = $("#proxyStatus");
   if(!box) return;
@@ -2196,13 +2230,28 @@ function renderProxyStatus(I){
     let stCls = "ok", stTxt = "可用";
     if(idle){ stCls = "idle"; stTxt = "未配置"; }
     else if(p.error){ stCls = "bad"; stTxt = "异常"; }
-    const st = `<span class="st ${stCls}">${stTxt}</span>`;
-    // 账号池行（2026-10-19 池化）：N 个号 + 冷却数；无池数据回退单账号名
+    // 账号池：每号一行（名 + 剩余额度条 + 百分比，pct 由 /api/pool_quota 异步填充）
     const pool = p.pool || null;
     const coolN = pool ? Object.keys(pool.cool || {}).length : 0;
-    const acctVal = (pool && pool.n)
-      ? `${pool.n} 个号` + (coolN ? ` · <span style="color:#c0392b">${coolN} 冷却中</span>` : "")
-      : (p.account || "—");
+    let poolRows;
+    if(pool && pool.n){
+      const byName = {};
+      ((POOL_QUOTA[p.id] || {}).accounts || []).forEach(a=>byName[a.name]=a);
+      poolRows = (pool.names || []).map(nm=>{
+        const a = byName[nm] || {};
+        const pct = (a.pct != null) ? a.pct : null;
+        const cooling = (pool.cool || {})[nm];
+        const bar = (pct != null)
+          ? `<span class="abar${pct<20?" low":""}"><i style="width:${Math.max(2,pct)}%"></i></span><span class="apct">${pct}%</span>`
+          : `<span class="apct" style="width:auto;color:var(--muted)">${cooling ? "冷却中" : (a.error ? "额度未知" : "…")}</span>`;
+        return `<div class="acctrow" data-pid="${p.id}" data-name="${esc(nm)}" title="点击查看额度明细${cooling?" · 冷却中":""}">` +
+                 `<span class="anm">${esc(nm)}</span>${bar}</div>` +
+               `<div class="adetail" data-detail-for="${p.id}/${esc(nm)}" style="display:none"></div>`;
+      }).join("");
+    } else {
+      poolRows = `<span class="uv">${p.account || "—"}</span>`;
+    }
+    const st = `<span class="st ${stCls}">${stTxt}</span>`;
     // 默认模型行恒显（缺失显示 —）：五张卡行结构完全一致，高度才对得齐
     const dm = `<div class="urow"><span class="uk">默认模型</span><span class="uv">${p.default_model || "—"}</span></div>`;
     const note = idle
@@ -2211,7 +2260,7 @@ function renderProxyStatus(I){
     const hint = idle ? "🔌 点击查看接入方式" : "🔌 点击查看接入信息 →";
     return `<div class="upcard clickable" data-pid="${p.id}" style="border-top:3px solid ${clr}">
       <div class="uhead"><span class="dot2" style="background:${clr}"></span>${p.label || p.id}${st}</div>
-      <div class="urow"><span class="uk">账号池</span><span class="uv">${acctVal}</span></div>
+      <div class="urow"><span class="uk">账号池${coolN ? `（${coolN} 冷却中）` : ""}</span>${poolRows}</div>
       <div class="urow keep"><span class="uk">可用模型</span><span class="uv">${(p.models||[]).length} 个</span></div>
       ${dm}${note}
       <div class="uhint">${hint}</div>
@@ -2219,6 +2268,24 @@ function renderProxyStatus(I){
   }).join("");
   box.querySelectorAll('.upcard[data-pid]').forEach(c=>{
     c.addEventListener('click', ()=> openApi(c.dataset.pid));
+  });
+  // 账号行点击 → 展开/收起该号的额度明细（数据来自 POOL_QUOTA）
+  box.querySelectorAll('.acctrow').forEach(r=>{
+    r.addEventListener('click', e=>{
+      e.stopPropagation();               // 不触发整卡的 openApi
+      const det = r.nextElementSibling;
+      if(!det || !det.classList.contains("adetail")) return;
+      if(det.style.display === "none"){
+        det.innerHTML = _poolDetailHtml(r.dataset.pid, r.dataset.name);
+        det.style.display = "";
+      } else det.style.display = "none";
+    });
+  });
+  // 异步填充每号额度百分比（有池且未拉过才拉；齐了整卡重绘一次）
+  ps.forEach(p=>{
+    if(p.pool && p.pool.n && !POOL_QUOTA[p.id]){
+      fetchPoolQuota(p.id).then(d=>{ if(d) renderProxyStatus(API_MODELS); });
+    }
   });
   const cnt = $("#proxyRefreshBtn");
   if(cnt){
@@ -2233,12 +2300,17 @@ async function refreshProxyStatus(){
   const box = $("#proxyStatus");
   if(!box) return;
   try{
+    Object.keys(POOL_QUOTA).forEach(k=>delete POOL_QUOTA[k]);   // ⟳ 强制重拉额度
     const r = await fetch("/api/proxy_info", {cache:"no-store"});
     if(!r.ok) throw new Error("HTTP " + r.status);
     const I = await r.json();
     API_MODELS = I;                   // 中栏模型列表复用同一份目录
     API_MODELS_ERR = false;
     renderProxyStatus(I);
+    // 用户主动刷新 → 额度也 force 重拉（fill 里自动填充只拉缺失项）
+    ((I || {}).providers || []).forEach(p=>{
+      if(p.pool && p.pool.n) fetchPoolQuota(p.id, true).then(d=>{ if(d) renderProxyStatus(API_MODELS); });
+    });
     buildRailTree();                 // 同步刷新左栏「反代面板」子类（四上游）
     renderListColIfProxy();           // 模型目录就绪 → 中栏从「加载中」变实列表
   }catch(e){
@@ -2409,6 +2481,8 @@ $("#proxyViewBtn").addEventListener("click", ()=>{
   applyProxyView();
   toast(proxyViewMode() === "small" ? "已切换为小图标紧凑视图" : "已切换为大图标详细视图", "ok");
 });
+/* 上游状态标题栏的「🔌 API 接入」入口 */
+$("#apiEntranceBtn").addEventListener("click", ()=>openApi());
 applyProxyView();
 /* 「⟳ 刷新」：手动重拉 /api/proxy_info（转圈防重复，成功/失败均 toast） */
 $("#proxyRefreshBtn").addEventListener("click", async ()=>{
