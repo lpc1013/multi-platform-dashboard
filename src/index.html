@@ -1075,9 +1075,10 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
       <button class="btn-main sm" id="tbImport"
         style="background:linear-gradient(135deg,#f59e0b,#fbbf24);box-shadow:0 4px 14px rgba(245,158,11,.28)">
         📱 从本地浏览器导入（推荐）</button>
-      <div class="hint-sm">解密本机 <b>Tabbit 浏览器</b>已登录网页版的 Cookie
-        （含 JWT 登录态，约 <b>7 天</b>有效；Chromium cookie 库 DPAPI+AES-GCM，看板<b>只读</b>，绝不写入）。<br>
-        ⚠ 浏览器运行时 cookie 库会被独占导致读不全——导入失败请<b>完全退出 Tabbit</b>（含托盘图标）后重试；
+      <div class="hint-sm">读取本机 <b>Tabbit 浏览器</b>已登录网页版的登录态
+        （JWT Cookie；看板<b>只读</b>，绝不写入）。<br>
+        优先直读 Chromium cookie 库；若浏览器正运行导致文件被独占，自动改走<b>本地运行时管道</b>读取
+        （无需退出浏览器；无窗口时会自动唤起一下，属正常现象）。
         国内版与国际版是两套域名，可分别导入成两个账号。</div>
 
       <hr style="border:0;border-top:1px dashed var(--line);margin:16px 0">

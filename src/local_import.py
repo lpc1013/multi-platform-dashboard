@@ -29,6 +29,7 @@
 import os
 import json
 import base64
+import time
 
 HOME = os.path.expanduser("~")
 APPDATA = os.environ.get("APPDATA") or os.path.join(HOME, "AppData", "Roaming")
@@ -1008,11 +1009,15 @@ def _tabbit_cookie_dbs(udir):
 
 
 def read_tabbit():
-    """从本机 Tabbit 浏览器解密登录态（国内 web.tabbit.com / 国际 web.tabbit.ai）。
+    """从本机 Tabbit 浏览器读取登录态（国内 web.tabbit.com / 国际 web.tabbit.ai）。
 
-    cookie 库：<User Data>/{Default,}/Network/Cookies（v10 + DPAPI-AES-GCM，
-    解密后前 32 字节 host 绑定摘要由 _chromium_cookie_value 剥除）。
-    只读解密，绝不写入客户端目录。
+    两条路径（前者优先，后者兜底）：
+    ① cookie 库：<User Data>/{Default,}/Network/Cookies（v10 + DPAPI-AES-GCM，
+       解密后前 32 字节 host 绑定摘要由 _chromium_cookie_value 剥除）；
+    ② LocalAgent 公共管道：浏览器进程驻留会独占 cookie 库（用户「关了窗口」
+       也读不到），此时借官方管道 claim 标签页、在默认 profile context 读
+       cookie（见 _tabbit_pipe_accounts）。
+    只读，绝不写入客户端目录。
     返回 (ok, msg, accounts)；accounts = {名字: {"cookie", "base"}}
     """
     import sqlite3
@@ -1076,14 +1081,268 @@ def read_tabbit():
             continue                       # 没有 JWT = 未登录，跳过
         tag = "国际版" if base == tb.BASE_INTL else "国内版"
         accs["Tabbit·" + tag] = {"cookie": cookie, "base": base}
+    if not accs and not locked:
+        # 文件都读到了但没有登录态，且没有文件被锁 —— 无需管道兜底
+        return False, "未从 Tabbit 浏览器解出登录态，请先在网页版登录。", {}
+
+    # cookie 库被浏览器进程独占（Electron 驻留即锁文件）→ 走 LocalAgent 公共管道
+    paccs = {}
+    pipe_err = None
+    if locked or not accs:
+        try:
+            paccs = _run_tabbit_pipe(udir)
+        except Exception as e:
+            pipe_err = e
+        for k, v in paccs.items():
+            accs.setdefault(k, v)
+
     if not accs:
+        if pipe_err is not None:
+            return False, _tabbit_pipe_err_msg(pipe_err), {}
         extra = ("（%d 个 cookie 文件被浏览器独占未能读取 —— 完全退出 Tabbit 后重试）"
                  % locked) if locked else ""
         return False, "未从 Tabbit 浏览器解出登录态，请先在网页版登录。" + extra, {}
-    msg = "已从本机 Tabbit 浏览器解密登录态：%s（只读，未改动客户端）" % "、".join(accs.keys())
-    if locked:
+    msg = "已从本机 Tabbit 浏览器读取登录态：%s（只读，未改动客户端）" % "、".join(accs.keys())
+    if paccs:
+        msg += "（cookie 库被浏览器占用，已通过本地运行时管道读取）"
+    elif locked:
         msg += "（另有 %d 个 cookie 文件被占用中，未纳入）" % locked
     return True, msg, accs
+
+
+# ── Tabbit：LocalAgent 公共管道兜底 ──
+# Tabbit 浏览器（Chromium 系）运行时会独占 Cookies sqlite，看板直接读必失败
+# （用户常见「关了窗口但进程驻留」= 文件仍被锁）。它同时在本机暴露官方
+# LocalAgent 公共命名管道（<User Data>/LocalAgent/endpoint.json 含
+# address/token/generation，官方 playwright CLI 即走此路）。借它 claim 一个
+# 标签页，在用户默认 profile 的 context 里读 cookie —— 不必关闭浏览器、
+# 也不必解密 cookie 库。全程只读，不写客户端任何文件。
+TABBIT_EXE_CANDIDATES = [
+    os.path.join(os.environ.get("LOCALAPPDATA") or "", "Tabbit",
+                 "Tabbit Browser", "Application", "Tabbit Browser.exe"),
+    os.path.join(os.environ.get("PROGRAMFILES") or "", "Tabbit",
+                 "Tabbit Browser", "Application", "Tabbit Browser.exe"),
+    os.path.join(os.environ.get("PROGRAMFILES(X86)") or "", "Tabbit",
+                 "Tabbit Browser", "Application", "Tabbit Browser.exe"),
+    "E:\\Tabbit\\Tabbit Browser\\Application\\Tabbit Browser.exe",
+    "D:\\Tabbit\\Tabbit Browser\\Application\\Tabbit Browser.exe",
+]
+
+# 在用户默认 profile context 里读两个域名的 cookie（顶层 await 可用：
+# 服务端会把代码包进 (async () => { ... })()）
+_TABBIT_COOKIE_JS = (
+    "const cs = browser.contexts();\n"
+    "if (!cs.length) return [];\n"
+    "const ck = await cs[0].cookies("
+    "['https://web.tabbit.com', 'https://web.tabbit.ai']);\n"
+    "return ck.map(x => ({name: x.name, value: x.value, domain: x.domain}));\n"
+)
+
+
+class _TabbitPipe:
+    """LocalAgent 公共管道客户端（纯 stdlib，行分隔 JSON 帧）。
+
+    首帧认证 {"version":1,"token":...,"generation":...}；此后每帧
+    {"op":"cli","argv":[...],"stdin":...}，每帧返回一行 JSON。
+
+    ⚠ 服务端每响应一帧就 socket.end() 半关闭连接（RuntimePublicServer
+    #finishResponse），**一条连接只能发一个请求**。因此 cli() 每次调用都
+    新建连接：认证 → 发一帧 → 读一帧 → 关闭。
+    """
+
+    def __init__(self, cred):
+        self.f = open(cred["address"], "rb+", buffering=0)
+        self._send({"version": 1, "token": cred["token"],
+                    "generation": cred["generation"]})
+
+    def _send(self, obj):
+        self.f.write((json.dumps(obj) + "\n").encode("utf-8"))
+        self.f.flush()
+
+    def cli(self, argv, stdin="", timeout=60):
+        self._send({"op": "cli", "argv": argv, "stdin": stdin,
+                    "workingDirectory": ""})
+        buf = b""
+        t0 = time.time()
+        while b"\n" not in buf:
+            if time.time() - t0 > timeout:
+                raise TimeoutError("Tabbit 管道响应超时")
+            chunk = self.f.read(65536)
+            if not chunk:
+                raise EOFError("Tabbit 管道已关闭")
+            buf += chunk
+        return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+
+    def close(self):
+        try:
+            self.f.close()
+        except Exception:
+            pass
+
+
+def _tabbit_cli(cred, argv, stdin="", timeout=60):
+    """单帧 CLI 调用：独立连接，用完即关。"""
+    p = _TabbitPipe(cred)
+    try:
+        return p.cli(argv, stdin=stdin, timeout=timeout)
+    finally:
+        p.close()
+
+
+def _tabbit_find_exe():
+    """定位 Tabbit Browser.exe（候选路径 + 常见盘根 glob）。"""
+    import glob
+    for p in TABBIT_EXE_CANDIDATES:
+        if p and os.path.isfile(p):
+            return p
+    for root in ("E:\\", "D:\\", "C:\\"):
+        hits = glob.glob(root + "Tabbit*/Tabbit Browser/Application/Tabbit Browser.exe")
+        if hits:
+            return hits[0]
+    return None
+
+
+def _tabbit_accounts_from_cookies(cks):
+    """管道返回的 cookie 列表 → {名字: {"cookie","base"}}（无 JWT 的组跳过）。"""
+    from platforms import tabbit as tb
+    groups = {}
+    for c in cks or []:
+        dom = c.get("domain") or ""
+        base = tb.BASE_INTL if "tabbit.ai" in dom else tb.BASE_DOM
+        groups.setdefault(base, {})[c.get("name")] = c.get("value")
+    accs = {}
+    for base, kv in groups.items():
+        cookie = "; ".join("%s=%s" % (n, v) for n, v in kv.items() if v)
+        if not tb.jwt_payload(cookie):
+            continue
+        tag = "国际版" if base == tb.BASE_INTL else "国内版"
+        accs["Tabbit·" + tag] = {"cookie": cookie, "base": base}
+    return accs
+
+
+def _tabbit_pipe_accounts(udir):
+    """经 LocalAgent 管道读取 Tabbit 登录态；失败抛异常。返回 accounts dict。
+
+    流程：先直接 nodejs 跑 cookie 读取（不 claim 标签页 —— task worker 启动时
+    session.page 即默认 profile 的第一个页面，零冲突、不开新页）→ 若因无窗口
+    失败（服务端隐式 newPage 被禁）则 tabs 探测，无标签页时自动唤起浏览器
+    窗口（带 tabbit 官网）后重试 → 有标签页则 nodejs --tab claim 重试。
+    全程只读，不动用户窗口。注意：每帧独立连接（服务端响应后即半关闭）。
+    """
+    import subprocess
+    import time as _t
+    import uuid as _uuid
+
+    ep = os.path.join(udir, "LocalAgent", "endpoint.json")
+    if not os.path.isfile(ep):
+        raise FileNotFoundError("endpoint.json")
+    cred = json.load(open(ep, encoding="utf-8"))
+
+    def _run(task, tab_id=None, timeout=90):
+        argv = ["nodejs", "--task", task,
+                "--request-id", "r-" + _uuid.uuid4().hex[:8]]
+        if tab_id:
+            argv += ["--tab", str(tab_id)]
+        r = _tabbit_cli(cred, argv, stdin=_TABBIT_COOKIE_JS, timeout=timeout)
+        val = r.get("value") or {}
+        res = val.get("result") or {}
+        if val.get("status") == "succeeded" and res.get("value"):
+            return _tabbit_accounts_from_cookies(res["value"])
+        raise RuntimeError("cookie 读取失败：%s"
+                           % (res.get("error") or val.get("error") or "未知错误"))
+
+    def _tabs():
+        v = (_tabbit_cli(cred, ["tabs", "--task",
+                                "wb-probe-%d" % (int(_t.time()) % 10 ** 6)]
+                         ).get("value") or {})
+        return v.get("tabs") or []
+
+    task = "wb-import-%d" % (int(_t.time()) % 10 ** 6)
+    try:
+        # ① 快路径：浏览器有窗口时一帧搞定
+        try:
+            return _run(task)
+        except Exception:
+            pass
+        # ② 慢路径：先看有没有标签页
+        items = _tabs()
+        if not items:
+            exe = _tabbit_find_exe()
+            if exe:
+                # 唤起现有实例开窗（不 wait；Tabbit 单实例，安全）
+                subprocess.Popen([exe, "https://web.tabbit.com"],
+                                 close_fds=True)
+                for _ in range(40):          # 最多等 ~20s 窗口起来
+                    _t.sleep(0.5)
+                    items = _tabs()
+                    if items:
+                        break
+            if not items:
+                raise RuntimeError("NO_TAB")
+            try:
+                return _run(task)
+            except Exception:
+                pass
+            # ③ 兜底：claim 指定标签页（避开服务端隐式 newPage 限制）
+            items.sort(key=lambda t: (
+                0 if t.get("active") else 1,
+                0 if "tabbit" in (t.get("url") or "") else 1))
+            last = None
+            for t in items[:3]:
+                try:
+                    return _run(task, tab_id=t.get("tabId"))
+                except Exception as e:
+                    last = e
+            raise last or RuntimeError("cookie 读取失败")
+        # 有标签页但快路径失败 → claim 重试
+        items.sort(key=lambda t: (
+            0 if t.get("active") else 1,
+            0 if "tabbit" in (t.get("url") or "") else 1))
+        last = None
+        for t in items[:3]:
+            try:
+                return _run(task, tab_id=t.get("tabId"))
+            except Exception as e:
+                last = e
+        raise last or RuntimeError("cookie 读取失败")
+    finally:
+        try:
+            _tabbit_cli(cred, ["finish", "--task", task])
+        except Exception:
+            pass
+
+
+def _run_tabbit_pipe(udir, timeout=110):
+    """管道会话放子线程跑（命名管道读为阻塞式，防看板被拖死）。"""
+    import threading
+    box = {}
+
+    def _run():
+        try:
+            box["v"] = _tabbit_pipe_accounts(udir)
+        except Exception as e:      # noqa: BLE001 - 原样带给上层做文案分流
+            box["e"] = e
+
+    th = threading.Thread(target=_run, daemon=True)
+    th.start()
+    th.join(timeout)
+    if "v" in box:
+        return box["v"]
+    raise box.get("e") or TimeoutError("Tabbit 管道会话超时")
+
+
+def _tabbit_pipe_err_msg(e):
+    """管道失败 → 可操作的中文提示。"""
+    if isinstance(e, FileNotFoundError):
+        return ("未找到 Tabbit 本地运行时管道（endpoint.json），且 cookie 库被占用。"
+                "请确认 Tabbit 浏览器为较新版本；或完全退出 Tabbit 后重试导入。")
+    if "NO_TAB" in str(e):
+        return ("Tabbit 浏览器当前没有打开的窗口（cookie 库被驻留进程独占），"
+                "已尝试自动唤起但未成功。请手动打开 Tabbit 浏览器窗口后重试，"
+                "或完全退出 Tabbit 后再导入。")
+    if isinstance(e, TimeoutError):
+        return "读取 Tabbit 登录态超时，请重试。"
+    return "Tabbit 管道读取失败：%s" % str(e)[:120]
 
 
 # ────────────────────────── 统一入口 ──────────────────────────
