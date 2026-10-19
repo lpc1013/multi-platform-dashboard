@@ -16,7 +16,10 @@ Tabbit（国产 Chromium AI 浏览器）平台适配器
                        真实浏览器该位恒为 '1'；上游按账号态校验，免费模型不受影响）
   聊天   POST /api/v1/chat/completion（SSE）
   模型   GET  /proxy/v1/model_config/models?a=0&scene=chat
-  会话   POST /newtab（Next.js Server Action）拉历史会话 UUID 列表，取第一个
+  会话   GET  /api/v0/chat/md5-key-sessions/user-sessions?page&size → 历史会话
+         POST /panel/session → 新建空会话（返回 chat_session_id）
+         （旧 /newtab Server Action 已死于 500，2026-10-19 换新端点；
+           后端要求 chat_session_id 必须是已登记会话，随机 UUID 会被拒）
   签到   GET  /api/commerce/activity/v1/sign-in/status?scene_codes=daily_sign_in&scene_codes=desktop_pet
          POST /api/commerce/activity/v1/sign-in  body {"request_no": <32hex>, "scene_codes": [...]}
          （签到只靠 Cookie，不需要签名）
@@ -80,11 +83,9 @@ DEFAULT_SIGN_KEY = "f8d0e6a73f8d4b1a9c3d2e1f9a4b7c6d"   # 前端硬编码兜底 
 EP_SIGN_KEY = "/chat/sign-key"
 EP_MODELS = "/proxy/v1/model_config/models"
 EP_CHAT = "/api/v1/chat/completion"
-EP_NEWTAB = "/newtab"
-NEXT_ACTION_ID = "607f3555ebab54eceed6d8c97b0ef64a9badccbb3b"
-NEXT_ROUTER_STATE = ("%5B%22%22%2C%7B%22children%22%3A%5B%22newtab%22%2C%7B%22children%22"
-                     "%3A%5B%22__PAGE__%22%2C%7B%7D%2Cnull%2Cnull%5D%7D%2Cnull%2Cnull%5D%7D"
-                     "%2Cnull%2Cnull%2Ctrue%5D")
+# 会话（2026-10-19 从现行 web bundle 逆向；旧 /newtab Server Action 已 500 失效）
+EP_SESSION_LIST = "/api/v0/chat/md5-key-sessions/user-sessions"
+EP_PANEL_SESSION = "/panel/session"
 EP_BASE_INFO = "/api/v0/user/base-info"
 EP_SIGNIN_STATUS = "/api/commerce/activity/v1/sign-in/status"
 EP_SIGNIN = "/api/commerce/activity/v1/sign-in"
@@ -356,32 +357,69 @@ def models(ent, force=False):
 # ════════════════════════════════════════════════════════════════
 
 def fetch_session_list(ent):
-    """POST /newtab（Next Server Action）→ 会话 UUID 列表。
-    返回 []：账号下无会话（后端要求会话预先存在，随机 UUID 会被拒）。"""
-    r = _req(ent, EP_NEWTAB, method="POST",
-             body='["$undefined",{"page":1,"size":20}]',
-             extra_headers={
-                 "accept": "text/x-component",
-                 "content-type": "text/plain;charset=UTF-8",
-                 "next-action": NEXT_ACTION_ID,
-                 "next-router-state-tree": NEXT_ROUTER_STATE,
-             }, timeout=25)
+    """GET /api/v0/chat/md5-key-sessions/user-sessions?page&size → 会话 UUID 列表。
+
+    2026-10-19 实证：旧 /newtab Server Action（action id 607f3555…）已随前端
+    发版过期，POST 恒 500 → 列表空 → 聊天不可用。现行前端（chunk 84664/93945）
+    改走这个普通 GET（只需 Cookie，无需签名），响应
+    {"sessions":[{"chat_session_id": "...", "chat_session_title": "...", ...}]}。
+    """
+    r = _req(ent, EP_SESSION_LIST + "?page=1&size=20", timeout=25)
     if r.status_code != 200:
         return []
     r.encoding = "utf-8"
-    text = r.text or ""
-    uuids = re.findall(
-        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", text)
-    return list(dict.fromkeys(uuids))
+    try:
+        j = r.json()
+    except Exception:
+        # JSON 解析失败的兜底：按 UUID 形状扫（老逻辑保留）
+        return list(dict.fromkeys(re.findall(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            r.text or "")))
+    sess = (j.get("sessions") if isinstance(j, dict) else None) or []
+    ids = [str(s.get("chat_session_id") or "").strip()
+           for s in sess if isinstance(s, dict)]
+    return [i for i in ids if i]
 
 
-def get_session_id(ent):
+def create_session(ent):
+    """POST /panel/session → 新空会话的 chat_session_id。
+
+    前端新标签页发消息的真实第一步（chunk 38791/80399）：无 entity 时
+    连 body 都不带，只要 Accept: application/json。响应 {"chat_session_id": "..."}。
+    """
+    r = _req(ent, EP_PANEL_SESSION, method="POST", body=None,
+             extra_headers={"Accept": "application/json"}, timeout=20)
+    if r.status_code != 200:
+        raise UpstreamError(r.status_code,
+                            "Tabbit 创建会话失败 HTTP %s：%s"
+                            % (r.status_code, (r.text or "")[:150]))
+    try:
+        j = r.json()
+    except Exception:
+        raise UpstreamError(502, "Tabbit 创建会话响应非 JSON：%s" % (r.text or "")[:120])
+    sid = str((j or {}).get("chat_session_id") or "").strip()
+    if not sid:
+        raise UpstreamError(502, "Tabbit 创建会话响应缺少 chat_session_id：%s"
+                            % str(j)[:120])
+    return sid
+
+
+def get_session_id(ent, force=False):
     """取一个可用会话 id（缓存 TTL）。ent.session_id 可手动钉住。
-    列表为空 → 引导用户去浏览器发一条消息。"""
+
+    force=True：跳过缓存与历史列表，直接 POST /panel/session 建新空会话
+    （反代每次聊天都用，保证无状态、不串上下文；session 失效重试也走这条）。
+    普通路径：缓存 → 历史列表第一个 → 都没有则现场建一个。
+    """
     pinned = str((ent or {}).get("session_id") or "").strip()
     if pinned:
         return pinned
     base = base_of(ent)
+    if force:
+        sid = create_session(ent)
+        with _cache_lock:
+            _sessions[base] = (sid, time.time())
+        return sid
     with _cache_lock:
         sid, ts = _sessions.get(base) or (None, 0.0)
         if sid and time.time() - ts < SESSION_TTL:
@@ -392,11 +430,7 @@ def get_session_id(ent):
             if sid and time.time() - ts < SESSION_TTL:
                 return sid
         lst = fetch_session_list(ent)
-        if not lst:
-            raise UpstreamError(
-                503, "Tabbit 账号下没有可用会话。请打开 Tabbit 浏览器随便发一条消息"
-                     "创建一个对话后重试（后端要求 chat_session_id 是已登记会话）")
-        sid = lst[0]
+        sid = lst[0] if lst else create_session(ent)
         with _cache_lock:
             _sessions[base] = (sid, time.time())
         return sid
@@ -492,6 +526,18 @@ def _map_upstream_error(status, text):
     return status, "Tabbit 上游 HTTP %s：%s" % (status, t[:200])
 
 
+def _session_stale(j):
+    """上游以「会话未登记」秒拒时的特征（2026-10-19 实证）：
+    SSE error 事件无 code，message 含「AI服务暂时不可用」。
+    随机 UUID / 已失效会话都是这个报错——换新会话重试即可。"""
+    if not isinstance(j, dict):
+        return False
+    if str(j.get("code") or j.get("status") or "").strip():
+        return False                    # 带码的是风控/权益类，不走重试
+    msg = str(j.get("message") or j.get("details") or "")
+    return "AI服务暂时不可用" in msg
+
+
 def _normalize_usage(u):
     """Tabbit usage 事件 → OpenAI usage（字段名尽量兼容）。"""
     if not isinstance(u, dict):
@@ -507,7 +553,9 @@ def _normalize_usage(u):
 
 
 def _thinking_text(j):
-    for k in ("content", "text", "thinking", "reasoning", "delta"):
+    # 实测（2026-10-19）：thinking 事件的文本字段是 reasoning_content
+    for k in ("reasoning_content", "content", "text", "thinking",
+              "reasoning", "delta"):
         v = j.get(k)
         if isinstance(v, str) and v:
             return v
@@ -518,6 +566,8 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
     """OpenAI 请求体 → Tabbit SSE → OpenAI chunk 行迭代器（恒流式，非流式由调用方聚合）。
 
     model 字段：调用方（openai_proxy）已剥掉 "tb:" 前缀；空 → "Default"。
+    会话：每次聊天现场 POST /panel/session 建新空会话（无状态不串上下文）；
+          若上游秒拒「会话未登记」（无 code + AI服务暂时不可用），换新会话重试一次。
     错误处理：HTTP/SSE error 事件 → 产出 OpenAI error chunk（含 error_code），
     调用方流式透传 / 非流式抛错。cookie 失效类错误在消息里给可操作指引。
     """
@@ -533,10 +583,8 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
     created = int(time.time())
 
     key = fetch_sign_key(ent)
-    session_id = get_session_id(ent)
-    body = _tabbit_body(session_id, model, content)
 
-    def _post(sign_key):
+    def _post(sign_key, body):
         return requests.post(
             base_of(ent) + EP_CHAT, data=body.encode("utf-8"),
             headers={**_base_headers(ent, _is_default(ent)),
@@ -547,54 +595,85 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
             timeout=timeout, verify=True, stream=True,
             proxies={"http": None, "https": None})
 
-    try:
-        r = _post(key)
-        if r.status_code == 499:                 # 签名 key 失效：刷新重试一次
-            _invalidate_sign_key(ent)
-            key = fetch_sign_key(ent, force=True)
-            r = _post(key)
-        if r.status_code >= 400:
-            st, msg = _map_upstream_error(r.status_code, r.text[:300])
-            raise UpstreamError(st, msg)
-        ct = r.headers.get("content-type") or ""
-        if "event-stream" not in ct:
-            st, msg = _map_upstream_error(r.status_code, r.text[:300])
-            raise UpstreamError(502, "Tabbit 响应非 SSE（%s）：%s" % (ct[:60], msg[:150]))
-    except UpstreamError:
-        raise
-    except Exception as e:
-        raise UpstreamError(502, "Tabbit 聊天请求失败：%s" % str(e)[:150])
-
-    # ⚠ 上游 SSE Content-Type 不带 charset，requests 按 ISO-8859-1 解码会中文乱码
-    r.encoding = "utf-8"
-
-    def _lines():
-        yield _openai_chunk(cid, created, model, {"role": "assistant"})
-        event, usage, done = None, None, False
+    def _open(session_id):
+        """开一轮聊天请求 → Response（已判 HTTP / SSE content-type）。"""
+        body = _tabbit_body(session_id, model, content)
         try:
-            for raw in r.iter_lines(decode_unicode=True):
-                if raw is None:
-                    continue
-                line = raw.rstrip("\r")
-                if not line.strip():
-                    continue                     # 帧分隔空行
-                if line.startswith("event:"):
-                    event = line[6:].strip()
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if not data:
-                    continue
-                try:
-                    j = json.loads(data)
-                except Exception:
-                    continue
-                if not isinstance(j, dict):
-                    continue
-                # 事件名取 SSE event: 行；上游也曾只把 type 放在 data 里，两者都认
-                ev = event or j.get("type") or "message_chunk"
-                event = None                  # SSE 语义：事件名只对紧随的一条 data 帧生效
+            r = _post(key, body)
+            if r.status_code == 499:             # 签名 key 失效：刷新重试一次
+                _invalidate_sign_key(ent)
+                k = fetch_sign_key(ent, force=True)
+                r = _post(k, body)
+            if r.status_code >= 400:
+                st, msg = _map_upstream_error(r.status_code, r.text[:300])
+                raise UpstreamError(st, msg)
+            ct = r.headers.get("content-type") or ""
+            if "event-stream" not in ct:
+                st, msg = _map_upstream_error(r.status_code, r.text[:300])
+                raise UpstreamError(502, "Tabbit 响应非 SSE（%s）：%s"
+                                    % (ct[:60], msg[:150]))
+        except UpstreamError:
+            raise
+        except Exception as e:
+            raise UpstreamError(502, "Tabbit 聊天请求失败：%s" % str(e)[:150])
+        # ⚠ 上游 SSE Content-Type 不带 charset，requests 按 ISO-8859-1 解码会中文乱码
+        r.encoding = "utf-8"
+        return r
+
+    def _iter_events(resp):
+        """SSE 原始行 → (event_name, j)。event 名只对紧随的一条 data 帧生效。"""
+        event = None
+        for raw in resp.iter_lines(decode_unicode=True):
+            if raw is None:
+                continue
+            line = raw.rstrip("\r")
+            if not line.strip():
+                continue                     # 帧分隔空行
+            if line.startswith("event:"):
+                event = line[6:].strip()
+                continue
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if not data:
+                continue
+            try:
+                j = json.loads(data)
+            except Exception:
+                event = None
+                continue
+            if not isinstance(j, dict):
+                event = None
+                continue
+            # 事件名取 SSE event: 行；上游也曾只把 type 放在 data 里，两者都认
+            ev = event or j.get("type") or "message_chunk"
+            event = None
+            yield ev, j
+
+    _OUTPUT_EVENTS = {"thinking", "message_chunk", "usage",
+                      "message_finish", "finish", "error"}
+
+    def _first_output(evgen):
+        """读到第一个产出型事件（ready/message_start 等无产出帧跳过）。
+        返回 (event, j) 或 None（流空 / 只有 [DONE]）。"""
+        for ev, j in evgen:
+            if ev in _OUTPUT_EVENTS:
+                return ev, j
+        return None
+
+    def _convert(evgen, first):
+        """事件流 → OpenAI chunk 行（恒以 data: [DONE] 收尾）。"""
+        usage, done = None, False
+        queue = [first] if first else []
+        try:
+            while True:
+                if queue:
+                    ev, j = queue.pop(0)
+                else:
+                    item = next(evgen, None)
+                    if item is None:
+                        break
+                    ev, j = item
                 if ev == "message_chunk":
                     c = j.get("content")
                     if c:
@@ -611,7 +690,7 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
                     done = True
                 elif ev == "error":
                     code = str(j.get("code") or j.get("status") or "")
-                    raw = str(j.get("message") or j.get("details") or data[:200])
+                    raw = str(j.get("message") or j.get("details") or "")
                     if code in ("401", "403", "492", "493"):
                         _invalidate_session(ent)
                     # 已知风控/权益码 → 用户可操作的中文提示；未知码保留上游原文
@@ -630,7 +709,22 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
                 yield _openai_chunk(cid, created, model, {}, "stop", usage)
             yield "data: [DONE]"
 
-    return _lines()
+    # 每次聊天都现场建新空会话（POST /panel/session）：无状态、不串上下文。
+    # 上游若以「会话未登记」秒拒（error 无 code + "AI服务暂时不可用"），
+    # 换新会话重试一次——2026-10-19 实证随机/失效 UUID 正是这个报错。
+    session_id = get_session_id(ent, force=True)
+    for attempt in (1, 2):
+        r = _open(session_id)
+        evgen = _iter_events(r)
+        first = _first_output(evgen)
+        if first and first[0] == "error" and _session_stale(first[1]) and attempt == 1:
+            r.close()
+            _invalidate_session(ent)
+            session_id = get_session_id(ent, force=True)
+            continue
+        yield _openai_chunk(cid, created, model, {"role": "assistant"})
+        yield from _convert(evgen, first)
+        return
 
 
 # ════════════════════════════════════════════════════════════════

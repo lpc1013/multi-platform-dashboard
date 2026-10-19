@@ -8,7 +8,10 @@
   - 签名头 / unique-uuid 指纹 / request_no 生成
   - route_of：tb: 前缀 → tabbit，且不抢 wb:/chat-*/codearts 的路由
   - chat_stream：SSE（event:/data: 双形状）→ OpenAI chunk 转换、
-    thinking→reasoning_content、usage/finish、error chunk 中文化、499 自动刷新重试
+    thinking→reasoning_content（含 reasoning_content 字段）、usage/finish、
+    error chunk 中文化、499 自动刷新重试、会话失效换新会话重试
+  - 会话端点：user-sessions 列表 JSON 解析/正则兜底、/panel/session 建会话、
+    列表空现场兜底、_session_stale 特征判定
   - read_account 无 cookie 的可操作报错；read_tabbit 不抛异常
 运行：python -m unittest tests.test_tabbit   （用 pythoncore-3.14-64）
 """
@@ -53,6 +56,12 @@ class _FakeResp:
         for l in self._lines:
             for sub in str(l).split("\n"):      # 允许一项里混排 event:/data: 两行
                 yield sub
+
+    def json(self):
+        return json.loads(self.text)
+
+    def close(self):
+        pass
 
 
 class _FakeRequests:
@@ -254,6 +263,32 @@ class TestChatStream(unittest.TestCase):
         self.assertEqual(ctx.exception.status, 503)
         self.assertIn("导入", ctx.exception.message)
 
+    def test_stale_session_retries_with_fresh_one(self):
+        # 回归（2026-10-19）：随机/失效 UUID → 上游秒拒「AI服务暂时不可用」（无 code）。
+        # 现在每次聊天建新会话 + 该特征错误自动换会话重试，且不吐 error chunk。
+        stale = ['event: error\ndata: {"message":"AI服务暂时不可用，请稍后重试"}',
+                 'data: [DONE]']
+
+        class _StaleThenOk(_FakeRequests):
+            def __init__(self):
+                super().__init__(None)
+                self.n = 0
+
+            def post(self, url, **kw):
+                self.n += 1
+                self.calls.append(url)
+                return _FakeResp(stale) if self.n == 1 else _FakeResp(UPSTREAM)
+
+        tbt.requests = _StaleThenOk()
+        sessions = iter(["sess-stale", "sess-fresh"])
+        tbt.get_session_id = lambda ent, force=False: next(sessions)
+        lines = list(tbt.chat_stream(self.ent, dict(self.body)))
+        self.assertEqual(tbt.requests.n, 2)                   # 确实重试了一轮
+        chs = self._chunks(lines)
+        self.assertFalse([c for c in chs if c.get("error_code")])
+        text = "".join(c["choices"][0]["delta"].get("content", "") for c in chs)
+        self.assertEqual(text, "你好")                        # 重试后正常出文
+
     def test_missing_cookie(self):
         with self.assertRaises(tbt.UpstreamError):
             list(tbt.chat_stream({}, dict(self.body)))
@@ -286,6 +321,105 @@ class TestMapUpstreamError(unittest.TestCase):
         self.assertEqual(tbt._map_upstream_error(492, "premium")[0], 403)
         self.assertIn("默认浏览器", tbt._map_upstream_error(493, "set_default_browser")[1])
         self.assertEqual(tbt._map_upstream_error(429, "x")[0], 429)
+
+
+class TestSessionEndpoints(unittest.TestCase):
+    """会话端点（2026-10-19 新逆向，旧 /newtab Server Action 已 500 失效）：
+      GET  /api/v0/chat/md5-key-sessions/user-sessions  历史会话列表
+      POST /panel/session                               现场建新空会话
+    """
+
+    def setUp(self):
+        self.ent = {"cookie": "token=" + JWT, "base": tbt.BASE_DOM}
+        tbt._sessions.clear()                # 清进程级会话缓存，避免跨用例串味
+
+    def _resp(self, obj, status=200, ct="application/json"):
+        r = _FakeResp([], status=status, ct=ct)
+        r.text = json.dumps(obj) if not isinstance(obj, str) else obj
+        return r
+
+    def test_fetch_session_list_parses_json(self):
+        r = self._resp({"sessions": [
+            {"chat_session_id": "s-1", "chat_session_title": "t1"},
+            {"chat_session_id": "  ", "chat_session_title": "bad"},
+            {"chat_session_id": "s-2", "chat_session_title": "t2"},
+        ]})
+        with mock.patch.object(tbt, "_req", return_value=r) as rq:
+            ids = tbt.fetch_session_list(self.ent)
+        self.assertEqual(ids, ["s-1", "s-2"])
+        self.assertTrue(rq.call_args[0][1].startswith(
+            "/api/v0/chat/md5-key-sessions/user-sessions"))
+
+    def test_fetch_session_list_http_error_returns_empty(self):
+        with mock.patch.object(tbt, "_req", return_value=_FakeResp([], status=500)):
+            self.assertEqual(tbt.fetch_session_list(self.ent), [])
+
+    def test_fetch_session_list_bad_json_falls_back_to_regex(self):
+        r = self._resp('junk 11111111-2222-3333-4444-555555555555 junk',
+                       ct="text/html")
+        with mock.patch.object(tbt, "_req", return_value=r):
+            ids = tbt.fetch_session_list(self.ent)
+        self.assertEqual(ids, ["11111111-2222-3333-4444-555555555555"])
+
+    def test_create_session(self):
+        r = self._resp({"chat_session_id": "new-sess-1"})
+        with mock.patch.object(tbt, "_req", return_value=r) as rq:
+            sid = tbt.create_session(self.ent)
+        self.assertEqual(sid, "new-sess-1")
+        self.assertEqual(rq.call_args[0][1], "/panel/session")
+        self.assertEqual(rq.call_args[1].get("method"), "POST")
+
+    def test_create_session_failure_raises(self):
+        with mock.patch.object(tbt, "_req", return_value=_FakeResp([], status=500)):
+            with self.assertRaises(tbt.UpstreamError):
+                tbt.create_session(self.ent)
+
+    def test_create_session_missing_id_raises(self):
+        with mock.patch.object(tbt, "_req", return_value=self._resp({"ok": True})):
+            with self.assertRaises(tbt.UpstreamError):
+                tbt.create_session(self.ent)
+
+    def test_get_session_id_pinned_wins(self):
+        self.assertEqual(tbt.get_session_id({"session_id": "pin-1"}), "pin-1")
+
+    def test_get_session_id_force_creates_new(self):
+        with mock.patch.object(tbt, "_req", return_value=self._resp(
+                {"chat_session_id": "fresh-1"})):
+            self.assertEqual(tbt.get_session_id(self.ent, force=True), "fresh-1")
+
+    def test_get_session_id_list_first(self):
+        r = self._resp({"sessions": [{"chat_session_id": "hist-1"}]})
+        with mock.patch.object(tbt, "_req", return_value=r):
+            self.assertEqual(tbt.get_session_id(self.ent), "hist-1")
+
+    def test_get_session_id_empty_list_falls_back_to_create(self):
+        # 列表空不再报错引导用户手动开对话——现场 /panel/session 建一个
+        empty = self._resp({"sessions": []})
+        fresh = self._resp({"chat_session_id": "fresh-2"})
+
+        def _fake_req(ent, path, **kw):
+            return empty if "user-sessions" in path else fresh
+
+        with mock.patch.object(tbt, "_req", side_effect=_fake_req):
+            self.assertEqual(tbt.get_session_id(self.ent), "fresh-2")
+
+
+class TestSessionStaleDetection(unittest.TestCase):
+    def test_detects_stale(self):
+        self.assertTrue(tbt._session_stale(
+            {"message": "AI服务暂时不可用，请稍后重试"}))
+        self.assertTrue(tbt._session_stale({"details": "AI服务暂时不可用"}))
+
+    def test_coded_errors_are_not_stale(self):
+        self.assertFalse(tbt._session_stale(
+            {"message": "AI服务暂时不可用", "code": "492"}))
+        self.assertFalse(tbt._session_stale({"message": "AI服务暂时不可用",
+                                             "status": 500}))
+
+    def test_other_messages_are_not_stale(self):
+        self.assertFalse(tbt._session_stale({"message": "模型繁忙"}))
+        self.assertFalse(tbt._session_stale(None))
+        self.assertFalse(tbt._session_stale("str"))
 
 
 if __name__ == "__main__":
