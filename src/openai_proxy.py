@@ -593,11 +593,15 @@ def relay(handler, openai_body):
                 usage = j["usage"]
     except UpstreamError as e:
         _ca_release()
+        srv.log("[proxy:%s] %s acct=%s HTTP%s %s"
+                % (provider, model, name, e.status, e.message[:80]))
         handler._send(e.status, {"error": {"message": e.message,
                                            "type": "upstream_error"}})
         return
     except Exception as e:
         _ca_release()
+        srv.log("[proxy:%s] %s acct=%s 异常 %s"
+                % (provider, model, name, str(e)[:80]))
         handler._send(502, {"error": {"message": str(e)[:200],
                                       "type": "upstream_error"}})
         return

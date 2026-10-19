@@ -206,6 +206,29 @@ class TestRelayAggregate(unittest.TestCase):
         self.assertEqual(h.sent[0][0], 429)
         self.assertIn("额度用尽", h.sent[0][1]["error"]["message"])
 
+    def test_non_stream_error_chunk_logged(self):
+        """非流式聚合吃到 error chunk（上游 SSE error 事件）→ 必须落审计日志。
+
+        2026-10-19 排查实录：该路径曾只回错误不打日志，故障时 backend_run.log
+        零痕迹无法定位（Tabbit InferHub 瞬时拒绝即走此路径 surfaced 为 502）。"""
+        h = _FakeHandler()
+        err_line = "data:" + json.dumps({
+            "id": "r", "created": 1, "object": "chat.completion.chunk",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+            "error": {"message": "The chat messages is required.",
+                      "type": "upstream_error"},
+            "error_code": "InferHub.001001009.400",
+            "error_msg": "The chat messages is required."})
+        with mock.patch.object(ox, "_load_ent", return_value=("acct", _ENT)), \
+             mock.patch.object(ox, "_chat_stream", return_value=iter([err_line])), \
+             mock.patch("server.log") as mlog:
+            ox.relay(h, {"model": "x", "stream": False, "messages": []})
+        self.assertEqual(h.sent[0][0], 502)
+        self.assertIn("The chat messages is required.",
+                      h.sent[0][1]["error"]["message"])
+        logged = " ".join(c[0][0] for c in mlog.call_args_list)
+        self.assertIn("InferHub.001001009.400", logged)   # 审计不能静默
+
     def test_load_ent_error_no_network(self):
         h = _FakeHandler()
         with mock.patch.object(ox, "_load_ent",
