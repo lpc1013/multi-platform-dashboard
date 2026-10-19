@@ -700,6 +700,7 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
       <button class="tab" data-tab="lingxi">WPS 灵犀（智点）</button>
       <button class="tab" data-tab="officeace">OfficeACE（华为云）</button>
       <button class="tab" data-tab="teleagent">TeleAgent（积分）</button>
+      <button class="tab" data-tab="workbuddy_ai">WorkBuddy AI（国际版）</button>
     </div>
 
     <div class="tabpanes">
@@ -1108,6 +1109,33 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
         💾 保存 Cookie</button>
       <div class="hint-sm">保存后即可在反代里调用：模型名加 <code>tb:</code> 前缀
         （如 <code>tb:Default</code>，模型目录见「🔌 API 接入」弹窗）；每日签到在账号卡片上一键完成。</div>
+    </div>
+
+    <!-- WorkBuddy AI（国际版）：网页 OAuth 登录（Google / GitHub / X） -->
+    <div class="tabpane" data-pane="workbuddy_ai" style="display:none">
+      <div class="field">
+        <label>备注名（可选，留空按邮箱自动命名）</label>
+        <input id="wbaName" autocomplete="off" placeholder="如 WB国际·主号">
+      </div>
+      <button class="btn-main sm" id="wbaLogin"
+        style="background:linear-gradient(135deg,#4f46e5,#818cf8);box-shadow:0 4px 14px rgba(79,70,229,.28)">
+        🌐 网页登录（Google / GitHub / X）</button>
+      <div id="wbaTxt" style="display:none;margin-top:8px;font-size:var(--fs-aux);color:var(--ink2);line-height:1.6"></div>
+      <div class="hint-sm">弹出真实浏览器打开 <code>workbuddy.ai</code> 登录页，
+        你用 <b>Google / GitHub / X</b> 任一方式授权即可（不需要手机号）。<br>
+        登录成功后看板自动抓取 <b>accessToken + refreshToken</b> 并落盘，
+        之后反代用 <code>wb:</code> 前缀调用（如 <code>wb:deepseek-v4.1-flash</code>）。<br>
+        token 约 <b>1 年</b>有效，看板到期前会自动用 refreshToken 续期；
+        浏览器 profile 会保留，下次点登录通常免密直接过。</div>
+
+      <hr style="border:0;border-top:1px dashed var(--line);margin:16px 0">
+      <button class="btn-main sm" id="wbaImport"
+        style="background:linear-gradient(135deg,#4338ca,#6366f1);box-shadow:0 4px 14px rgba(67,56,202,.25)">
+        📱 从本地客户端导入</button>
+      <div class="hint-sm">解密本机已登录的 <b>WorkBuddy AI 桌面端</b>登录态
+        （<code>%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop-ai.info</code>，
+        信封密钥从客户端二进制现取，看板<b>只读</b>）。<br>
+        <b>注意：</b>网页登录与桌面端是两套登录态，同一账号会按 uid 自动合并。</div>
     </div>
 
     </div><!-- /.tabpanes -->
@@ -2660,8 +2688,48 @@ $("#tbSave") && $("#tbSave").addEventListener("click", async ()=>{
     addMsg("❌ "+j.msg, false);
   }
 });
-/* OfficeACE：一键启动桌面端客户端（本地 API 未就绪时的兜底；正常点「发送验证码」也会自动拉起） */
-$("#oaLaunch") && $("#oaLaunch").addEventListener("click", async ()=>{
+/* WorkBuddy AI（国际版）：网页 OAuth 登录（Google / GitHub / X）
+   后端弹可见 Chromium → 用户授权 → 拦截 /console/login/enterprise 的 accessToken 落盘 */
+$("#wbaImport") && $("#wbaImport").addEventListener("click", ()=> importLocal("workbuddy_ai", $("#wbaName").value.trim()));
+$("#wbaLogin") && $("#wbaLogin").addEventListener("click", async ()=>{
+  if(!BACKEND_OK){ addMsg("未连接本地后端，无法发起网页登录", false); return; }
+  const btn = $("#wbaLogin"), old = btn.textContent;
+  btn.disabled = true; btn.textContent = "🌐 正在打开登录窗口…";
+  addMsg("正在拉起浏览器，请在窗口里点 Google / GitHub / X 完成授权…", true);
+  let j;
+  try{
+    j = await apiPost("/api/account/browser_login",
+      {platform:"workbuddy_ai", name: $("#wbaName").value.trim()});
+  }catch(e){ j = {ok:false, msg:"发起失败："+(e.message||e)}; }
+  if(!j.ok){ btn.disabled=false; btn.textContent=old; addMsg("❌ "+j.msg, false); return; }
+  const txt = $("#wbaTxt");
+  if(txt){ txt.style.display="block"; txt.textContent="等待你在浏览器里完成授权…"; }
+  const t0 = Date.now(), limit = 330000;
+  while(Date.now() - t0 < limit){
+    await sleep(2000);
+    let s;
+    try{
+      s = await fetch("/api/account/browser_login_status?job="+encodeURIComponent(j.job),
+                      {cache:"no-store"}).then(r=>r.json());
+    }catch(e){ continue; }
+    if(txt && s && s.text) txt.textContent = s.text;
+    if(s && s.finished){
+      if(txt) txt.style.display = "none";
+      btn.disabled = false; btn.textContent = old;
+      if(s.ok){
+        addMsg("✅ "+(s.result||"已保存账号"), true);
+        setTimeout(closeAdd, 900); await load(true, "workbuddy_ai");
+      }else{
+        addMsg("❌ "+(s.result||"登录未完成"), false);
+      }
+      return;
+    }
+  }
+  if(txt) txt.style.display = "none";
+  btn.disabled = false; btn.textContent = old;
+  addMsg("⏰ 等待超时，请重新点一次登录按钮", false);
+});
+/* OfficeACE：一键启动桌面端客户端（本地 API 未就绪时的兜底；正常点「发送验证码」也会自动拉起） */$("#oaLaunch") && $("#oaLaunch").addEventListener("click", async ()=>{
   if(!BACKEND_OK){ addMsg("未连接本地后端，无法启动客户端", false); return; }
   const btn = $("#oaLaunch");
   const old = btn.textContent; btn.disabled = true; btn.textContent = "🚀 正在启动客户端…（最多 30 秒）";

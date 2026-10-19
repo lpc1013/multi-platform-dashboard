@@ -326,9 +326,15 @@ def _run_blogin(jid, platform, name):
     try:
         ok, msg, cred = blmod.browser_login(platform, cb)
         if ok and cred:
-            # 浏览器登录目前只服务 lingxi（抓 wps_sid）；与「粘贴添加」同一套落盘规则
+            # 浏览器登录：lingxi 抓 wps_sid；workbuddy_ai 回传的是 JSON（token+refresh_token+user_id）
             if platform == "lingxi":
                 rec = {"wps_sid": cred, "via_browser": True}
+            elif platform == "workbuddy_ai":
+                try:
+                    rec = json.loads(cred)
+                except Exception:
+                    rec = {"token": cred, "via_browser": True}
+                rec.setdefault("via_browser", True)
             else:
                 rec = {"access_token": cred, "via_browser": True}
             use = _save_cred(platform, rec, name)

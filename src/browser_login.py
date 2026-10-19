@@ -23,7 +23,27 @@ playwright 仅在调用本模块时才 import，未安装不影响看板其余�
 不在这里——它们的登录页是各平台真实授权页（account.minimax.cn /
 zcode.z.ai / qoder.cn），与桌面端同源，比受控浏览器抓 cookie 更稳。
 """
+import json
+import os
+import re
 import time
+
+# ── WorkBuddy AI（国际版）：网页 OAuth 登录 ────────────────────────────────
+# 流程（2026-10-19 实测打通）：
+#   /login/?platform=website&state=2&product=workbuddy
+#     → Keycloak SSO（Google / GitHub / X）→ /login/select
+#     → SPA 调 GET /console/login/enterprise?state=2
+#     → 响应体 {"data":{"accessToken":..,"refreshToken":..,"expiresIn":..}}
+# 注意：/v3/config 是公开接口，拿它验证会假阳性；必须用鉴权接口
+#      POST /v2/billing/meter/get-user-resource（code=0 才算真可用）。
+WBAI_LOGIN_URL = "https://www.workbuddy.ai/login/?platform=website&state=2&product=workbuddy"
+WBAI_RES_URL = "https://www.workbuddy.ai/v2/billing/meter/get-user-resource"
+WBAI_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}")
+WBAI_HEAD = {"Content-Type": "application/json",
+             "Accept": "application/json, text/plain, */*",
+             "X-Domain": "https://www.workbuddy.ai", "X-Product": "SaaS",
+             "X-Env-ID": "production",
+             "User-Agent": "VSCode/1.119.0 WorkBuddy/4.9.29177644"}
 
 
 def _install_hint():
@@ -57,15 +77,141 @@ _BROWSER_LOGIN_CFG = {
 }
 
 
+def _wbai_profile_dir():
+    """浏览器登录专用持久 profile：登录态留在这里，下次点登录可免密直接过 SSO。"""
+    try:
+        import data_dir
+        return data_dir.path("wbai_browser_profile")
+    except Exception:
+        return os.path.join(os.path.expanduser("~"), ".wbai_browser_profile")
+
+
+def _wbai_validate(tok):
+    """鉴权接口验证（/v3/config 是公开接口，不能用它验）。"""
+    try:
+        import requests
+        r = requests.post(WBAI_RES_URL, headers=dict(WBAI_HEAD, Authorization="Bearer " + tok),
+                          json={}, timeout=25, verify=False,
+                          proxies={"http": None, "https": None})
+        if r.status_code == 200:
+            return r.json().get("code") == 0
+        return False
+    except Exception:
+        return False
+
+
+def _wbai_claims(tok):
+    import base64
+    try:
+        seg = tok.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4)))
+    except Exception:
+        return {}
+
+
+def _wbai_login(progress):
+    """WorkBuddy AI 网页登录：弹可见 Chromium → 用户点 GitHub 授权 →
+    拦截 /console/login/enterprise 的 accessToken/refreshToken 响应。
+    返回 (ok, msg, json 字符串凭据)。"""
+    try:
+        from playwright.sync_api import sync_playwright  # noqa
+    except Exception:
+        return False, _install_hint(), None
+
+    progress("opening", "已打开浏览器，请点「GitHub」完成授权（窗口里操作，最多等 5 分钟）…")
+    hit = None
+    seen = set()
+    last_url = [""]
+
+    def log_url(u):
+        if u != last_url[0]:
+            last_url[0] = u
+            progress("opening", "登录中…（%s）" % (u.split("?")[0][:60]))
+
+    try:
+        with sync_playwright() as p:
+            ctx = p.chromium.launch_persistent_context(
+                _wbai_profile_dir(), headless=False,
+                viewport={"width": 1180, "height": 860},
+                args=["--disable-blink-features=AutomationControlled"])
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+
+            def on_resp(resp):
+                nonlocal hit
+                if hit:
+                    return
+                u = resp.url
+                try:
+                    ct = (resp.headers or {}).get("content-type", "")
+                except Exception:
+                    ct = ""
+                if "json" not in ct:
+                    return
+                if not any(k in u for k in ("login", "auth", "token", "oauth")):
+                    return
+                try:
+                    body = resp.text()
+                except Exception:
+                    return
+                if "ccessToken" not in body and "refreshToken" not in body:
+                    return
+                try:
+                    j = json.loads(body)
+                except Exception:
+                    return
+                d = (j.get("data") or {}) if isinstance(j, dict) else {}
+                at = d.get("accessToken") or d.get("access_token") or ""
+                if not at or at in seen:
+                    return
+                seen.add(at)
+                if _wbai_validate(at):
+                    hit = {"token": at,
+                           "refresh_token": d.get("refreshToken") or d.get("refresh_token") or "",
+                           "src": u[:90]}
+                    progress("capturing", "检测到登录成功，正在保存…")
+
+            page.on("response", on_resp)
+            page.on("framenavigated",
+                    lambda f: log_url(f.url) if f == page.main_frame else None)
+
+            page.goto(WBAI_LOGIN_URL, wait_until="domcontentloaded", timeout=45000)
+            deadline = time.time() + 300
+            while time.time() < deadline and not hit:
+                page.wait_for_timeout(1500)
+
+            try:
+                ctx.close()
+            except Exception:
+                pass
+    except Exception as e:
+        return False, "浏览器登录异常：" + str(e)[:160], None
+
+    if not hit:
+        return False, "等待登录超时（5 分钟）。请在弹出的浏览器里点 GitHub 完成授权后重试。", None
+
+    cl = _wbai_claims(hit["token"])
+    cred = {"token": hit["token"], "refresh_token": hit["refresh_token"],
+            "user_id": str(cl.get("sub") or ""), "domain": "www.workbuddy.ai",
+            "via_browser": True,
+            "expires_at": time.strftime("%Y-%m-%d %H:%M",
+                                        time.localtime(cl.get("exp") or time.time() + 30 * 86400))}
+    return True, "已抓取 WorkBuddy AI 登录态（%s）" % (cl.get("preferred_username") or "已登录"), \
+        json.dumps(cred, ensure_ascii=False)
+
+
 def browser_login(platform, progress):
     """启动受控 Chromium 打开对应登录页，等用户登录后抓凭据。
 
     progress(status, text)：回传进度，status ∈ {opening,capturing,error}
     返回 (ok:bool, msg:str, cred:str|None)
     """
+    if platform == "workbuddy_ai":
+        return _wbai_login(progress)
+
     cfg = _BROWSER_LOGIN_CFG.get(platform)
     if not cfg:
-        return False, "不支持的平台（浏览器登录仅支持 %s）" % "、".join(_BROWSER_LOGIN_CFG), None
+        return False, "不支持的平台（浏览器登录仅支持 %s）" % \
+            "、".join(list(_BROWSER_LOGIN_CFG) + ["workbuddy_ai"]), None
 
     progress("opening", "已打开浏览器，请在弹出的登录页用「%s」登录"
                         "（若弹出滑块验证，手动过一下）…" % cfg["tip"])

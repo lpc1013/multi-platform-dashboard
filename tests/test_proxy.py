@@ -238,5 +238,54 @@ class TestRelayAggregate(unittest.TestCase):
         self.assertEqual(h.chunks, [])
 
 
+class TestWbaiPool(unittest.TestCase):
+    """国际版多账号池：一个号额度耗尽自动换下一个。"""
+
+    def setUp(self):
+        ox._WB_COOLDOWN.clear()
+
+    def tearDown(self):
+        ox._WB_COOLDOWN.clear()
+
+    def test_orders_by_expiry_and_puts_cooldown_last(self):
+        accs = {"A": {"token": "t", "expires_at": "2027-01-01 00:00"},
+                "B": {"token": "t", "expires_at": "2027-06-01 00:00"}}
+        with mock.patch.object(ox.wai, "load_accounts", return_value=accs):
+            self.assertEqual([n for n, _ in ox._wbai_ents()], ["B", "A"])
+            ox._wbai_cool("B", "test")
+            self.assertEqual([n for n, _ in ox._wbai_ents()], ["A", "B"])
+
+    def test_failover_on_credits_exhausted(self):
+        accs = {"OLD": {"token": "t1", "expires_at": "2027-01-01 00:00"},
+                "NEW": {"token": "t2", "expires_at": "2027-06-01 00:00"}}
+        quota = json.dumps({"error": {"data": {"code": 14018,
+                                               "msg": "Credits exhausted."}}})
+        good = 'data: {"choices":[{"delta":{"content":"hi"}}]}'
+
+        def fake_stream(ent, body, name=None):
+            if name == "NEW":
+                raise ox.wai.UpstreamErr(402, quota)
+            return iter([good])
+
+        with mock.patch.object(ox.wai, "load_accounts", return_value=accs), \
+             mock.patch.object(ox.wai, "chat_stream", side_effect=fake_stream), \
+             mock.patch("server.log"):
+            name, lines = ox._open_wbai({"model": "wb:fast-model", "messages": []})
+        self.assertEqual(name, "OLD")            # NEW 先试且失败 → 回落 OLD
+        self.assertEqual(list(lines), [good])
+        self.assertIn("NEW", ox._WB_COOLDOWN)    # 失败号进入冷却
+
+    def test_all_accounts_exhausted_raises(self):
+        accs = {"A": {"token": "t", "expires_at": "2027-01-01 00:00"}}
+        quota = json.dumps({"error": {"data": {"code": 14018, "msg": "Credits exhausted."}}})
+        with mock.patch.object(ox.wai, "load_accounts", return_value=accs), \
+             mock.patch.object(ox.wai, "chat_stream",
+                               side_effect=ox.wai.UpstreamErr(402, quota)), \
+             mock.patch("server.log"):
+            with self.assertRaises(ox.UpstreamError) as cm:
+                ox._open_wbai({"model": "wb:x", "messages": []})
+        self.assertIn("14018", cm.exception.message)
+
+
 if __name__ == "__main__":
     unittest.main()

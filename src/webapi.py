@@ -1012,7 +1012,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _r_api_account_browser_login(self, body):
         platform = body.get("platform")
         name = (body.get("name") or "").strip()
-        if platform not in ("lingxi",):
+        if platform not in ("lingxi", "workbuddy_ai"):
             self._send(200, {"ok": False, "msg": "该平台暂不支持浏览器登录"})
         elif not _has_playwright():
             self._send(200, {"ok": False, "msg": "缺少依赖 playwright，浏览器登录不可用。"

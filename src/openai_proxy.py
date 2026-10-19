@@ -23,6 +23,7 @@ OpenAI 兼容反代：把 CodeArts Agent 的免费模型额度暴露为本机 Op
   - 多模态消息透传，福利模型不支持图片时上游报错原样返回。
 """
 import hashlib
+import itertools
 import json
 import os
 import threading
@@ -176,6 +177,122 @@ def _wbai_ent():
                                 % (ent.get("expires_at") or "")[:19])
         return name, ent
     return name, ent
+
+
+# ── 国际版多账号池：一个号额度耗尽自动换下一个 ─────────────────────
+# 上游「Credits exhausted」(code 14018) 是账号级硬限，换号即可继续。
+# 命中后该号进入冷却窗口，后续请求直接跳过，避免每次都白撞一次。
+_WB_COOLDOWN = {}
+_WB_COOL_SEC = 1800
+_WB_LOCK = threading.Lock()
+
+
+def _wbai_ents():
+    """按 expires_at 从新到旧返回账号列表；冷却中的排最后（仍作兜底尝试）。"""
+    accs = wai.load_accounts()
+    if not accs:
+        raise UpstreamError(503, "WorkBuddy 国际版账号不存在，请先在看板「网页登录」或"
+                                 "「从本地客户端导入」")
+    now = time.time()
+    with _WB_LOCK:
+        cool = {k for k, v in _WB_COOLDOWN.items() if v > now}
+
+    def key(it):
+        return str((it[1] or {}).get("expires_at") or "")
+
+    ok = sorted([(n, e) for n, e in accs.items() if n not in cool], key=key, reverse=True)
+    rest = sorted([(n, e) for n, e in accs.items() if n in cool], key=key, reverse=True)
+    return ok + rest
+
+
+def _wbai_cool(name, why):
+    """账号冷却（额度耗尽 / 鉴权失效），窗口内优先用别的号。"""
+    with _WB_LOCK:
+        _WB_COOLDOWN[name] = time.time() + _WB_COOL_SEC
+    try:
+        import server as srv
+        srv.log("[proxy:wbai] 账号 %s 冷却 %ds（%s）" % (name, _WB_COOL_SEC, why[:60]))
+    except Exception:
+        pass
+
+
+def _wbai_err_of(line):
+    """从一条 SSE 行判断是否额度/鉴权类错误，返回原因字符串或 None。"""
+    s = (line or "").strip()
+    if not s.startswith("data:"):
+        return None
+    try:
+        j = json.loads(s[5:].strip())
+    except Exception:
+        return None
+    if not isinstance(j, dict):
+        return None
+    ec = j.get("error_code")
+    msg = str(j.get("error_msg") or j.get("message") or "")
+    if not ec:
+        err = j.get("error")
+        if isinstance(err, dict):
+            inner = err.get("data") if isinstance(err.get("data"), dict) else {}
+            ec = err.get("code") or inner.get("code")
+            msg = msg or str(err.get("msg") or inner.get("msg") or "")
+    if not ec or str(ec) == "0":
+        return None
+    if "14018" in str(ec) or "credit" in msg.lower() or "额度" in msg:
+        return "额度耗尽(%s) %s" % (ec, msg[:60])
+    return None
+
+
+def _open_wbai(openai_body):
+    """按池顺序开流；首个 chunk 就是额度错误则换下一个号。
+    返回 (name, lines)。所有号都失败时抛 UpstreamError。"""
+    last_err = None
+    for name, ent in _wbai_ents():
+        if not (ent.get("token") or ent.get("refresh_token")):
+            continue
+        body = dict(openai_body)
+        mb = str(body.get("model") or "").strip()
+        if mb.lower().startswith(WBAI_PREFIX):
+            body["model"] = mb[len(WBAI_PREFIX):]
+        if not body.get("model"):
+            body["model"] = "auto"
+        try:
+            it = wai.chat_stream(ent, body, name=name)
+        except wai.UpstreamErr as e:
+            why = "HTTP%s %s" % (e.status, str(e.message)[:60])
+            if e.status in (401, 403) or "14018" in str(e.message):
+                _wbai_cool(name, why)
+                last_err = UpstreamError(e.status, e.message)
+                continue
+            raise UpstreamError(e.status, e.message)
+        except Exception as e:
+            last_err = UpstreamError(502, str(e)[:200])
+            continue
+
+        first = None
+        try:
+            for ln in it:
+                if ln and ln.strip():
+                    first = ln
+                    break
+        except Exception as e:
+            last_err = UpstreamError(502, str(e)[:200])
+            continue
+
+        why = _wbai_err_of(first)
+        if why:
+            _wbai_cool(name, why)
+            last_err = UpstreamError(502, why)
+            try:
+                it.close()
+            except Exception:
+                pass
+            continue
+        if first is None:
+            last_err = UpstreamError(502, "上游返回空流")
+            continue
+        return name, itertools.chain([first], it)
+
+    raise last_err or UpstreamError(503, "WorkBuddy 国际版所有账号均不可用（额度或登录态）")
 
 
 def _tb_ent():
@@ -453,14 +570,7 @@ def relay(handler, openai_body):
                 name, ent = _ta_ent()
                 lines = tat.chat_stream(ent, openai_body)
             elif provider == "wbai":
-                name, ent = _wbai_ent()
-                wb_body = dict(openai_body)
-                mb = str(wb_body.get("model") or "").strip()
-                if mb.lower().startswith(WBAI_PREFIX):
-                    wb_body["model"] = mb[len(WBAI_PREFIX):]
-                if not wb_body.get("model"):
-                    wb_body["model"] = "auto"
-                lines = wai.chat_stream(ent, wb_body, name=name)
+                name, lines = _open_wbai(openai_body)
             elif provider == "officeace":
                 name, ent = _oa_ent()
                 lines = oac.chat_stream(ent, openai_body)
