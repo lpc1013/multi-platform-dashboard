@@ -2197,6 +2197,12 @@ function renderProxyStatus(I){
     if(idle){ stCls = "idle"; stTxt = "未配置"; }
     else if(p.error){ stCls = "bad"; stTxt = "异常"; }
     const st = `<span class="st ${stCls}">${stTxt}</span>`;
+    // 账号池行（2026-10-19 池化）：N 个号 + 冷却数；无池数据回退单账号名
+    const pool = p.pool || null;
+    const coolN = pool ? Object.keys(pool.cool || {}).length : 0;
+    const acctVal = (pool && pool.n)
+      ? `${pool.n} 个号` + (coolN ? ` · <span style="color:#c0392b">${coolN} 冷却中</span>` : "")
+      : (p.account || "—");
     // 默认模型行恒显（缺失显示 —）：五张卡行结构完全一致，高度才对得齐
     const dm = `<div class="urow"><span class="uk">默认模型</span><span class="uv">${p.default_model || "—"}</span></div>`;
     const note = idle
@@ -2205,7 +2211,7 @@ function renderProxyStatus(I){
     const hint = idle ? "🔌 点击查看接入方式" : "🔌 点击查看接入信息 →";
     return `<div class="upcard clickable" data-pid="${p.id}" style="border-top:3px solid ${clr}">
       <div class="uhead"><span class="dot2" style="background:${clr}"></span>${p.label || p.id}${st}</div>
-      <div class="urow"><span class="uk">账号</span><span class="uv">${p.account || "—"}</span></div>
+      <div class="urow"><span class="uk">账号池</span><span class="uv">${acctVal}</span></div>
       <div class="urow keep"><span class="uk">可用模型</span><span class="uv">${(p.models||[]).length} 个</span></div>
       ${dm}${note}
       <div class="uhint">${hint}</div>
@@ -2275,7 +2281,8 @@ function _fillModelSelect(keep){
     if(kw) ms = ms.filter(m=>m.toLowerCase().includes(kw));
     if(!ms.length) continue;
     if(!firstAvail) firstAvail = p.default_model && ms.includes(p.default_model) ? p.default_model : ms[0];
-    const tag = p.error ? "（不可用：登录后可测）" : "";
+    const tag = p.error ? "（不可用：登录后可测）"
+      : (p.id === "workbuddy_intl" ? "（免费额度优先 · auto 链兜底）" : "");
     const clr = PLAT_CLR[p.id] || "";    // 分组名用上游色
     const tint = PLAT_TINT[p.id] || "";  // 模型条目背景用上游浅底色
     html += `<optgroup label="${p.label}${tag}"` +
@@ -2300,9 +2307,20 @@ function _apiMetaRefresh(filtered){
   const clr = PLAT_CLR[pid] || "";
   const lbl = p.label || pid;
   const dot = clr ? `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${clr};margin-right:5px;vertical-align:2px"></span>` : "";
+  // 账号池概况 + 免费额度策略（2026-10-19 池化后用户要知道「实际在用哪个」）
+  const pool = p.pool || null;
+  const coolN = pool ? Object.keys(pool.cool || {}).length : 0;
+  const poolTxt = (pool && pool.n)
+    ? ` · 池 ${pool.n} 号` + (coolN ? `（${coolN} 冷却中）` : "") : "";
+  let chainTxt = "";
+  if(pid === "workbuddy_intl" && (m === "wb:auto" || !m)){
+    const chain = p.auto_chain || [];
+    if(chain.length) chainTxt = `<div style="font-size:var(--fs-cap);color:#7a7873;margin-top:2px">auto 链（先吃每日免费额度，再动可累计积分）：${chain.join(" → ")}</div>`;
+  }
+  const q = (p.quota || {})[p.account || ""];
+  const qTxt = q ? ` · ${p.account}（${q}）` : "";
   $("#apiMeta").innerHTML = m
-    ? `当前模型 <b>${m}</b> → 走 ${dot}<b>${lbl}</b>` +
-      (p.account ? ` · 账号 ${p.account}` : "") + cnt
+    ? `当前模型 <b>${m}</b> → 走 ${dot}<b>${lbl}</b>${poolTxt}${qTxt}${cnt}${chainTxt}`
     : "";
 }
 async function openApi(prefillPid){

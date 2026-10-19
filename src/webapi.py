@@ -390,6 +390,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         out["models"] = ca["models"]
         out["account"] = ca["account"]
         out["error"] = ca["error"]
+
+        # 统一账号池概况：每个上游的账号数/冷却中（2026-10-19 池化后前端要能看见）
+        _POOL_ID = {"workbuddy_intl": "wbai"}     # providers id → 池键
+        for p in (ca, ta, oa, wb, tb):
+            try:
+                st = ox._pool_status(_POOL_ID.get(p["id"], p["id"]))
+                p["pool"] = {"n": st["n"], "cool": st["cool"]}
+            except Exception:
+                p["pool"] = {"n": 0, "cool": {}}
+        # wb 补充：每账号额度健康度（0=还有免费包 1=仅积分 2=无）+ auto 链顺序
+        wb["auto_chain"] = ["wb:" + m for m in ox.WBAI_AUTO_CHAIN] + ["wb:default-model"]
+        try:
+            wb["quota"] = {}
+            for n, e in ox.wai.load_accounts().items():
+                r = ox._wbai_quota_rank(n, e)
+                wb["quota"][n] = ("免费包" if r == 0 else "仅积分" if r == 1 else "无额度")
+        except Exception:
+            pass
+
         out["providers"] = [ca, ta, oa, wb, tb]
         self._send(200, out)
 

@@ -236,6 +236,21 @@ def _pool_spec(provider):
             lambda e: e.get("expires_at"), "WorkBuddy 国际版")
 
 
+def _pool_status(provider):
+    """池概况（/api/proxy_info 前端展示用）：账号名单 + 冷却剩余秒。只读不打上游。"""
+    load, ok, exp, label = _pool_spec(provider)
+    try:
+        accs = load() or {}
+    except Exception:
+        accs = {}
+    now = time.time()
+    with _POOL_LOCK:
+        cool = {k: int(v - now) for k, v in
+                (_POOL_COOL.get(provider) or {}).items() if v > now}
+    names = sorted(accs.keys()) if isinstance(accs, dict) else []
+    return {"n": len(names), "names": names, "cool": cool}
+
+
 def _pool_ents(provider):
     """该平台可用账号，未冷却在前、有效期新→旧。全部不可用时报 503。"""
     load, ok, exp, label = _pool_spec(provider)
