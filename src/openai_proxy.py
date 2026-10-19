@@ -36,6 +36,7 @@ import platforms.codearts as cap
 import platforms.teleagent as tat
 import platforms.officeace as oac
 import platforms.workbuddy_ai as wai
+import platforms.tabbit as tbt
 
 SNAP = "https://snap-access.cn-north-4.myhuaweicloud.com"
 OPENGW = "https://opengw.developer.huaweicloud.com"
@@ -141,11 +142,19 @@ TA_MODELS = set(tat.CHAT_MODELS)
 # 用命名空间前缀隔离（buddy-proxy 同思路），客户端改前缀即切上游。
 WBAI_PREFIX = "wb:"
 
+# ── Tabbit 上游（web.tabbit.com / web.tabbit.ai，2026-10-19 逆向打通）──────────────
+# 路由规则：`tb:` 前缀 → Tabbit（如 tb:Default / tb:GPT-5.6-Sol）。
+# Tabbit 模型名与 CodeArts/OfficeACE/WBAI 均有交集（GLM/Kimi/DeepSeek 系），
+# 同样用命名空间前缀隔离；免费周额计量模型签到/每日额度归 Tabbit 账号。
+TB_PREFIX = "tb:"
+
 
 def route_of(model):
     m = str(model or "").strip()
     if m.lower().startswith(WBAI_PREFIX):
         return "wbai"
+    if m.lower().startswith(TB_PREFIX):
+        return "tabbit"
     return "teleagent" if m.lower() in TA_MODELS else "codearts"
 
 
@@ -166,6 +175,27 @@ def _wbai_ent():
                                      "（expires_at=%s），请打开客户端重新登录或重新导入"
                                 % (ent.get("expires_at") or "")[:19])
         return name, ent
+    return name, ent
+
+
+def _tb_ent():
+    """取 Tabbit 账号（多账号选 JWT exp 最晚者）。只判断不刷新——
+    cookie 登录态无刷新令牌，过期只能重新登录/导入。"""
+    import datetime
+    accs = tbt.load_accounts()
+    if not accs:
+        raise UpstreamError(503, "Tabbit 账号不存在，请先在看板「从本地客户端导入」"
+                                 "（需本机装有 Tabbit 浏览器并已登录网页版）")
+    def exp_of(item):
+        return (tbt.token_exp(item[1]) or 0)
+    name, ent = max(accs.items(), key=exp_of)
+    exp = exp_of((name, ent))
+    if exp and exp < time.time():
+        raise UpstreamError(503, "Tabbit 登录态已于 %s 过期（JWT ~7 天）。"
+                                 "请打开 Tabbit 浏览器重新登录网页版，再看板「从本地客户端导入」"
+                            % datetime.datetime.fromtimestamp(exp).strftime("%Y-%m-%d %H:%M"))
+    if not tbt._cookie_of(ent):
+        raise UpstreamError(503, "Tabbit 凭据不完整（缺 cookie），请重新导入")
     return name, ent
 
 
@@ -434,6 +464,13 @@ def relay(handler, openai_body):
             elif provider == "officeace":
                 name, ent = _oa_ent()
                 lines = oac.chat_stream(ent, openai_body)
+            elif provider == "tabbit":
+                name, ent = _tb_ent()
+                tb_body = dict(openai_body)
+                mb = str(tb_body.get("model") or "").strip()
+                if mb.lower().startswith(TB_PREFIX):
+                    tb_body["model"] = mb[len(TB_PREFIX):]
+                lines = tbt.chat_stream(ent, tb_body)
             else:
                 name, ent = _load_ent()
                 lines = _chat_stream(ent, openai_body)

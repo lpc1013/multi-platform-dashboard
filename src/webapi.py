@@ -278,6 +278,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                      for m in wmodels if m.get("id")]
         except Exception:
             pass    # 国际版不可用不阻塞其余模型列出
+        try:
+            # Tabbit：tb: 前缀命名空间（web.tabbit.com / web.tabbit.ai）
+            name, tent = ox._tb_ent()
+            data += [{"id": "tb:" + m, "object": "model", "owned_by": "tabbit"}
+                     for m in ox.tbt.models(tent)]
+        except Exception:
+            pass    # Tabbit 不可用不阻塞其余模型列出
         self._send(200, {"object": "list", "data": data})
 
     def _r_api_proxy_usage(self):
@@ -368,12 +375,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             wb["error"] = getattr(e, "message", None) or str(e)[:160]
 
+        # 上游五：Tabbit（web.tabbit.com / web.tabbit.ai，tb: 前缀路由）
+        tb = {"id": "tabbit", "label": "Tabbit（tb: 前缀）",
+              "default_model": "tb:Default", "models": [], "account": None, "error": ""}
+        try:
+            tbn, tent = ox._tb_ent()
+            tb["account"] = tbn
+            tb["models"] = ["tb:" + m for m in ox.tbt.models(tent)]
+        except Exception as e:
+            tb["error"] = getattr(e, "message", None) or str(e)[:160]
+
         out["benefit_models"] = ca["benefit"]     # 旧字段保留（向后兼容）
         out["builtin_models"] = ca["builtin"]
         out["models"] = ca["models"]
         out["account"] = ca["account"]
         out["error"] = ca["error"]
-        out["providers"] = [ca, ta, oa, wb]
+        out["providers"] = [ca, ta, oa, wb, tb]
         self._send(200, out)
 
     def _r_api_progress(self):
@@ -655,6 +672,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                   "device_id": (body.get("device_id") or "").strip()}, name)
                 _invalidate_state()
                 self._send(200, {"ok": True, "msg": "已保存 %s" % use, "name": use})
+        elif platform == "tabbit":
+            cookie = (body.get("cookie") or "").strip()
+            if not cookie:
+                self._send(200, {"ok": False, "msg": "Tabbit Cookie 不能为空"})
+            else:
+                from platforms import tabbit as tbt
+                if not tbt.jwt_payload(cookie):
+                    self._send(200, {"ok": False,
+                                     "msg": "Cookie 中未找到 JWT 登录态，"
+                                           "请粘贴 Tabbit 网页版（web.tabbit.com / web.tabbit.ai）登录后的完整 Cookie"})
+                else:
+                    base = (tbt.BASE_INTL if (body.get("region") or "").strip() == "intl"
+                            else tbt.BASE_DOM)
+                    rec = {"cookie": cookie, "base": base}
+                    # 稳定身份回填（同 import_local 路径）：JWT sub 进 user_id，
+                    # 否则身份退化为整串 cookie，换登录态再粘一次就重复建卡
+                    ensure_identity("tabbit", rec)
+                    use = _save_cred("tabbit", rec, name)
+                    _invalidate_state()
+                    self._send(200, {"ok": True, "msg": "已保存 %s" % use, "name": use})
         else:
             self._send(200, {"ok": False, "msg": "不支持的平台 %s" % platform})
 

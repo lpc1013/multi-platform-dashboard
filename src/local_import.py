@@ -977,6 +977,115 @@ def read_teleagent():
             % "、".join(accs.keys()), accs)
 
 
+# ────────────────────────── Tabbit ──────────────────────────
+# Chromium 系 AI 浏览器（Lumina Lab）；登录态 = web.tabbit.com / web.tabbit.ai 的
+# HttpOnly JWT cookie（~7 天）。cookie 库在新版 Chromium 路径 Default/Network/Cookies。
+TABBIT_DIRS = [
+    os.path.join(os.environ.get("LOCALAPPDATA") or os.path.join(HOME, "AppData", "Local"),
+                 "Tabbit Browser", "User Data"),
+    os.path.join(os.environ.get("LOCALAPPDATA") or os.path.join(HOME, "AppData", "Local"),
+                 "Tabbit", "Tabbit Browser", "User Data"),
+    os.path.join(APPDATA, "Tabbit Browser", "User Data"),
+]
+
+
+def _tabbit_cookie_dbs(udir):
+    """候选 Cookies 库：主 profile（Default）+ 根级 + 各 partition。"""
+    out = []
+    for p in (os.path.join(udir, "Default", "Network", "Cookies"),
+              os.path.join(udir, "Default", "Cookies"),
+              os.path.join(udir, "Network", "Cookies")):
+        if os.path.exists(p):
+            out.append(p)
+    pdir = os.path.join(udir, "Partitions")
+    if os.path.isdir(pdir):
+        for nm in sorted(os.listdir(pdir)):
+            for sub in (os.path.join(pdir, nm, "Network", "Cookies"),
+                        os.path.join(pdir, nm, "Default", "Network", "Cookies")):
+                if os.path.exists(sub):
+                    out.append(sub)
+    return out
+
+
+def read_tabbit():
+    """从本机 Tabbit 浏览器解密登录态（国内 web.tabbit.com / 国际 web.tabbit.ai）。
+
+    cookie 库：<User Data>/{Default,}/Network/Cookies（v10 + DPAPI-AES-GCM，
+    解密后前 32 字节 host 绑定摘要由 _chromium_cookie_value 剥除）。
+    只读解密，绝不写入客户端目录。
+    返回 (ok, msg, accounts)；accounts = {名字: {"cookie", "base"}}
+    """
+    import sqlite3
+    import tempfile
+    from platforms import tabbit as tb
+
+    udir = None
+    for d in TABBIT_DIRS:
+        if os.path.isfile(os.path.join(d, "Local State")):
+            udir = d
+            break
+    if not udir:
+        return False, ("未找到 Tabbit 浏览器数据（已查 %s）。"
+                       "请确认已安装 Tabbit 浏览器并在网页版登录过账号。"
+                       % "、".join(p.replace(HOME, "~") for p in TABBIT_DIRS)), {}
+    try:
+        key = _chromium_key(udir)
+    except Exception as e:
+        return False, "读取 Tabbit 加密密钥失败：%s" % str(e)[:100], {}
+
+    groups = {}          # base -> {cookie_name: value}（同名先到先得，Default 优先）
+    locked = 0
+    for ck in _tabbit_cookie_dbs(udir):
+        try:
+            blob = open(ck, "rb").read()          # Python 共享读模式
+        except Exception:
+            locked += 1
+            continue
+        tmp = os.path.join(tempfile.gettempdir(), "_tb_ck_%d.db" % (abs(hash(ck)) % 10 ** 8))
+        try:
+            with open(tmp, "wb") as fh:
+                fh.write(blob)
+            con = sqlite3.connect(tmp)
+            rows = con.execute(
+                "SELECT host_key, name, encrypted_value FROM cookies "
+                "WHERE host_key LIKE '%tabbit%'").fetchall()
+            con.close()
+        except Exception:
+            continue
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        for host, name, ev in rows:
+            if not name or not ev:
+                continue
+            base = tb.BASE_INTL if "tabbit.ai" in host else tb.BASE_DOM
+            try:
+                val = _chromium_cookie_value(key, ev)
+            except Exception:
+                continue
+            if not val:
+                continue
+            groups.setdefault(base, {}).setdefault(name, val)
+
+    accs = {}
+    for base, cks in groups.items():
+        cookie = "; ".join("%s=%s" % (n, v) for n, v in cks.items())
+        if not tb.jwt_payload(cookie):
+            continue                       # 没有 JWT = 未登录，跳过
+        tag = "国际版" if base == tb.BASE_INTL else "国内版"
+        accs["Tabbit·" + tag] = {"cookie": cookie, "base": base}
+    if not accs:
+        extra = ("（%d 个 cookie 文件被浏览器独占未能读取 —— 完全退出 Tabbit 后重试）"
+                 % locked) if locked else ""
+        return False, "未从 Tabbit 浏览器解出登录态，请先在网页版登录。" + extra, {}
+    msg = "已从本机 Tabbit 浏览器解密登录态：%s（只读，未改动客户端）" % "、".join(accs.keys())
+    if locked:
+        msg += "（另有 %d 个 cookie 文件被占用中，未纳入）" % locked
+    return True, msg, accs
+
+
 # ────────────────────────── 统一入口 ──────────────────────────
 def read_workbuddy_ai():
     """从本机 WorkBuddy AI（国际版）客户端解密登录态。
@@ -993,7 +1102,7 @@ READERS = {"minimax": read_minimax, "baidu_dumate": read_dumate,
            "lingxi": read_lingxi, "trae": read_trae, "qoder": read_qoder,
            "zcode": read_zcode, "officeace": read_officeace,
            "codearts": read_codearts, "teleagent": read_teleagent,
-           "workbuddy_ai": read_workbuddy_ai}
+           "workbuddy_ai": read_workbuddy_ai, "tabbit": read_tabbit}
 
 
 def read_local(platform):

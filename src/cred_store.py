@@ -59,9 +59,9 @@ __all__ = [
     "cred_store_set", "cred_store_remove",
     "ident_of", "wb_match", "dedupe_store", "name_tail",
     "alloc_account_name", "save_cred",
-    "dumate_stable_uid", "lingxi_stable_uid", "ensure_identity",
+    "dumate_stable_uid", "lingxi_stable_uid", "tabbit_stable_uid",
+    "ensure_identity",
 ]
-
 # ════════════════════════════════════════════════════════════════════
 # 路径与平台元信息
 # ════════════════════════════════════════════════════════════════════
@@ -77,6 +77,7 @@ OFFICEACE_ACCOUNTS_FILE = data_dir.path("officeace_accounts.json")
 CODEARTS_ACCOUNTS_FILE  = data_dir.path("codearts_accounts.json")
 TELEAGENT_ACCOUNTS_FILE = data_dir.path("teleagent_accounts.json")
 WORKBUDDY_AI_ACCOUNTS_FILE = data_dir.path("workbuddy_ai_accounts.json")
+TABBIT_ACCOUNTS_FILE = data_dir.path("tabbit_accounts.json")
 
 # 各平台的凭据文件（供「添加 / 删除 / 本地导入」统一寻址）
 CRED_FILES = {
@@ -90,6 +91,7 @@ CRED_FILES = {
     "codearts": CODEARTS_ACCOUNTS_FILE,
     "teleagent": TELEAGENT_ACCOUNTS_FILE,
     "workbuddy_ai": WORKBUDDY_AI_ACCOUNTS_FILE,
+    "tabbit": TABBIT_ACCOUNTS_FILE,
 }
 
 # 各平台「身份指纹」字段（按优先级）：同一个指纹 = 同一个账号，只是显示名/令牌可能变了
@@ -122,6 +124,9 @@ IDENT_FIELDS = {
     "teleagent": ("user_id", "token"),
     # 国际版：user_id=Keycloak sub（UUID 主键稳定）；token 会经 refresh 轮换
     "workbuddy_ai": ("user_id", "token"),
+    # ⚠ user_id=JWT sub（Tabbit 账号主键，换 cookie 不变）——cookie 串本身
+    #   每次登录都变，绝不能当指纹（重蹈 dumate/lingxi 覆辙）
+    "tabbit": ("user_id", "phone", "cookie"),
 }
 
 # 「粘贴添加」时若用户没填备注名，用这个前缀 + 手机号/ID 尾号 自动起名，
@@ -130,7 +135,7 @@ DEFAULT_LABEL = {
     "minimax": "MiniMax", "baidu_dumate": "DuMate", "lingxi": "灵犀",
     "trae": "Trae", "qoder": "Qoder", "zcode": "ZCode",
     "officeace": "OfficeACE", "codearts": "CodeArts", "teleagent": "TeleAgent",
-    "workbuddy_ai": "WB国际版",
+    "workbuddy_ai": "WB国际版", "tabbit": "Tabbit",
 }
 
 
@@ -344,6 +349,26 @@ def lingxi_stable_uid(wps_sid):
     return s[-10:] if len(s) >= 16 else ""
 
 
+def tabbit_stable_uid(cookie_str):
+    """Tabbit 身份 = cookie 里 JWT 的 sub（账号主键，换 cookie 不变）。
+    与 platforms/tabbit.py::stable_uid 同算法；此处独立实现避免
+    cred_store → platforms 的循环依赖。"""
+    import base64 as _b64
+    import json as _json
+    import re as _re
+    for m in _re.finditer(r"[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+                          str(cookie_str or "")):
+        try:
+            seg = m.group(0).split(".")[1]
+            seg += "=" * (-len(seg) % 4)
+            j = _json.loads(_b64.urlsafe_b64decode(seg))
+        except Exception:
+            continue
+        if isinstance(j, dict) and ("exp" in j or "sub" in j):
+            return str(j.get("sub") or j.get("userId") or j.get("uid") or "").strip()
+    return ""
+
+
 def ensure_identity(pid, rec):
     """把稳定身份回填进 rec（幂等，就地修改并返回）。
 
@@ -362,6 +387,11 @@ def ensure_identity(pid, rec):
     elif pid == "lingxi":
         if not str(rec.get("user_id") or "").strip():
             uid = lingxi_stable_uid(rec.get("wps_sid"))
+            if uid:
+                rec["user_id"] = uid
+    elif pid == "tabbit":
+        if not str(rec.get("user_id") or "").strip():
+            uid = tabbit_stable_uid(rec.get("cookie"))
             if uid:
                 rec["user_id"] = uid
     return rec

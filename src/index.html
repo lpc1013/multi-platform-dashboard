@@ -180,6 +180,7 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .ava.g10{background:linear-gradient(135deg,#0369a1,#38bdf8);box-shadow:0 3px 9px rgba(3,105,161,.24)}
 .ava.g11{background:linear-gradient(135deg,#be185d,#f472b6);box-shadow:0 3px 9px rgba(190,24,93,.24)}
 .ava.g12{background:linear-gradient(135deg,#4f46e5,#818cf8);box-shadow:0 3px 9px rgba(79,70,229,.24)}
+.ava.g13{background:linear-gradient(135deg,#f59e0b,#fbbf24);box-shadow:0 3px 9px rgba(245,158,11,.24)}
 
 /* 弹窗内的分组标签行 */
 .tabs .tabsep{display:flex;align-items:center;gap:8px;width:100%;font-size:var(--fs-cap);
@@ -672,6 +673,7 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
       <button class="tab on" data-tab="workbuddy">WorkBuddy（短信）</button>
       <button class="tab" data-tab="minimax">MiniMax（Token）</button>
       <button class="tab" data-tab="baidu_dumate">DuMate（Cookie）</button>
+      <button class="tab" data-tab="tabbit">Tabbit（Cookie）</button>
       <div class="tabsep">🛠 编程 / 开发</div>
       <button class="tab" data-tab="trae">Trae（积分）</button>
       <button class="tab" data-tab="qoder">Qoder CN（Credits）</button>
@@ -1057,6 +1059,39 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
         打开客户端即可静默续命——token 过期前重新登录一次客户端，看板刷新即拿到新票。</div>
     </div>
 
+    <!-- Tabbit：Chromium AI 浏览器，网页版 Cookie 登录态 -->
+    <div class="tabpane" data-pane="tabbit" style="display:none">
+      <div class="field">
+        <label>备注名（可选，留空按 国内版/国际版 命名）</label>
+        <input id="tbName" autocomplete="off" placeholder="如 Tabbit·主号">
+      </div>
+      <div class="field">
+        <label>区域（决定走哪个域名）</label>
+        <select id="tbRegion" style="width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 13px;background:#fff">
+          <option value="dom">国内版（web.tabbit.com）</option>
+          <option value="intl">国际版（web.tabbit.ai）</option>
+        </select>
+      </div>
+      <button class="btn-main sm" id="tbImport"
+        style="background:linear-gradient(135deg,#f59e0b,#fbbf24);box-shadow:0 4px 14px rgba(245,158,11,.28)">
+        📱 从本地浏览器导入（推荐）</button>
+      <div class="hint-sm">解密本机 <b>Tabbit 浏览器</b>已登录网页版的 Cookie
+        （含 JWT 登录态，约 <b>7 天</b>有效；Chromium cookie 库 DPAPI+AES-GCM，看板<b>只读</b>，绝不写入）。<br>
+        ⚠ 浏览器运行时 cookie 库会被独占导致读不全——导入失败请<b>完全退出 Tabbit</b>（含托盘图标）后重试；
+        国内版与国际版是两套域名，可分别导入成两个账号。</div>
+
+      <hr style="border:0;border-top:1px dashed var(--line);margin:16px 0">
+      <div class="field">
+        <label>备用：手动粘贴 Cookie（浏览器 F12 → 应用/存储 → Cookie → web.tabbit.com，整条复制）</label>
+        <textarea id="tbCookie" rows="4" placeholder="name=value; name2=value2; …（须含 JWT 登录态）"></textarea>
+      </div>
+      <button class="btn-main sm" id="tbSave"
+        style="background:linear-gradient(135deg,#d97706,#f59e0b);box-shadow:0 4px 14px rgba(217,119,6,.25)">
+        💾 保存 Cookie</button>
+      <div class="hint-sm">保存后即可在反代里调用：模型名加 <code>tb:</code> 前缀
+        （如 <code>tb:Default</code>，模型目录见「🔌 API 接入」弹窗）；每日签到在账号卡片上一键完成。</div>
+    </div>
+
     </div><!-- /.tabpanes -->
 
     <div class="addmsg" id="addMsg"></div>
@@ -1113,11 +1148,14 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 
       <div class="hint-sm" style="margin:6px 0 10px">
         反代把上游统一暴露为本机 OpenAI API：<b>CodeArts Agent</b>（华为免费额度模型）、
-        <b>TeleAgent</b>（星辰）与 <b>OfficeACE</b>（华为云果办）——
-        <b>模型名即路由</b>：<code>chat-*</code> / <code>deepseek-v3</code> 等走星辰；
+        <b>TeleAgent</b>（星辰）、<b>OfficeACE</b>（华为云果办）、<b>WorkBuddy 国际版</b>与
+        <b>Tabbit</b>（浏览器免费额度）——<b>模型名即路由</b>：
+        <code>chat-*</code> / <code>deepseek-v3</code> 等走星辰；
         <code>GLM-5.2</code> 等内置模型与福利模型（<code>deepseek-v4.1-flash</code> 等 5 个交集）走 CodeArts
         （福利模型吃每日免费额度，内置模型计积分）；
-        <code>glm-5.3</code> / <code>kimi-k2.6</code> 等其余走 OfficeACE。服务只监听 <b>127.0.0.1</b>
+        <code>glm-5.3</code> / <code>kimi-k2.6</code> 等其余走 OfficeACE；
+        <code>wb:</code> 前缀（如 <code>wb:auto</code>）走 WorkBuddy 国际版；
+        <code>tb:</code> 前缀（如 <code>tb:Default</code>）走 Tabbit。服务只监听 <b>127.0.0.1</b>
         （不出本机），默认无需 API Key；限流 <span id="apiRate"></span>。用量看底部「今日 token 消耗」卡片。</div>
     </div>
   </div>
@@ -1135,23 +1173,24 @@ const TASK_META = {
 const PLAT_CLR = { workbuddy:"#635bff", minimax:"#0ea5e9", baidu_dumate:"#0d9f6e",
                    lingxi:"#e8574a", trae:"#3355e8", qoder:"#7c3aed",
                    zcode:"#0f766e", officeace:"#c2410c", codearts:"#0369a1",
-                   teleagent:"#be185d", workbuddy_ai:"#4f46e5" };
+                   teleagent:"#be185d", workbuddy_ai:"#4f46e5", tabbit:"#f59e0b" };
 const PLAT_GRAD = { workbuddy:"", minimax:"g2", baidu_dumate:"g3", lingxi:"g5",
                     trae:"g6", qoder:"g7", zcode:"g8", officeace:"g9", codearts:"g10",
-                    teleagent:"g11", workbuddy_ai:"g12" };
+                    teleagent:"g11", workbuddy_ai:"g12", tabbit:"g13" };
 /* 反代模型下拉的条目底色（PLAT_CLR 的浅色版，只用于背景标记） */
 const PLAT_TINT = { codearts:"#d9ecf9", teleagent:"#f9dfea", officeace:"#fbe6d8",
-                    workbuddy_intl:"#e0e7ff" };
+                    workbuddy_intl:"#e0e7ff", tabbit:"#fef3c7" };
 /* 「从本地客户端导入」失败提示里用到的桌面端名称 */
 const PLAT_LOCAL_NAME = { workbuddy:"WorkBuddy", minimax:"MiniMax Code", baidu_dumate:"百度搭子 DuMate",
                           lingxi:"WPS 灵犀", trae:"Trae / TRAE SOLO CN", qoder:"Qoder CN",
                           zcode:"ZCode（z.ai）", officeace:"OfficeACE", codearts:"CodeArts Agent",
-                          teleagent:"电信 TeleAgent", workbuddy_ai:"WorkBuddy AI（国际版）" };
+                          teleagent:"电信 TeleAgent", workbuddy_ai:"WorkBuddy AI（国际版）",
+                          tabbit:"Tabbit 浏览器" };
 
 /* ── 平台展示顺序：原「编程/开发 · AI 助手 · 办公」分类已去掉（平铺不分区），
    只保留稳定排序；未登记的新平台自动排在最后 ── */
 const PLATFORM_ORDER = ["trae","qoder","zcode","codearts","teleagent",
-                        "workbuddy","minimax","baidu_dumate","lingxi","officeace"];
+                        "workbuddy","minimax","baidu_dumate","lingxi","officeace","tabbit"];
 function orderedPids(plats){
   const ids = Object.keys(plats).filter(pid=>plats[pid].accounts && plats[pid].accounts.length);
   const head = PLATFORM_ORDER.filter(pid=>ids.includes(pid));
@@ -1568,6 +1607,14 @@ function platTags(a, pid){
     if(acts.length) t.push(`<span class="tag t-green">今日已领：${esc(acts.join("、"))}</span>`);
     const exp=ex.expired===true;
     if(ex.expires_at) t.push(`<span class="tag ${exp?'t-red':'t-gray'}">${exp?'⛔ 凭证已过期':'⏳ 凭证有效'}</span>`);
+  } else if(pid==="tabbit"){
+    const ex=a.extra||{};
+    if(ex.phone) t.push(`<span class="tag t-gray">📱 ${esc(ex.phone)}</span>`);
+    t.push(`<span class="tag t-gray">🌏 ${ex.base && String(ex.base).includes("tabbit.ai") ? "国际版" : "国内版"}</span>`);
+    if(ex.streak_days!=null) t.push(`<span class="tag t-gray">🔥 连签 ${esc(ex.streak_days)} 天</span>`);
+    if(ex.total_signed_days!=null) t.push(`<span class="tag t-gray">📅 累计 ${esc(ex.total_signed_days)} 天</span>`);
+    const d=ex.token_remain_days;
+    if(d!=null) t.push(`<span class="tag ${d<2?'t-red':'t-gray'}">⏳ 登录态剩 ${esc(d)} 天</span>`);
   }
   return t;
 }
@@ -1787,6 +1834,17 @@ function detailHTML(a, pid){
     if(ex.today_reward) kv.push(`<div class="kv"><span>每日登录奖励</span><b>${esc(ex.today_reward)} 积分</b></div>`);
     if(ex.streak_days!=null) kv.push(`<div class="kv"><span>连签天数</span><b>${esc(ex.streak_days)} 天</b></div>`);
     if(ex.expires_at) kv.push(`<div class="kv"><span>STS 凭证到期</span><b style="color:${ex.expired?'var(--red)':'var(--ink)'}">${esc(String(ex.expires_at).replace("T"," ").slice(0,19))}Z</b></div>`);
+    if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
+  } else if(pid==="tabbit"){
+    const ex=a.extra||{};
+    kv.push(`<div class="kv"><span>账号类型</span><b>Tabbit 浏览器（${ex.base && String(ex.base).includes("tabbit.ai") ? "国际版 web.tabbit.ai" : "国内版 web.tabbit.com"}）</b></div>`);
+    if(ex.phone) kv.push(`<div class="kv"><span>手机号</span><b>${esc(ex.phone)}</b></div>`);
+    if(ex.platform_account) kv.push(`<div class="kv"><span>平台账号</span><b>${esc(ex.platform_account)}</b></div>`);
+    kv.push(`<div class="kv"><span>今日签到</span><b style="color:${a.signed_today?"var(--green)":"var(--orange)"}">${a.signed_today?"已完成":"未完成"}</b></div>`);
+    if(ex.streak_days!=null) kv.push(`<div class="kv"><span>连续签到</span><b>${esc(ex.streak_days)} 天</b></div>`);
+    if(ex.total_signed_days!=null) kv.push(`<div class="kv"><span>累计签到</span><b>${esc(ex.total_signed_days)} 天</b></div>`);
+    if(ex.token_expire) kv.push(`<div class="kv"><span>登录态到期</span><b style="color:${(ex.token_remain_days!=null&&ex.token_remain_days<2)?'var(--red)':'var(--ink)'}">${esc(ex.token_expire)}${ex.token_remain_days!=null?"（剩 "+esc(ex.token_remain_days)+" 天）":""}</b></div>`);
+    kv.push(`<div class="kv"><span>反代调用</span><b>模型名加 <code>tb:</code> 前缀</b></div>`);
     if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
   }
 
@@ -2536,6 +2594,25 @@ $("#zcImport").addEventListener("click", ()=> importLocal("zcode", $("#zcName").
 $("#caImport").addEventListener("click", ()=> importLocal("codearts", $("#caName").value.trim()));
 $("#oaImport").addEventListener("click", ()=> importLocal("officeace", $("#oaName").value.trim()));
 $("#taImport").addEventListener("click", ()=> importLocal("teleagent", $("#taName").value.trim()));
+/* Tabbit：本地浏览器导入 + 手动粘贴 Cookie 两条路 */
+$("#tbImport").addEventListener("click", ()=> importLocal("tabbit", $("#tbName").value.trim()));
+$("#tbSave") && $("#tbSave").addEventListener("click", async ()=>{
+  const cookie = $("#tbCookie").value.trim();
+  if(!cookie){ addMsg("请先粘贴 Cookie（须含 JWT 登录态）", false); return; }
+  if(!BACKEND_OK){ addMsg("未连接本地后端，无法保存", false); return; }
+  addMsg("正在保存…", true);
+  let j;
+  try{
+    j = await apiPost("/api/account/add", {platform:"tabbit", cookie,
+      region: $("#tbRegion").value, name: $("#tbName").value.trim()});
+  }catch(e){ j = {ok:false, msg:"保存失败："+(e.message||e)}; }
+  if(j.ok){
+    addMsg("✅ "+j.msg, true);
+    setTimeout(closeAdd, 900); await load(true, "tabbit");
+  }else{
+    addMsg("❌ "+j.msg, false);
+  }
+});
 /* OfficeACE：一键启动桌面端客户端（本地 API 未就绪时的兜底；正常点「发送验证码」也会自动拉起） */
 $("#oaLaunch") && $("#oaLaunch").addEventListener("click", async ()=>{
   if(!BACKEND_OK){ addMsg("未连接本地后端，无法启动客户端", false); return; }

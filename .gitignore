@@ -54,3 +54,5 @@ backups/
 # Token 面板运行时 dump（含工作空间/会话名等使用数据，不入库）
 src/_dump.json
 src/_dump.err
+# UI 验证截图（人工检查用，不入库）
+outputs/
