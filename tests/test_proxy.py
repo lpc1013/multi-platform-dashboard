@@ -242,10 +242,10 @@ class TestWbaiPool(unittest.TestCase):
     """国际版多账号池：一个号额度耗尽自动换下一个。"""
 
     def setUp(self):
-        ox._WB_COOLDOWN.clear()
+        ox._POOL_COOL.clear()
 
     def tearDown(self):
-        ox._WB_COOLDOWN.clear()
+        ox._POOL_COOL.clear()
 
     def test_orders_by_expiry_and_puts_cooldown_last(self):
         accs = {"A": {"token": "t", "expires_at": "2027-01-01 00:00"},
@@ -273,7 +273,35 @@ class TestWbaiPool(unittest.TestCase):
             name, lines = ox._open_wbai({"model": "wb:fast-model", "messages": []})
         self.assertEqual(name, "OLD")            # NEW 先试且失败 → 回落 OLD
         self.assertEqual(list(lines), [good])
-        self.assertIn("NEW", ox._WB_COOLDOWN)    # 失败号进入冷却
+        self.assertIn("NEW", ox._POOL_COOL.get("wbai", {}))    # 失败号进入冷却
+
+    def test_model_chain_explicit_and_auto(self):
+        # 显式模型：只试它本身 + 同名付费退路（上游按行限流，付费行常仍通）
+        self.assertEqual(ox._wbai_chain({}, "deepseek-v4.1-flash"),
+                         ["deepseek-v4.1-flash", "deepseek-v4.1-flash-sg"])
+        # auto/空：按用户优先级链，目录取不到时用默认链 + default-model 兜底
+        with mock.patch.object(ox.wai, "gw_models", side_effect=RuntimeError("no net")):
+            self.assertEqual(ox._wbai_chain({}, None),
+                             ox.WBAI_AUTO_CHAIN + ["default-model"])
+
+    def test_err_kind_distinguishes_account_and_model(self):
+        acct = json.dumps({"error": {"data": {"code": 14018, "msg": "Credits exhausted."}}})
+        rl = json.dumps({"error_code": 429, "error_msg": "rate limit exceeded"})
+        self.assertEqual(ox._wbai_err_kind("data: " + acct), "account")
+        self.assertEqual(ox._wbai_err_kind("data: " + rl), "model")
+        self.assertIsNone(ox._wbai_err_kind("data: " + json.dumps({"choices": []})))
+
+    def test_err_kind_gateway_native_6004(self):
+        # 2026-10-19 实测：网关原生限流 chunk 是顶层 code/msg，不是 error_code/error_msg
+        native = json.dumps({"code": 6004,
+                             "msg": "usage exceeds frequency limit, but don't worry, "
+                                    "your usage will reset at 2026-10-20 19:41:31 UTC+8, "
+                                    "alternatively, you can switch to the other models"})
+        self.assertEqual(ox._wbai_err_kind("data: " + native), "model")
+        # 模型繁忙（14003）同为行级 → 同号换模型
+        busy = json.dumps({"code": 14003, "msg": "too many requests",
+                           "displayMsg": {"zh": "模型繁忙，请换模型或稍后重试"}})
+        self.assertEqual(ox._wbai_err_kind("data: " + busy), "model")
 
     def test_all_accounts_exhausted_raises(self):
         accs = {"A": {"token": "t", "expires_at": "2027-01-01 00:00"}}

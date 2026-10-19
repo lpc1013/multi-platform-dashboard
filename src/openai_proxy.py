@@ -179,45 +179,125 @@ def _wbai_ent():
     return name, ent
 
 
-# ── 国际版多账号池：一个号额度耗尽自动换下一个 ─────────────────────
-# 上游「Credits exhausted」(code 14018) 是账号级硬限，换号即可继续。
-# 命中后该号进入冷却窗口，后续请求直接跳过，避免每次都白撞一次。
-_WB_COOLDOWN = {}
-_WB_COOL_SEC = 1800
-_WB_LOCK = threading.Lock()
+# ── 通用多账号池：所有上游平台共用 ────────────────────────────────
+# 规则：同平台账号按「未冷却优先 + 有效期新→旧」排序；每个请求先试第一个号，
+# 命中「额度耗尽 / 鉴权失效 / 429」即冷却该号（30 分钟）并自动换下一个。
+# 换号判定发生在「首个 chunk 到达之前」，不会重复输出、客户端完全无感。
+# 覆盖：codearts / officeace / teleagent / tabbit / wbai。
+_POOL_COOL = {}
+_POOL_COOL_SEC = 1800
+_POOL_LOCK = threading.Lock()
+
+_POOL_SWITCH_HINTS = ("额度", "余额", "配额", "次数已用尽", "已达上限", "不足",
+                      "quota", "exhaust", "insufficient", "credit",
+                      "limit reached", "rate limit")
 
 
-def _wbai_ents():
-    """按 expires_at 从新到旧返回账号列表；冷却中的排最后（仍作兜底尝试）。"""
-    accs = wai.load_accounts()
-    if not accs:
-        raise UpstreamError(503, "WorkBuddy 国际版账号不存在，请先在看板「网页登录」或"
-                                 "「从本地客户端导入」")
+def _exp_key(v):
+    """有效期统一成 epoch 秒（兼容 ISO 字符串 / 毫秒 / 秒）。"""
+    if isinstance(v, (int, float)):
+        return float(v) / 1000.0 if v > 1e11 else float(v)
+    s = str(v or "")
+    try:
+        import datetime
+        return datetime.datetime.strptime(s[:19], "%Y-%m-%d %H:%M").timestamp()
+    except Exception:
+        return 0.0
+
+
+def _pool_spec(provider):
+    """返回 (load, ok, exp, label)：读账号 / 是否可用 / 到期时间 / 展示名。"""
+    if provider == "codearts":
+        import server as srv
+        return (lambda: srv._read_json(srv.CRED_FILES.get("codearts"), {})
+                if srv.CRED_FILES.get("codearts") else {},
+                lambda e: bool(e.get("ak") and e.get("sk") and e.get("sts_token"))
+                          and cap.expired(e) is not True,
+                lambda e: e.get("expires_at"), "CodeArts")
+    if provider == "officeace":
+        import server as srv
+        return (lambda: srv._read_json(srv.CRED_FILES.get("officeace"), {})
+                if srv.CRED_FILES.get("officeace") else {},
+                lambda e: oac._expired(e) is not True,
+                lambda e: e.get("expires_at"), "OfficeACE")
+    if provider == "teleagent":
+        return (tat.load_accounts,
+                lambda e: (lambda t: (not t) or t > time.time())(
+                    tat._jwt_payload((e or {}).get("token") or "").get("exp") or 0),
+                lambda e: tat._jwt_payload((e or {}).get("token") or "").get("exp") or 0,
+                "TeleAgent")
+    if provider == "tabbit":
+        return (tbt.load_accounts,
+                lambda e: bool(tbt._cookie_of(e))
+                          and (tbt.token_exp(e) or 0) > time.time(),
+                lambda e: tbt.token_exp(e) or 0, "Tabbit")
+    return (wai.load_accounts,
+            lambda e: bool(e.get("token") or e.get("refresh_token")),
+            lambda e: e.get("expires_at"), "WorkBuddy 国际版")
+
+
+def _pool_ents(provider):
+    """该平台可用账号，未冷却在前、有效期新→旧。全部不可用时报 503。"""
+    load, ok, exp, label = _pool_spec(provider)
+    try:
+        accs = load() or {}
+    except Exception as e:
+        raise UpstreamError(503, "%s 账号读取失败：%s" % (label, str(e)[:80]))
+    if not isinstance(accs, dict) or not accs:
+        raise UpstreamError(503, "%s 账号不存在，请先在看板添加/导入" % label)
+
     now = time.time()
-    with _WB_LOCK:
-        cool = {k for k, v in _WB_COOLDOWN.items() if v > now}
+    with _POOL_LOCK:
+        cool = {k for k, v in (_POOL_COOL.get(provider) or {}).items() if v > now}
 
-    def key(it):
-        return str((it[1] or {}).get("expires_at") or "")
+    valid, bad = [], 0
+    for n, e in accs.items():
+        if not isinstance(e, dict):
+            continue
+        try:
+            usable = bool(ok(e))
+        except Exception:
+            usable = False
+        if usable:
+            valid.append((n, e))
+        else:
+            bad += 1
+    if not valid:
+        raise UpstreamError(503, "%s 的 %d 个账号全部不可用（已过期或凭据不完整），"
+                                 "请在看板重新登录/导入" % (label, bad or len(accs)))
 
-    ok = sorted([(n, e) for n, e in accs.items() if n not in cool], key=key, reverse=True)
-    rest = sorted([(n, e) for n, e in accs.items() if n in cool], key=key, reverse=True)
-    return ok + rest
+    key = lambda it: _exp_key(exp(it[1]))
+    fresh = sorted([it for it in valid if it[0] not in cool], key=key, reverse=True)
+    cold = sorted([it for it in valid if it[0] in cool], key=key, reverse=True)
+    return fresh + cold
 
 
-def _wbai_cool(name, why):
+def _pool_cool(provider, name, why):
     """账号冷却（额度耗尽 / 鉴权失效），窗口内优先用别的号。"""
-    with _WB_LOCK:
-        _WB_COOLDOWN[name] = time.time() + _WB_COOL_SEC
+    with _POOL_LOCK:
+        _POOL_COOL.setdefault(provider, {})[name] = time.time() + _POOL_COOL_SEC
     try:
         import server as srv
-        srv.log("[proxy:wbai] 账号 %s 冷却 %ds（%s）" % (name, _WB_COOL_SEC, why[:60]))
+        srv.log("[proxy:%s] 账号 %s 冷却 %ds（%s）"
+                % (provider, name, _POOL_COOL_SEC, str(why)[:60]))
     except Exception:
         pass
 
 
-def _wbai_err_of(line):
-    """从一条 SSE 行判断是否额度/鉴权类错误，返回原因字符串或 None。"""
+def _pool_switchable(provider, status, msg):
+    """该错误是否值得换号（账号级硬限），而不是模型/参数/并发问题。"""
+    m = str(msg or "")
+    if provider == "codearts" and "TM.00001041" in m:
+        return False                      # 并发上限：交给外层退避重试，换号无用
+    if status in (401, 403, 429):
+        return True
+    low = m.lower()
+    return any(h in low for h in _POOL_SWITCH_HINTS) or \
+        any(h in m for h in ("额度", "余额", "配额", "次数已用尽", "已达上限"))
+
+
+def _pool_err_of(line):
+    """SSE 行里是否带「可换号」错误，返回原因或 None。"""
     s = (line or "").strip()
     if not s.startswith("data:"):
         return None
@@ -237,37 +317,69 @@ def _wbai_err_of(line):
             msg = msg or str(err.get("msg") or inner.get("msg") or "")
     if not ec or str(ec) == "0":
         return None
-    if "14018" in str(ec) or "credit" in msg.lower() or "额度" in msg:
+    low = msg.lower()
+    if ("14018" in str(ec) or "credit" in low or "额度" in msg or "quota" in low
+            or "exhaust" in low or "insufficient" in low
+            or "上限" in msg or "余额" in msg):
         return "额度耗尽(%s) %s" % (ec, msg[:60])
     return None
 
 
-def _open_wbai(openai_body):
-    """按池顺序开流；首个 chunk 就是额度错误则换下一个号。
-    返回 (name, lines)。所有号都失败时抛 UpstreamError。"""
+# 兼容旧测试/调用点
+def _wbai_ents():
+    return _pool_ents("wbai")
+
+
+def _wbai_cool(name, why):
+    return _pool_cool("wbai", name, why)
+
+
+def _pool_open(provider, name, ent, body):
+    """按平台构造上游流迭代器（model 前缀在这里剥掉）。"""
+    if provider == "codearts":
+        return _chat_stream(ent, body)
+    if provider == "officeace":
+        return oac.chat_stream(ent, body)
+    if provider == "teleagent":
+        return tat.chat_stream(ent, body)
+    if provider == "tabbit":
+        b = dict(body)
+        mb = str(b.get("model") or "").strip()
+        if mb.lower().startswith(TB_PREFIX):
+            b["model"] = mb[len(TB_PREFIX):]
+        return tbt.chat_stream(ent, b)
+    # wbai
+    b = dict(body)
+    mb = str(b.get("model") or "").strip()
+    if mb.lower().startswith(WBAI_PREFIX):
+        b["model"] = mb[len(WBAI_PREFIX):]
+    if not b.get("model"):
+        b["model"] = "auto"
+    return wai.chat_stream(ent, b, name=name)
+
+
+def _open_pool(provider, openai_body):
+    """按池顺序开流：额度耗尽/鉴权失效/429 自动换下一个号。
+    返回 (name, lines)；所有号都失败时抛 UpstreamError。"""
+    if provider == "wbai":
+        return _open_wbai_pool(openai_body)
     last_err = None
-    for name, ent in _wbai_ents():
-        if not (ent.get("token") or ent.get("refresh_token")):
-            continue
-        body = dict(openai_body)
-        mb = str(body.get("model") or "").strip()
-        if mb.lower().startswith(WBAI_PREFIX):
-            body["model"] = mb[len(WBAI_PREFIX):]
-        if not body.get("model"):
-            body["model"] = "auto"
+    for name, ent in _pool_ents(provider):
         try:
-            it = wai.chat_stream(ent, body, name=name)
-        except wai.UpstreamErr as e:
-            why = "HTTP%s %s" % (e.status, str(e.message)[:60])
-            if e.status in (401, 403) or "14018" in str(e.message):
-                _wbai_cool(name, why)
-                last_err = UpstreamError(e.status, e.message)
-                continue
-            raise UpstreamError(e.status, e.message)
+            it = _pool_open(provider, name, ent, openai_body)
         except Exception as e:
-            last_err = UpstreamError(502, str(e)[:200])
+            st = getattr(e, "status", None)
+            msg = getattr(e, "message", None) or str(e)
+            if st is not None and _pool_switchable(provider, st, msg):
+                _pool_cool(provider, name, msg)
+                last_err = UpstreamError(int(st), str(msg))
+                continue
+            if isinstance(e, UpstreamError):
+                raise
+            last_err = UpstreamError(502, str(msg)[:200])
             continue
 
+        # 预读首个非空 chunk：账号级错误通常在第一帧就返回，此时还没向客户端写任何字节
         first = None
         try:
             for ln in it:
@@ -275,12 +387,18 @@ def _open_wbai(openai_body):
                     first = ln
                     break
         except Exception as e:
-            last_err = UpstreamError(502, str(e)[:200])
+            st = getattr(e, "status", None)
+            msg = getattr(e, "message", None) or str(e)
+            if st is not None and _pool_switchable(provider, st, msg):
+                _pool_cool(provider, name, msg)
+                last_err = UpstreamError(int(st), str(msg))
+                continue
+            last_err = UpstreamError(502, str(msg)[:200])
             continue
 
-        why = _wbai_err_of(first)
+        why = _pool_err_of(first)
         if why:
-            _wbai_cool(name, why)
+            _pool_cool(provider, name, why)
             last_err = UpstreamError(502, why)
             try:
                 it.close()
@@ -288,11 +406,228 @@ def _open_wbai(openai_body):
                 pass
             continue
         if first is None:
-            last_err = UpstreamError(502, "上游返回空流")
+            last_err = UpstreamError(502, "%s 上游返回空流" % provider)
             continue
         return name, itertools.chain([first], it)
 
-    raise last_err or UpstreamError(503, "WorkBuddy 国际版所有账号均不可用（额度或登录态）")
+    raise last_err or UpstreamError(503, "%s 所有账号均不可用（额度或登录态）" % provider)
+
+
+def _open_wbai(openai_body):
+    """兼容旧调用点/测试：等价于 _open_pool("wbai", body)。"""
+    return _open_pool("wbai", openai_body)
+
+
+# ── 国际版：模型优先级 + 免费额度优先 + 行级限流回退 ─────────────────
+# 经验来自 GitHub XDTrees/dsh-xdpool：
+#   · 账号池 priority 模式（先用完一个号再换下一个）
+#   · 上游按「模型行」限流：免费行被 429 时，同名付费行通常还通
+#     （deepseek-v4.1-flash → deepseek-v4.1-flash-sg）
+#   · 模型目录带倍率，0 倍率/限免的优先用
+# 用户策略（2026-10-19 定）：DeepSeek-V4.1-Flash → Hy3 → Hy4-Preview → Step-5-Preview，
+# 先吃每日免费额度，再动可累计积分。
+WBAI_AUTO_CHAIN = ["deepseek-v4.1-flash", "hy3", "hy4-preview", "step-5-preview"]
+# 免费行被限流时的同名付费退路（上游按行限流，付费行常仍可用）
+WBAI_PAID_ALIAS = {"deepseek-v4.1-flash": "deepseek-v4.1-flash-sg"}
+
+_Q_CACHE = {}          # 账号 -> (ts, rank)
+_Q_TTL = 300
+
+
+def _wbai_is_free(m):
+    """credit 形如 'x0.00' / 'x0.29' / 'x0.34 credits'；只有明确 0 才算免费
+    （空/'-' 是未知倍率，不当免费模型用）。"""
+    c = str((m or {}).get("credit") or "").strip().lower().lstrip("x")
+    if not c or c == "-":
+        return False
+    try:
+        return float(c.split()[0]) == 0.0
+    except Exception:
+        return False
+
+
+def _wbai_free_ids(ent):
+    try:
+        return {m["id"] for m in wai.gw_models(ent) if _wbai_is_free(m)}
+    except Exception:
+        return set()
+
+
+def _wbai_chain(ent, want):
+    """本次请求要依次尝试的模型列表。
+    显式模型：只试它本身 + 同名付费退路；auto/空：按用户优先级链。"""
+    if want:
+        out = [want]
+        alt = WBAI_PAID_ALIAS.get(want)
+        if alt:
+            out.append(alt)
+        return out
+    try:
+        ids = {m["id"] for m in wai.gw_models(ent)}
+    except Exception:
+        ids = set()
+    out = [m for m in WBAI_AUTO_CHAIN if (not ids) or m in ids]
+    for m in sorted(_wbai_free_ids(ent)):
+        if m not in out and m != "default-model":
+            out.append(m)
+    if (not ids) or ("default-model" in ids):
+        out.append("default-model")
+    return out or ["default-model"]
+
+
+def _wbai_quota_rank(name, ent):
+    """账号额度健康度：0=还有免费包，1=只剩可累计积分，2=都没有/查不到。
+    TTL 缓存，热路径不重复打上游。"""
+    now = time.time()
+    c = _Q_CACHE.get(name)
+    if c and now - c[0] < _Q_TTL:
+        return c[1]
+    tok = str((ent or {}).get("token") or "")
+    if not tok.startswith("eyJ"):      # 非 JWT（占位/测试凭据）不打上游
+        _Q_CACHE[name] = (now, 1)
+        return 1
+    rank = 1
+    try:
+        import requests
+        s = requests.Session()
+        s.trust_env = False
+        r = s.post(wai.BASE + wai.EP_RESOURCE, headers=wai._headers(ent.get("token") or ""),
+                   json={}, timeout=8, verify=False)
+        d = r.json()
+        accs = (((d.get("data") or {}).get("Response") or {}).get("Data") or {}).get("Accounts") or []
+        free_left = paid_left = 0.0
+        for a in accs:
+            try:
+                rem = float(a.get("CapacityRemain") or 0)
+            except Exception:
+                continue
+            nm = str(a.get("PackageName") or "").lower()
+            if "free" in nm or "subscription" in nm:
+                free_left += rem
+            else:
+                paid_left += rem
+        rank = 0 if free_left > 0 else (1 if paid_left > 0 else 2)
+    except Exception:
+        rank = 1
+    _Q_CACHE[name] = (now, rank)
+    return rank
+
+
+def _wbai_err_kind(line):
+    """区分账号级（14018 额度耗尽）与模型行级（429 限流）错误。
+    返回 'account' / 'model' / None。"""
+    s = (line or "").strip()
+    if not s.startswith("data:"):
+        return None
+    try:
+        j = json.loads(s[5:].strip())
+    except Exception:
+        return None
+    if not isinstance(j, dict):
+        return None
+    ec = j.get("error_code")
+    msg = str(j.get("error_msg") or j.get("message") or "")
+    if not ec:
+        err = j.get("error")
+        if isinstance(err, dict):
+            inner = err.get("data") if isinstance(err.get("data"), dict) else {}
+            ec = err.get("code") or inner.get("code")
+            msg = msg or str(err.get("msg") or inner.get("msg") or "")
+    if not ec:
+        # 网关原生格式：{"code":6004,"msg":"usage exceeds frequency limit..."}
+        ec = j.get("code")
+        msg = msg or str(j.get("msg") or "")
+    if not ec or str(ec) == "0":
+        return None
+    low = msg.lower()
+    if "14018" in str(ec) or "credits exhausted" in low or "额度" in msg or "余额" in msg:
+        return "account"
+    if (str(ec) in ("429", "6004", "14003") or "rate limit" in low
+            or "too many" in low or "frequency limit" in low
+            or "限流" in msg or "繁忙" in msg):
+        return "model"
+    if "credit" in low or "quota" in low or "insufficient" in low:
+        return "account"
+    return None
+
+
+def _open_wbai_pool(openai_body):
+    """国际版专用池：账号按「免费额度优先」排序，账号内按模型优先级链尝试。
+    账号级错误 → 换号；模型行级限流 → 同号换下一个模型。"""
+    want = str(openai_body.get("model") or "").strip()
+    if want.lower().startswith(WBAI_PREFIX):
+        want = want[len(WBAI_PREFIX):]
+    if want.lower() in ("", "auto"):
+        want = None
+
+    ents = _pool_ents("wbai")
+    # priority 模式：还有每日免费包的号排前面（同 rank 保持有效期序）
+    ents.sort(key=lambda it: _wbai_quota_rank(it[0], it[1]))
+
+    last_err = None
+    for name, ent in ents:
+        for model in _wbai_chain(ent, want):
+            body = dict(openai_body)
+            body["model"] = model
+            try:
+                it = wai.chat_stream(ent, body, name=name)
+            except Exception as e:
+                st = getattr(e, "status", None)
+                msg = getattr(e, "message", None) or str(e)
+                if st in (401, 403):
+                    _pool_cool("wbai", name, msg)
+                    last_err = UpstreamError(int(st), str(msg))
+                    break                      # 换号
+                if st == 429:
+                    last_err = UpstreamError(429, str(msg))
+                    continue                   # 同号换模型
+                if "14018" in str(msg):
+                    _pool_cool("wbai", name, msg)
+                    last_err = UpstreamError(int(st or 402), str(msg))
+                    break
+                last_err = UpstreamError(int(st or 502), str(msg)[:200])
+                continue
+
+            first = None
+            try:
+                for ln in it:
+                    if ln and ln.strip():
+                        first = ln
+                        break
+            except Exception as e:
+                st = getattr(e, "status", None)
+                msg = getattr(e, "message", None) or str(e)
+                last_err = UpstreamError(int(st or 502), str(msg)[:200])
+                continue
+
+            kind = _wbai_err_kind(first)
+            if kind == "account":
+                _pool_cool("wbai", name, first)
+                last_err = UpstreamError(402, first[:160])
+                try:
+                    it.close()
+                except Exception:
+                    pass
+                break                          # 账号级 → 换号
+            if kind == "model":
+                last_err = UpstreamError(429, first[:160])
+                try:
+                    it.close()
+                except Exception:
+                    pass
+                continue                       # 行级限流 → 同号换模型
+            if first is None:
+                last_err = UpstreamError(502, "上游返回空流")
+                continue
+            if want is None or model != want:
+                try:
+                    import server as srv
+                    srv.log("[proxy:wbai] auto → %s（acct=%s）" % (model, name))
+                except Exception:
+                    pass
+            return name, itertools.chain([first], it)
+
+    raise last_err or UpstreamError(503, "WorkBuddy 国际版所有账号/模型均不可用")
 
 
 def _tb_ent():
