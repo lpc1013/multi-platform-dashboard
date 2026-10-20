@@ -217,6 +217,24 @@ def _cn_config_users():
     return out
 
 
+def _local_jwt_identity():
+    """本机客户端长寿命 JWT 的身份（v2 会话令牌过期/失效时的兜底）。
+
+    只在「v2 认证存储里恰好一条会话」时调用：那条会话就是客户端当前登录，
+    而 local-runtime.auth.json 的 JWT 属于同一账号。多条会话时无法判断对应
+    关系，宁可保留匿名卡，也不把别的账号身份硬并进来。
+    """
+    try:
+        d = json.load(open(OLD_AUTH_FILE, encoding="utf-8"))
+    except Exception:
+        return None
+    auth = d.get("auth") if isinstance(d.get("auth"), dict) else None
+    jwt = clean_env_value((auth or {}).get("accessToken") or "")
+    if not jwt or not _token_alive(jwt):
+        return None
+    return fetch_user_info(jwt, "token")
+
+
 def _real_uid_from_local():
     """从本机 MiniMax 客户端配置读取 realUserID（读不到返回 ""）。
     注意顺序：cn-config 是实时更新的，local-runtime.auth.json 是旧版遗留（切换账号后
@@ -669,10 +687,20 @@ def load_accounts():
 
     # ── 0) 新版 v2 认证存储 ────────────────────────────────────────
     cn_by_uid = {u["userID"]: u for u in _cn_config_users() if u.get("userID")}
-    for rec in load_auth_store():
+    store_recs = load_auth_store()
+    store_infos = [(rec, fetch_user_info(rec["access_token"],
+                                         rec.get("auth_mode") or "bearer"))
+                   for rec in store_recs]
+    # v2 令牌寿命仅 ~1 小时；客户端没在跑时它常已过期 → 身份反查 401 → 账号被判成
+    # 匿名，用令牌尾号另立一张卡（同时又被 read_account 静默续期后查到积分，看起来
+    # 像健康的「分身」）。单条 v2 会话时用本机长寿命 JWT 反查身份，保证与凭据文件同号归并。
+    jwt_info = None
+    if len(store_infos) == 1 and store_infos[0][1] is None:
+        jwt_info = _local_jwt_identity()
+    for rec, info in store_infos:
         tok = rec["access_token"]
         mode = rec.get("auth_mode") or "bearer"
-        info = fetch_user_info(tok, mode)
+        info = info or jwt_info
         cn = cn_by_uid.get((info or {}).get("user_id", "")) or {}
         nm = ((info or {}).get("sub_name") or cn.get("subUserName")
               or (info or {}).get("name") or cn.get("userName")

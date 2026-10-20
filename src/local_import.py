@@ -755,14 +755,18 @@ def _officeace_read_sqlite():
                 continue
             if not isinstance(rec, dict):
                 continue
-            # 过期会话跳过
+            # 过期会话**照样带出来**，只打个 sts_expired 标记（2026-10-20 改）。
+            # 原来这里直接 continue：果办那个号的 STS 一过期，客户端里明明还留着
+            # 它的会话（含 refresh_token），看板却既「本地导入」不到它、续期也匹配不到它
+            # ——而旧续期逻辑接下来会去盲取唯一那条别人的会话，把凭据覆盖掉。
+            # 丢弃过期会话 = 让这个号永久不可恢复。
             exp = rec.get("expiresAt")
+            sts_expired = False
             if exp:
                 try:
                     import datetime as _dt
                     t = _dt.datetime.strptime(str(exp)[:19], "%Y-%m-%dT%H:%M:%S")
-                    if t < _dt.datetime.utcnow():
-                        continue
+                    sts_expired = t < _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
                 except Exception:
                     pass
             ps = rec.get("providerState") or {}
@@ -778,6 +782,7 @@ def _officeace_read_sqlite():
             accs[nm] = {"ak": ak, "sk": sk, "sts_token": sts,
                         "project_id": cred.get("project_id") or "",
                         "expires_at": cred.get("expires_at") or "",
+                        "sts_expired": sts_expired,
                         "refresh_token": cred.get("refresh_token") or "",
                         "refresh_expires_at": cred.get("refresh_expires_at") or "",
                         "user_id": ps.get("user_id") or rec.get("userId") or "",

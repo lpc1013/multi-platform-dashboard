@@ -215,9 +215,10 @@ def _pool_spec(provider):
                           and cap.expired(e) is not True,
                 lambda e: e.get("expires_at"), "CodeArts")
     if provider == "officeace":
-        import server as srv
-        return (lambda: srv._read_json(srv.CRED_FILES.get("officeace"), {})
-                if srv.CRED_FILES.get("officeace") else {},
+        # 走适配器的 load_accounts：它会过滤掉「只有身份、没有 AK/SK/STS」的残条，
+        # 并把本地客户端的 live 凭据按 user_id 归并进来。直接读原始 JSON 会把残条
+        # 也列成账号（2026-10-20：同一账号因此显示成「异常」+「100%」两个 tab）。
+        return (oac.load_accounts,
                 lambda e: oac._expired(e) is not True,
                 lambda e: e.get("expires_at"), "OfficeACE")
     if provider == "teleagent":
@@ -444,11 +445,18 @@ def _open_wbai(openai_body):
 #   · 上游按「模型行」限流：免费行被 429 时，同名付费行通常还通
 #     （deepseek-v4.1-flash → deepseek-v4.1-flash-sg）
 #   · 模型目录带倍率，0 倍率/限免的优先用
-# 用户策略（2026-10-19 定）：DeepSeek-V4.1-Flash → Hy3 → Hy4-Preview → Step-5-Preview，
-# 先吃每日免费额度，再动可累计积分。
-WBAI_AUTO_CHAIN = ["deepseek-v4.1-flash", "hy3", "hy4-preview", "step-5-preview"]
-# 免费行被限流时的同名付费退路（上游按行限流，付费行常仍可用）
+# 用户策略（2026-10-19 定，2026-10-20 改）：auto 只走目录里 x0.00 的四个免费行，
+# 且这四行各是一个接口（DeepSeek → Hy3 → Hy4-Preview-F → Step-5-Preview）。
+# hy4-preview 是 x0.29 付费行，不进链：积分见底的号上它必回 14018
+# （2026-10-20 实测：两号各 13 行 14018 全在 hy4-preview / hy4-preview-f 上）。
+WBAI_AUTO_CHAIN = ["deepseek-v4.1-flash", "hy3", "step-5-preview", "hy4-preview-f"]
+# 免费行被限流时的同名付费退路（上游按行限流，付费行常仍可用）。
+# 只有 deepseek 这条是上游 ModelRateLimitCap 明确给的；hy4-preview-f 没有付费变体
+# （dsh-xdpool#30 同结论），配了也只会在积分见底的号上多撞一次 14018，故不加。
 WBAI_PAID_ALIAS = {"deepseek-v4.1-flash": "deepseek-v4.1-flash-sg"}
+
+_WBAI_WAIT_MAX = 90.0                         # 全链被限时，最多替客户端等这么久
+_WBAI_WAIT_SLICE = 3.0                        # 心跳粒度：每 3s 醒一次，顺便发 keep-alive
 
 _Q_CACHE = {}          # 账号 -> (ts, rank)
 _Q_TTL = 300
@@ -580,6 +588,27 @@ def _wbai_err_kind(line):
 # 重置时刻就在错误 msg 里（"将在 2026-08-06 15:49:30 UTC+8重置" / "明天早上 9:30 重置"），
 # 这里解析出来做精确冷却与前端展示，不再拍脑袋固定 1800s。
 _WBAI_ML_COOL = {}                            # (acct_name, model_lower) -> reset_epoch
+# 面板可见性用（2026-10-20 用户要求「不要当瞎子」）：
+#   _WBAI_EVENTS  最近 N 次上游限流（码 / 账号 / 模型 / 撞线时刻 / 重置时刻）
+#   _WBAI_WAITING 此刻正在替客户端等待的请求（key → 到期时刻）
+_WBAI_EVENTS = []                             # [{at, code, acct, model, reset, msg}]
+_WBAI_EVENTS_MAX = 40
+_WBAI_WAITING = {}                            # id -> {acct, model, until, code}
+_WBAI_EV_LOCK = threading.Lock()
+
+
+def _wbai_event(code, acct, model, reset=None, msg=""):
+    """记一条限流事件（环形缓冲，只留最近 40 条；不含任何凭据）。"""
+    with _WBAI_EV_LOCK:
+        _WBAI_EVENTS.append({"at": time.time(), "code": str(code or ""),
+                             "acct": str(acct or "?")[:40], "model": str(model or "")[:40],
+                             "reset": reset, "msg": str(msg or "")[:120]})
+        if len(_WBAI_EVENTS) > _WBAI_EVENTS_MAX:
+            del _WBAI_EVENTS[:-_WBAI_EVENTS_MAX]
+_WBAI_BUSY_COOL = 60                          # 14003 模型繁忙：瞬时态，短冷却即可
+_WBAI_QUOTA_COOL = 600                        # 14018 额度耗尽：只冷当前模型行 10 分钟
+_WBAI_NET_RETRY_WAIT = 0.5                    # 连接层瞬时错误（无 HTTP 状态）同号重试一次
+_wbai_tls = threading.local()                 # 本轮实际选中的上游模型（relay 记账用）
 
 
 def _wbai_reset_ts(text):
@@ -624,16 +653,110 @@ def _wbai_ml_hit(name, model):
     return True
 
 
-def _wbai_ml_limit(name, model, line):
-    """记录模型行限流冷却（从错误行解析重置时刻），返回人类可读的「HH:MM 重置」后缀。"""
+def _wbai_ml_limit(name, model, line, sec=None):
+    """记录模型行限流冷却（从错误行解析重置时刻），返回人类可读的「HH:MM 重置」后缀。
+    sec：调用方明确的短冷却（14018 额度耗尽 / 瞬时态）；不给则按 6004 窗口处理。"""
     ts = _wbai_reset_ts(line)
+    _wbai_event(_wbai_code_of(line), name, model, ts, line)
     if ts:
         _WBAI_ML_COOL[(name, str(model or "").lower())] = ts
         return "（%s 重置）" % time.strftime("%H:%M", time.localtime(ts))
-    # 解析不到精确时刻：退回 5 小时窗口经验值（社区实测触发窗口）
-    ts = time.time() + 5 * 3600
+    if sec:
+        ts = time.time() + int(sec)
+        _WBAI_ML_COOL[(name, str(model or "").lower())] = ts
+        return "（%d 分钟后自动重试）" % (int(sec) // 60 or 1)
+    # 14003「too many requests / 模型繁忙」是瞬时态：拉黑 5 小时会把整条免费链拖死
+    # （2026-10-20 实证：一次 14003 后 4 个免费行全被冷却 → 客户端连续 503）。
+    if "14003" in str(line) or "too many requests" in str(line).lower():
+        ts = time.time() + _WBAI_BUSY_COOL
+        _WBAI_ML_COOL[(name, str(model or "").lower())] = ts
+        return "（%d 秒后重试）" % _WBAI_BUSY_COOL
+    # 解析不到精确时刻：免费模型的 6004 是 24 小时 token 窗口（社区 #253 十几个
+    # 窗口样本一致），按 24h 冷；5 小时那一档是 magpie#1361 观测到的**次数**窗口，
+    # 只发生在付费模型上，别再拿它当免费行的兜底（2026-10-20 纠正）。
+    ts = time.time() + 24 * 3600
     _WBAI_ML_COOL[(name, str(model or "").lower())] = ts
     return "（约 %s 重置）" % time.strftime("%H:%M", time.localtime(ts))
+
+
+def _wbai_code_of(line):
+    """从上游错误行里取业务码（6004 / 14003 / 14018…），取不到返回 ""。"""
+    import re as _re
+    s = str(line or "")
+    m = _re.search(r'"code"\s*:?\s*"?\d+', s)
+    if m:
+        return _re.search(r"\d+", m.group(0)).group(0)
+    for c in ("6004", "14018", "14003", "11140", "11128"):
+        if c in s:
+            return c
+    return ""
+
+
+def wbai_limit_state():
+    """面板用：此刻仍在冷却的 (账号,模型) 行 + 正在等待的请求 + 最近限流事件。"""
+    now = time.time()
+    rows = {}
+    for (nm, mdl), t in list(_WBAI_ML_COOL.items()):
+        if t <= now:
+            _WBAI_ML_COOL.pop((nm, mdl), None)
+            continue
+        rows.setdefault(nm, {})[mdl] = t
+    with _WBAI_EV_LOCK:
+        waiting = [dict(v) for v in _WBAI_WAITING.values() if v.get("until", 0) > now]
+        events = list(_WBAI_EVENTS)
+    return {"rows": rows, "waiting": waiting, "events": events[-15:]}
+
+
+def _wbai_next_avail():
+    """当前被限的所有行里，最早恢复的 epoch；没有可解析的行返回 None。
+
+    含两类：(账号,模型) 行级冷却（6004/14003/14018 都记在这）与整号冷却。
+    等待重试只需要「最早那一个」——它一通，链上就有活口。"""
+    ts = [v for v in _WBAI_ML_COOL.values() if v > time.time()]
+    for nm, until in (_POOL_COOL.get("wbai") or {}).items():
+        if until > time.time():
+            ts.append(until)
+    return min(ts) if ts else None
+
+
+def _wbai_wait_retry(err, att, beat=None, acct=None, model=None):
+    """限流不弹错误，改成替客户端等：最早恢复时刻在 _WBAI_WAIT_MAX 内就睡到点再重试。
+    beat(剩余秒) 每 _WBAI_WAIT_SLICE 醒一次调一下——流式请求靠它发 SSE 注释心跳，
+    否则 WorkBuddy 官方客户端「转几秒就自动取消」（2026-10-20 用户实证）。
+    等待期间把自己登记进 _WBAI_WAITING，面板能看见「正在等谁、等到几点」。
+    返回 True=已睡好、可以重试；False=要么太晚（几小时后才有额度）、要么没解析出时刻，
+    那种情况直接把「几点恢复」如实回给客户端，让它自己决定要不要等。"""
+    nxt = _wbai_next_avail()
+    if not nxt:
+        return False
+    left = nxt - time.time()
+    if left > _WBAI_WAIT_MAX or att >= 3:
+        return False
+    try:
+        import server as srv
+        srv.log("[proxy:wbai] 限流等待重试：最早 %s 恢复（还有 %ds，第 %d 轮）：%s"
+                % (time.strftime("%H:%M:%S", time.localtime(nxt)), int(left), att + 1,
+                   str(getattr(err, "message", "") or "")[:70]))
+    except Exception:
+        pass
+    key = "%s/%s#%d" % (acct or "?", model or "auto", id(threading.current_thread()))
+    _WBAI_WAITING[key] = {"acct": acct, "model": model, "until": nxt,
+                          "code": _wbai_code_of(getattr(err, "message", "") or "")}
+    end = time.time() + left + 0.5
+    try:
+        while True:
+            rem = end - time.time()
+            if rem <= 0:
+                break
+            if beat:
+                try:
+                    beat(int(rem))
+                except Exception:
+                    return False          # 心跳写不出去＝客户端已断开，别再空等
+            time.sleep(min(_WBAI_WAIT_SLICE, rem))
+    finally:
+        _WBAI_WAITING.pop(key, None)
+    return True
 
 
 def wbai_model_limits():
@@ -646,6 +769,25 @@ def wbai_model_limits():
             continue
         out.setdefault(nm, {})[mdl] = ts
     return out
+
+
+def _wbai_open(ent, body, name):
+    """开一条上游流。连接层瞬时错误（没有 HTTP 状态）同号同模型重试一次。"""
+    try:
+        return wai.chat_stream(ent, body, name=name)
+    except Exception as e:
+        if getattr(e, "status", None) is not None:
+            raise
+        time.sleep(_WBAI_NET_RETRY_WAIT)
+        return wai.chat_stream(ent, body, name=name)
+
+
+def _wbai_quota_line(line):
+    """14018 积分/额度耗尽（可能藏在 HTTP 429 外壳里）。"""
+    s = str(line or "")
+    low = s.lower()
+    return ("14018" in s or "credits exhausted" in low
+            or "额度" in s or "余额" in s)
 
 
 def _open_wbai_pool(openai_body):
@@ -667,7 +809,7 @@ def _open_wbai_pool(openai_body):
             body = dict(openai_body)
             body["model"] = model
             try:
-                it = wai.chat_stream(ent, body, name=name)
+                it = _wbai_open(ent, body, name)
             except Exception as e:
                 st = getattr(e, "status", None)
                 msg = getattr(e, "message", None) or str(e)
@@ -675,15 +817,17 @@ def _open_wbai_pool(openai_body):
                     _pool_cool("wbai", name, msg)
                     last_err = UpstreamError(int(st), str(msg))
                     break                      # 换号
+                if _wbai_quota_line(msg):
+                    # 14018 可能以 HTTP 402/429 外壳出现：只冷当前模型行，
+                    # 同号继续试其它免费模型（整号 30 分钟拉黑曾导致连续 503）。
+                    tag = _wbai_ml_limit(name, model, msg, sec=_WBAI_QUOTA_COOL)
+                    last_err = UpstreamError(int(st or 402), str(msg)[:160] + tag)
+                    continue                   # 同号换模型
                 if st == 429:
                     # HTTP 429：行级限流（6004 也可能走 HTTP 外壳）——解析重置时刻做行级冷却
                     tag = _wbai_ml_limit(name, model, msg)
                     last_err = UpstreamError(429, str(msg)[:160] + tag)
                     continue                   # 同号换模型
-                if "14018" in str(msg):
-                    _pool_cool("wbai", name, msg)
-                    last_err = UpstreamError(int(st or 402), str(msg))
-                    break
                 last_err = UpstreamError(int(st or 502), str(msg)[:200])
                 continue
 
@@ -701,6 +845,15 @@ def _open_wbai_pool(openai_body):
 
             kind = _wbai_err_kind(first)
             if kind == "account":
+                if _wbai_quota_line(first):
+                    # 14018 额度耗尽：按模型行冷却，同号继续试其它模型；不整号拉黑
+                    tag = _wbai_ml_limit(name, model, first, sec=_WBAI_QUOTA_COOL)
+                    last_err = UpstreamError(402, first[:160] + tag)
+                    try:
+                        it.close()
+                    except Exception:
+                        pass
+                    continue
                 _pool_cool("wbai", name, first)
                 last_err = UpstreamError(402, first[:160])
                 try:
@@ -726,6 +879,7 @@ def _open_wbai_pool(openai_body):
                     srv.log("[proxy:wbai] auto → %s（acct=%s）" % (model, name))
                 except Exception:
                     pass
+            _wbai_tls.model = model          # auto 时 relay 按实际模型记账/命名
             return name, itertools.chain([first], it)
 
     raise last_err or UpstreamError(503, "WorkBuddy 国际版所有账号/模型均不可用")
@@ -1018,12 +1172,25 @@ def relay(handler, openai_body):
     # 上游「并发会话数已达上限」(TM.00001041)：会话关闭后有残留计时，紧跟着开新会话也会撞。
     # 自动重试+退避，客户端无感（日志留痕）。
     disp_att, DISP_MAX, RETRY_WAIT = 0, 18, 5.0
+    # 国际版限流等待时要提前开流并发心跳：WorkBuddy 官方客户端在「headers 已发、
+    # 一个字节都没有」的情况下转几秒就自己取消这条消息（2026-10-20 用户实证）。
+    wb_stream_open = [False]
+
+    def _wb_beat(rem):
+        if not want_stream:
+            return
+        if not wb_stream_open[0]:
+            handler._begin_stream()
+            wb_stream_open[0] = True
+        handler._write_chunk(b": wbai rate-limited, retrying in %ds\n\n" % max(1, rem))
+
     while True:
         try:
             if provider == "teleagent":
                 name, lines = _open_pool("teleagent", openai_body)
             elif provider == "wbai":
                 name, lines = _open_wbai(openai_body)
+                model = getattr(_wbai_tls, "model", model)   # auto → 实际上游模型
             elif provider == "officeace":
                 name, lines = _open_pool("officeace", openai_body)
             elif provider == "tabbit":
@@ -1033,6 +1200,19 @@ def relay(handler, openai_body):
             break
         except UpstreamError as e:
             _ca_release()
+            if provider == "wbai" and e.status in (402, 429, 503) \
+                    and _wbai_wait_retry(e, disp_att,
+                                         _wb_beat if want_stream else None,
+                                         name, model):
+                disp_att += 1
+                continue
+            if wb_stream_open[0]:
+                # 心跳已经开流，只能按 SSE 收尾（再发 HTTP 状态行是坏协议）
+                handler._write_chunk((
+                    "data: %s\n\ndata: [DONE]\n\n" % json.dumps(
+                        {"error": {"message": e.message[:300], "type": "rate_limit"}},
+                        ensure_ascii=False)).encode("utf-8"))
+                return
             if (provider == "codearts"
                     and ("TM.00001041" in e.message or "并发会话数" in e.message)):
                 disp_att += 1
@@ -1069,7 +1249,8 @@ def relay(handler, openai_body):
             return
 
     if want_stream:
-        handler._begin_stream()
+        if not wb_stream_open[0]:
+            handler._begin_stream()
         usage, n_lines = None, 0
         try:
             for line in lines:

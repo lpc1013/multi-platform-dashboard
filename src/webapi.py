@@ -42,6 +42,7 @@ from account_service import (
     _teleagent_login_save,
     ensure_identity,
 )
+from platforms._util import exp_epoch as _exp_epoch
 
 try:
     import workbuddy_login as wblogin
@@ -132,11 +133,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _begin_stream(self, status=200, ctype="text/event-stream; charset=utf-8"):
         """SSE 响应头（openai_proxy 用）。ThreadingTCPServer 每请求一线程，
-        长流式不阻塞看板其它请求。"""
+        长流式不阻塞看板其它请求。
+
+        ⚠ 本服务是 HTTP/1.0，且 SSE 没有 Content-Length/chunked 分帧：
+        不能声明 keep-alive，否则客户端在 [DONE] 之后等不到 EOF——curl 实测
+        60s 超时、部分客户端直接报「网络连接失败」。必须由服务端关连接收尾。
+        """
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
+        self.send_header("Connection", "close")
+        self.close_connection = True
         self.end_headers()
 
     def _write_chunk(self, data):
@@ -273,10 +280,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             pass    # OfficeACE 不可用不阻塞其余模型列出
         try:
             # WorkBuddy 国际版：wb: 前缀命名空间（与 CodeArts/OfficeACE 交集名隔离）
-            name, went = ox._wbai_ent()
-            wmodels = ox.wai.gw_models(went)
-            data += [{"id": "wb:" + m["id"], "object": "model", "owned_by": "workbuddy-intl"}
-                     for m in wmodels if m.get("id")]
+            # 全集按池内所有号取并集：单个号的目录看不见别的号才有的行
+            # （lpc1013 没有 hy4-preview-f ⇒ 四个免费接口会少一个）
+            wmodels = ox.wai.gw_models_all()
+            rows = ["wb:" + m["id"] for m in wmodels if m.get("id")]
+            # auto 是反代侧的合成入口（在池里挑当下没被限的那一号那一模型）：目录里
+            # 没有它，但 default_model 就是它——不列出来，客户端照 /v1/models 选就选不到
+            data += [{"id": "wb:auto", "object": "model", "owned_by": "workbuddy-intl"}] \
+                if "wb:auto" not in rows else []
+            data += [{"id": r, "object": "model", "owned_by": "workbuddy-intl"} for r in rows]
         except Exception:
             pass    # 国际版不可用不阻塞其余模型列出
         try:
@@ -368,7 +380,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             wname, went = ox._wbai_ent()
             wb["account"] = wname
-            wms = ox.wai.gw_models(went)
+            wms = ox.wai.gw_models_all()      # 并集：四个免费行一个都不能少
             # 下拉展示 wb: 前缀名（客户端用前缀选上游）；附 credit 倍率供前端标注
             wb["models"] = ["wb:" + m["id"] for m in wms if m.get("id")]
             wb["credit"] = {("wb:" + m["id"]): m.get("credit") or ""
@@ -443,13 +455,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         for name, ent in accs.items():
             row = {"name": name, "ok": False, "error": None, "pct": None,
                    "remain": None, "total": None, "packages": [],
-                   "daily_free": None, "long_term": None, "free_models": []}
+                   "daily_free": None, "long_term": None, "free_models": [],
+                   "signed_today": False, "level": "", "extra": {}}
             try:
                 if mod is None or not isinstance(ent, dict):
                     raise RuntimeError("无额度查询能力")
                 r = mod.read_account(name, ent) or {}
                 row["ok"] = bool(r.get("ok"))
                 row["error"] = r.get("error")
+                row["signed_today"] = bool(r.get("signed_today"))
+                row["level"] = str(r.get("level") or "")
+                _ex = r.get("extra") or {}
+                row["extra"] = {k: _ex.get(k) for k in
+                                ("token_expire", "token_remain_days", "plan",
+                                 "streak_days", "total_signed_days",
+                                 "free_token_error", "credits_error")
+                                if _ex.get(k) is not None}
                 cr = r.get("credits") or {}
                 tot = float(cr.get("total") or 0)
                 rem = float(cr.get("remain") or 0)
@@ -480,6 +501,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         resp = {"provider": pid, "accounts": out}
         Handler._PQ_CACHE[pid] = (now, resp)
         self._send(200, resp)
+
+    def _r_api_wbai_limits(self):
+        """国际版限流实时态（面板用，2026-10-20）：
+        此刻仍在冷却的 (账号×模型) 行、正在替客户端等待的请求、最近 15 次限流事件。
+        数据全来自反代内存，不打上游。"""
+        try:
+            import openai_proxy as ox
+            st = ox.wbai_limit_state()
+        except Exception as e:
+            self._send(200, {"rows": {}, "waiting": [], "events": [],
+                             "error": str(e)[:120]})
+            return
+        self._send(200, {"rows": st["rows"], "waiting": st["waiting"],
+                         "events": st["events"], "now": time.time()})
 
     def _r_api_progress(self):
         q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
@@ -890,9 +925,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 ok, msg, accs = local_import.read_local(platform)
                 if ok and accs:
                     target = CRED_FILES[platform]
-                    saved, merged = [], []
+                    saved, merged, skipped = [], [], []
                     for i, (nm, ent) in enumerate(accs.items(), 1):
                         rec = {k: v for k, v in dict(ent).items() if k != "name"}
+                        # 客户端会话常没有身份字段（CodeArts 只给展示名 + account_id）：
+                        # 不回填的话 ident 退化成 AK，而 AK 每续一次就换 ⇒ 多点一次「本地导入」
+                        # 就多一张分身卡（2026-10-20 实测：hid_837ylp2ucgnyoxz 长出 ·2a56）。
+                        # 库里同名那条的身份就是同一个号，拿它回填。
+                        if not str(rec.get("user_id") or "").strip():
+                            same_named = (_read_json(target, {}) or {}).get(nm)
+                            if isinstance(same_named, dict) and same_named.get("user_id"):
+                                for idf in ("user_id", "user_name"):
+                                    if not rec.get(idf) and same_named.get(idf):
+                                        rec[idf] = same_named[idf]
                         # 稳定身份回填（幂等）：本地导入记录只有 cookie/wps_sid，
                         # 不回填 user_id 的话身份退化为轮换令牌 → 重复导入另开新卡
                         ensure_identity(platform, rec)
@@ -907,14 +952,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         # _alloc_account_name：同身份沿用旧名；名字被别的账号占了就加尾号，
                         # 绝不覆盖 → 这样客户端顶掉槽位后，看板里的老账号依旧在
                         use = _alloc_account_name(target, platform, ideal, rec)
+                        # 客户端那条更旧时不许覆盖库里刚续好的凭据（与两平台 load_accounts
+                        # 里 exp_epoch 闸同一条规矩，2026-10-20）：桌面端只刷新当前登录的号，
+                        # 点一次「本地导入」就把自动续期的结果退回过期那一版太容易了
+                        old = (_read_json(target, {}) or {}).get(use) or {}
+                        if isinstance(old, dict) and old.get("ak") and rec.get("ak") and \
+                                _exp_epoch(rec.get("expires_at")) < _exp_epoch(old.get("expires_at")):
+                            skipped.append(use)
+                            continue
                         merged += _dedupe_store(target, platform, use, rec)
                         _cred_store_set(target, use, rec)
                         saved.append(use)
                     after = _read_json(target, {})
                     total = len(after) if isinstance(after, dict) else 0
                     _invalidate_state()
-                    self._send(200, {"ok": True, "msg": msg, "names": saved,
+                    note = ""
+                    if skipped:
+                        note = ("；%d 个账号看板里的凭据更新鲜，已保留（没被客户端的旧会话覆盖）：%s"
+                                % (len(skipped), "、".join(skipped)))
+                    self._send(200, {"ok": True,
+                                     "msg": msg + note,
+                                     "names": saved,
                                      "merged_from": merged, "total": total,
+                                     "skipped_stale": skipped,
                                      "client_count": len(accs),
                                      # 看板里保留、但本地客户端本次已不再暴露的账号数
                                      # （MiniMax 只有 2 个登录槽位，登第 3 个号就会顶掉一个）
@@ -1139,6 +1199,7 @@ _GET_ROUTES = {
     "/api/proxy_usage": Handler._r_api_proxy_usage,
     "/api/proxy_info": Handler._r_api_proxy_info,
     "/api/pool_quota": Handler._r_api_pool_quota,
+    "/api/wbai_limits": Handler._r_api_wbai_limits,
     "/api/progress": Handler._r_api_progress,
     "/api/log": Handler._r_api_log,
     "/api/account/browser_login_status": Handler._r_api_account_browser_login_status,

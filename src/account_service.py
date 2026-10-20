@@ -16,13 +16,10 @@ if HERE not in sys.path:
 
 import cred_store
 from cred_store import (
-    CRED_FILES, WB_LOGIN_FILE,
+    WB_LOGIN_FILE,
     read_json as _read_json, write_json as _write_json,
     save_cred as _save_cred,
-    alloc_account_name as _alloc_account_name,
-    dedupe_store as _dedupe_store,
-    cred_store_set as _cred_store_set,
-    dumate_stable_uid, lingxi_stable_uid, ensure_identity,
+    dumate_stable_uid, lingxi_stable_uid, officeace_stable_uid, ensure_identity,
 )
 from logstore import log  # noqa: F401  （预留：落盘审计）
 from registry import PLATFORMS
@@ -300,29 +297,37 @@ def _trae_oauth_save(name, grant):
 
 
 def _officeace_login_save(name, grant):
-    """OfficeACE 登录落盘：App 本地 API 已交换并持久化新凭据，这里存身份 + 顺手重导入。"""
-    uid = str((grant or {}).get("user_id") or "")
-    rec = {"user_id": uid, "user_name": (grant or {}).get("user_name") or "",
-           "phone": (grant or {}).get("phone") or "",
-           "via_oauth": True, "source": "看板短信登录（App 本地 API 交换，App 已存新凭据）"}
-    ideal = (name or (grant or {}).get("user_name")
+    """OfficeACE 登录落盘：App 本地 API 已交换并持久化新凭据。
+
+    先读 App 里的完整凭据并按 user_id 归并，只有 App 侧暂时读不到时才退化成
+    「仅身份」记录 —— 否则会先占住名字、再让导入的那条被加 ·尾号，形成两张卡。
+    """
+    uid = officeace_stable_uid((grant or {}).get("user_id") or "")
+    ident = {"user_id": uid, "user_name": (grant or {}).get("user_name") or "",
+             "phone": (grant or {}).get("phone") or "",
+             "via_oauth": True, "source": "看板短信登录（App 本地 API 交换，App 已存新凭据）"}
+    ideal = (name or ident["user_name"]
              or ("OfficeACE·" + (uid or "0000")[-4:]))
-    use = _save_cred("officeace", rec, ideal)
-    refreshed = 0
+    use, refreshed, matched = ideal, 0, False
     try:
         import local_import
         ok, _m, accs = local_import.read_local("officeace")
         if ok and accs:
-            target = CRED_FILES["officeace"]
-            for i, (nm, ent) in enumerate(dict(accs).items(), 1):
+            for nm, ent in dict(accs).items():
                 r2 = {k: v for k, v in dict(ent).items() if k != "name"}
                 r2["via_local"] = True
-                u2 = _alloc_account_name(target, "officeace", (name or nm), r2)
-                _dedupe_store(target, "officeace", u2, r2)
-                _cred_store_set(target, u2, r2)
+                same = bool(uid) and officeace_stable_uid(r2.get("user_id")) == uid
+                if same:
+                    r2.update(ident)
+                    use = _save_cred("officeace", r2, ideal)
+                    matched = True
+                else:
+                    _save_cred("officeace", r2, nm)
                 refreshed += 1
     except Exception:
         pass
+    if not matched:
+        use = _save_cred("officeace", ident, ideal)
     _invalidate_state()
     extra = ("，并从 App 刷新 %d 条凭据" % refreshed) if refreshed else ""
     return True, use, "登录成功，已保存 OfficeACE 账号「%s」%s" % (use, extra)

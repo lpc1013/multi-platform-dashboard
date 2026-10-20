@@ -55,9 +55,10 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import urlparse, quote
 
 try:
-    from ._util import dec_cred, enc_cred
+    from ._util import dec_cred, enc_cred, exp_epoch
 except ImportError:  # 被独立脚本直接加载时的兜底
     dec_cred = enc_cred = (lambda o: o)
+    exp_epoch = lambda v: 0.0        # 比不出新旧 → 退化成「采纳客户端会话」的旧行为
 
 
 
@@ -89,6 +90,16 @@ except ImportError:        # platforms 被当顶层包导入（server.py 方式�
         import data_dir as _dd
     except ImportError:
         _dd = None
+
+try:                       # 身份口径与 cred_store 保持一致（domain:user → user）
+    from ..cred_store import officeace_stable_uid
+except ImportError:
+    try:
+        from cred_store import officeace_stable_uid
+    except ImportError:
+        def officeace_stable_uid(uid):
+            s = str(uid or "").strip()
+            return s.split(":")[-1] if s else ""
 
 
 def _acc_paths(name):
@@ -376,6 +387,12 @@ def _persist_entry(name, ent):
         data = dec_cred(json.load(open(path, encoding="utf-8"))) if os.path.exists(path) else {}
         if not isinstance(data, dict):
             data = {}
+        old = data.get(name) or {}
+        # 身份闸：落盘前后 uid 不同＝把别的号的凭据写进了这个键（串号唯一的发生点），
+        # 宁可续期失败，也不让两个号长成同一条凭据。
+        ou, nu = officeace_stable_uid(old.get("user_id")), officeace_stable_uid(ent.get("user_id"))
+        if ou and nu and ou != nu:
+            return
         data[name] = {k: ent.get(k, "") for k in keep if ent.get(k)}
         tmp = path + ".tmp"
         json.dump(enc_cred(data), open(tmp, "w", encoding="utf-8"),
@@ -383,6 +400,28 @@ def _persist_entry(name, ent):
         os.replace(tmp, path)
     except Exception:
         pass
+
+
+def pick_live_session(name, ent, accs):
+    """从客户端 SQLite 读到的会话里挑出**本账号**那一条；挑不到就返回 None。
+
+    只认两种：键名相同，或 stable_uid 相同（domain:user 与裸 user 归一到末段）。
+    绝不「取第一条」兜底——客户端只登了一个号时，那等于把那个号的
+    ak/sk/project_id/user_id 整份写进本号（2026-10-20 实证：果办第二个号的凭据
+    被一号逐字段覆盖，两个号在面板上从此一模一样，且备份前的覆盖不可逆）。
+    """
+    if not isinstance(accs, dict) or not accs:
+        return None
+    cand = accs.get(name)
+    if cand:
+        return cand
+    uid = officeace_stable_uid((ent or {}).get("user_id"))
+    if not uid:
+        return None
+    for v in accs.values():
+        if officeace_stable_uid((v or {}).get("user_id")) == uid:
+            return v
+    return None
 
 
 def try_refresh(name, ent):
@@ -430,26 +469,53 @@ def _try_refresh_inner(name, ent):
     except Exception as e:
         return False, "无法导入 local_import：%s" % str(e)[:80]
     new = None
+    seen_same_uid = False
+    saw_any, why_empty = False, ""
     for _ in range(24):
         time.sleep(1.0)
         try:
             _ok, _m, accs = local_import.read_officeace()
-        except Exception:
-            accs = {}
-        cand = accs.get(name)
-        if not cand and accs:
-            # 键名不同但 user_id 相同 → 视为同账号
-            uid = (ent.get("user_id") or "").split(":")[0]
-            for v in accs.values():
-                if uid and (v.get("user_id") or "").split(":")[0] == uid:
-                    cand = v
-                    break
-        if not cand and accs:
-            cand = next(iter(accs.values()))
-        if cand and (cand.get("expires_at") or "").strip() != old_exp:
-            new = cand
+        except Exception as e:
+            accs, why_empty = {}, str(e)[:90]
+            continue
+        if accs:
+            saw_any = True
+        elif not why_empty:
+            why_empty = str(_m or "客户端会话表里没有可用凭据")[:90]
+        cand = pick_live_session(name, ent, accs)
+        if cand:
+            seen_same_uid = True
+            if (cand.get("expires_at") or "").strip() != old_exp:
+                new = cand
+                break
+        elif accs:
+            # 客户端有会话、但没有本号的那一条 → 立刻失败关闭。
+            # 再等 23 秒也不会凭空多出来，而面板每读一次这个号就要站满 24 秒。
             break
     if not new:
+        if not seen_same_uid and not saw_any:
+            # 一条会话都没读到（库被客户端写锁占着 / 会话表空）：这跟「客户端里没有
+            # 本账号」是两种故障，报错了人就只会去切账号，而真正要做的是重开客户端。
+            return False, ("读不到客户端会话（%s），无法自动续期；"
+                           "请打开 OfficeACE 客户端登录后再续期" % (why_empty or "24 秒内无返回"))
+        if not seen_same_uid:
+            return False, ("客户端里没有本账号（uid %s）的登录会话，不能借用别的号的凭据；"
+                           "请在客户端切到该账号登录后再续期"
+                           % (officeace_stable_uid(ent.get("user_id")) or "?")[:20])
+        # 本号会话在客户端里、但 24 秒一点没动：客户端只刷新**当前登录**的那个号，
+        # 其余号那条会话会一整天停在同一时刻（2026-10-20 实证：0623 停在 07:14，
+        # 同时在用的号刷到了 14:08）。点名那个号，比「刷新未生效」可操作得多。
+        fresher = None
+        for nm, v in (accs or {}).items():
+            if nm == name or not isinstance(v, dict):
+                continue
+            if exp_epoch(v.get("expires_at")) > exp_epoch(old_exp):
+                fresher = (nm, str(v.get("expires_at"))[:19])
+                break
+        if fresher:
+            return False, ("刷新未生效：客户端当前登录的是「%s」（其凭据到 %s），"
+                           "本账号的会话没被刷新；请在客户端切到本账号登录"
+                           "（或重新输验证码）后再续期" % fresher)
         return False, "刷新未生效（SQLite expires_at 未变化）"
     for k in ("ak", "sk", "sts_token", "project_id", "expires_at", "refresh_token",
               "refresh_expires_at", "user_id", "host", "region"):
@@ -485,22 +551,28 @@ def load_accounts():
             if isinstance(v, dict) and v.get("ak") and v.get("sk") and v.get("sts_token"):
                 accs[nm] = v
     # ③ SQLite 会话（客户端启动时自动刷新，通常最新）—— 按 user_id/同名覆盖
+    #    但**更旧的会话不许覆盖库里刚续好的凭据**（2026-10-20：客户端只刷新当前
+    #    登录的那个号，另一个号留着一整天前的过期会话；无条件逐字段覆盖 ⇒ 把
+    #    续期成功的凭据退回过期那条，面板报「凭证已过期」）
     try:
         sys.path.insert(0, ROOT)
         import local_import
         _ok, _m, live = local_import.read_officeace()
         for k, v in (live or {}).items():
-            uid = (v.get("user_id") or "").split(":")[0]
+            uid = officeace_stable_uid(v.get("user_id"))
             target = k if k in accs else None
             if target is None and uid:
                 for ek, ev in accs.items():
-                    if (ev.get("user_id") or "").split(":")[0] == uid:
+                    if officeace_stable_uid(ev.get("user_id")) == uid:
                         target = ek
                         break
             if target is None and len(accs) == 1 and len(live) == 1:
                 target = next(iter(accs))          # 单账号两边键名不一致 → 对齐
             if target is not None:
                 base = accs[target]
+                if base.get("ak") and exp_epoch(v.get("expires_at")) < \
+                        exp_epoch(base.get("expires_at")):
+                    continue            # 客户端这条更旧 → 保留库里续好的凭据
                 base.update({kk: v[kk] for kk in v if v.get(kk)})
                 accs[target] = base
             else:

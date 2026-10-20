@@ -60,7 +60,7 @@ __all__ = [
     "ident_of", "wb_match", "dedupe_store", "name_tail",
     "alloc_account_name", "save_cred",
     "dumate_stable_uid", "lingxi_stable_uid", "tabbit_stable_uid",
-    "ensure_identity",
+    "officeace_stable_uid", "ensure_identity",
 ]
 # ════════════════════════════════════════════════════════════════════
 # 路径与平台元信息
@@ -320,9 +320,17 @@ def cred_store_remove(path, name):
     return True
 
 
+def _ident_value(pid, field, value):
+    """身份字段的归一值：officeace 的 user_id 可能是 `domain:user`，也可能是裸 user。"""
+    s = str(value or "").strip()
+    if pid == "officeace" and field == "user_id":
+        return officeace_stable_uid(s)
+    return s
+
+
 def ident_of(pid, rec):
     for f in IDENT_FIELDS.get(pid, ()):
-        v = str((rec or {}).get(f) or "").strip()
+        v = _ident_value(pid, f, (rec or {}).get(f))
         if v:
             return f, v
     return None
@@ -347,6 +355,16 @@ def lingxi_stable_uid(wps_sid):
     """wps_sid 尾 10 位 = 用户指纹（实测同一用户换 sid 后尾 10 位不变）。"""
     s = str(wps_sid or "").strip()
     return s[-10:] if len(s) >= 16 else ""
+
+
+def officeace_stable_uid(uid):
+    """华为云 IAM user_id 归一：`domain:user` 与裸 `user` 是同一个账号，取末段。
+
+    2026-10-20 事故：网页登录落盘的是 `domain:user`，本地导入落盘的是裸 user
+    → ident_of 字符串不等，同一账号显示成两张卡（其中一张没有 AK/SK，恒报异常）。
+    """
+    s = str(uid or "").strip()
+    return s.split(":")[-1] if s else ""
 
 
 def tabbit_stable_uid(cookie_str):
@@ -394,6 +412,9 @@ def ensure_identity(pid, rec):
             uid = tabbit_stable_uid(rec.get("cookie"))
             if uid:
                 rec["user_id"] = uid
+    elif pid == "officeace":
+        if str(rec.get("user_id") or "").strip():
+            rec["user_id"] = officeace_stable_uid(rec.get("user_id"))
     return rec
 
 
@@ -419,7 +440,7 @@ def dedupe_store(path, pid, keep_name, rec):
         for nm, old in list(data.items()):
             if nm == keep_name or not isinstance(old, dict):
                 continue
-            if str(old.get(f) or "").strip() == v:
+            if _ident_value(pid, f, old.get(f)) == v:
                 data.pop(nm, None)
                 dropped.append(nm)
         if dropped:
@@ -467,7 +488,8 @@ def alloc_account_name(path, pid, ideal, rec):
             if not ident:
                 return False
             old = data.get(nm)
-            return isinstance(old, dict) and str(old.get(ident[0]) or "").strip() == ident[1]
+            return (isinstance(old, dict)
+                    and _ident_value(pid, ident[0], old.get(ident[0])) == ident[1])
 
         ideal = (ideal or "").strip()
         if not ideal:

@@ -326,10 +326,17 @@ def _headers(tok, stream=False):
 # ══════════════════ 模型目录 ══════════════════
 CATALOG_TTL = 900
 _cat_lock = threading.Lock()
-_catalog = {"ts": 0.0, "models": [], "promos": [], "trial": None, "trial_start": None}
+_catalog = {"ts": 0.0, "models": [], "promos": [], "trial": None}
+# 模型目录按账号分键：/v3/config 的 models 是「这个号能看见的行」，
+# 试用号与正式号不一样（2026-10-20 实测：lpc1013 的目录 28 行、没有 hy4-preview-f，
+# 15149378 是 31 行有它）。全局单份会被后刷新的号覆盖 ⇒ 前一个号的免费行整条消失，
+# /v1/models 也就跟着少一个接口。promos/trial 仍是平台级（所有号同一张活动表）。
+_catalog_by_acct = {}     # uid -> {"ts": epoch, "models": [...]}
 # promos: [{model, until(epoch s), days_left, note}] —— modelPromotions 里「限免中」的活动（过滤未开始/已结束）
 # trial:  ModelTrialBanner 首条 {model, target, days} —— 14 天限免特殊模型
-# trial_start: 服务端记录的首次使用时间（epoch s，/v2/user-asset/portrait；与官方客户端同源）
+# trial_starts: 每账号的首次使用时间（epoch s，/v2/user-asset/portrait；与官方客户端同源）。
+#   必须按账号缓存：全局单份会被后刷新的账号覆盖，两个号就会显示同一天数（2026-10-20 修）。
+_trial_starts = {}      # uid -> {"ts": 拉取时刻, "val": epoch 或 None}
 
 
 def _parse_iso_ts(s):
@@ -344,10 +351,20 @@ def _parse_iso_ts(s):
 
 
 def gw_models(ent, force=False):
-    """/v3/config 模型列表 + 限免活动 + 试用横幅（TTL 缓存）。模型返回 [{id, credit, ctx}, ...]；失败回退缓存。"""
+    """/v3/config 模型列表 + 限免活动 + 试用横幅（TTL 缓存）。模型返回 [{id, credit, ctx}, ...]；失败回退缓存。
+
+    models 按账号缓存（目录里能看见哪些行是账号属性），promos/trial 仍平台级共享。
+    """
     now = time.time()
+    uid = _acct_key(ent)
+    if uid:
+        with _cat_lock:
+            c = _catalog_by_acct.get(uid)
+            if not force and c and c["models"] and now - c["ts"] < CATALOG_TTL:
+                return c["models"]
     with _cat_lock:
-        if not force and _catalog["models"] and now - _catalog["ts"] < CATALOG_TTL:
+        if not force and _catalog["models"] and now - _catalog["ts"] < CATALOG_TTL \
+                and not uid:
             return _catalog["models"]
     models, promos, trial = [], [], None
     try:
@@ -390,45 +407,129 @@ def gw_models(ent, force=False):
                              "key": str(b.get("firstUseTimeKey") or "")}
                 except (TypeError, ValueError):
                     trial = None
-            # 试用起点：GET /v2/user-asset/portrait?keys=<firstUseTimeKey>（逆向自客户端
-            # renderer contexts-*.js useModelCampaignNotice → createModelCampaignNoticeClient）。
-            # 失败静默，read_account 会回退看板自记录的 trial_start。
-            trial_start = None
-            if trial and trial.get("key"):
-                try:
-                    rp = s.get(BASE + "/v2/user-asset/portrait",
-                               headers=_headers(ent.get("token") or ""),
-                               params={"keys": trial["key"]}, timeout=15, verify=False)
-                    pj = rp.json() if rp.status_code == 200 else {}
-                    items = ((pj.get("data") or {}).get("items") or {})
-                    raw = items.get(trial["key"])
-                    trial_start = float(raw) if raw else None
-                except Exception:
-                    trial_start = None
+            # 试用起点按账号拉取（_trial_start_of），不在这里做：目录是平台级缓存，
+            # 起点是账号级数据，混在一起必然串号。
     except Exception:
         pass
     with _cat_lock:
         if models:
             _catalog.update(ts=now, models=models)
+            if uid:
+                _catalog_by_acct[uid] = {"ts": now, "models": models}
         if promos or trial:
-            _catalog.update(promos=promos, trial=trial, trial_start=trial_start)
+            old = _catalog.get("trial") or {}
+            _catalog.update(promos=promos, trial=trial)
+            # 试用活动换了（换模型/换 firstUseTimeKey）→ 旧的账号起点作废
+            if (old.get("key"), old.get("model")) != \
+                    ((trial or {}).get("key"), (trial or {}).get("model")):
+                _trial_starts.clear()
+        if uid and _catalog_by_acct.get(uid):
+            return _catalog_by_acct[uid]["models"]
         return _catalog["models"]
 
 
+def gw_models_all(force=False):
+    """池内所有账号能看见的模型行的并集（按 id 去重，保留首个倍率）。
+
+    /v1/models 与面板下拉用它：单看一个号的目录会少掉别的号才有的免费行
+    （lpc1013 看不见 hy4-preview-f，用它当全集就少一个接口）。
+    """
+    out, seen = [], set()
+    for _nm, ent in load_accounts().items():
+        try:
+            for m in gw_models(ent, force=force) or []:
+                mid = str((m or {}).get("id") or "")
+                if mid and mid not in seen:
+                    seen.add(mid)
+                    out.append(m)
+        except Exception:
+            continue
+    return out
+
+
+def _acct_key(ent):
+    """账号稳定标识：user_id 优先，其次 JWT sub，最后 token 指纹。"""
+    key = str((ent or {}).get("user_id") or "").strip() \
+        or _uid_of((ent or {}).get("token") or "")
+    if not key:
+        key = hashlib.sha1(str((ent or {}).get("token") or "").encode()).hexdigest()[:16]
+    return key
+
+
+def _fetch_trial_start(ent, trial):
+    """GET /v2/user-asset/portrait?keys=<firstUseTimeKey> → epoch 秒；失败 None。"""
+    key = str((trial or {}).get("key") or "")
+    if not key:
+        return None
+    try:
+        s = requests.Session(); s.trust_env = False
+        rp = s.get(BASE + "/v2/user-asset/portrait",
+                   headers=_headers(ent.get("token") or ""),
+                   params={"keys": key}, timeout=15, verify=False)
+        pj = rp.json() if rp.status_code == 200 else {}
+        items = ((pj.get("data") or {}).get("items") or {})
+        raw = items.get(key)
+        return float(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _trial_start_of(ent, force=False):
+    """该账号的试用起点（epoch s；未开始/取不到 None）。按账号 TTL 缓存。
+
+    成功值缓存 CATALOG_TTL；失败/未开始只缓存 60s，网络恢复后能尽快纠正。
+    """
+    with _cat_lock:
+        trial = dict(_catalog["trial"]) if _catalog["trial"] else None
+    if not trial:
+        return None
+    key = _acct_key(ent)
+    now = time.time()
+    with _cat_lock:
+        c = _trial_starts.get(key)
+        if c and not force:
+            ttl = CATALOG_TTL if c["val"] is not None else 60
+            if now - c["ts"] < ttl:
+                return c["val"]
+    val = _fetch_trial_start(ent, trial)
+    with _cat_lock:
+        _trial_starts[key] = {"ts": time.time(), "val": val}
+    return val
+
+
 def promo_state(ent):
-    """返回 (promos, trial, trial_start)。触发目录刷新（有 TTL 缓存，不额外打请求）。"""
+    """返回 (promos, trial, trial_start)。触发目录刷新（有 TTL 缓存，不额外打请求）。
+    promos 是平台级活动（所有账号同一到期日，天数相同是正常的）；
+    trial_start 是账号级数据，按 user_id 分开缓存。"""
     try:
         gw_models(ent)
     except Exception:
         pass
     with _cat_lock:
-        return (list(_catalog["promos"]),
-                (_catalog["trial"] and dict(_catalog["trial"])),
-                _catalog["trial_start"])
+        promos = list(_catalog["promos"])
+        trial = (_catalog["trial"] and dict(_catalog["trial"]))
+    return promos, trial, _trial_start_of(ent)
 
 
 def _model_ids(ent):
     return [m["id"] for m in gw_models(ent)]
+
+
+# 免费行的展示顺序＝auto 链的顺序（与 openai_proxy.WBAI_AUTO_CHAIN 同义，
+# 这里独立写死：平台模块不该反向依赖反代模块）
+WBAI_FREE_ORDER = ["deepseek-v4.1-flash", "hy3", "hy4-preview-f", "step-5-preview"]
+
+
+def is_free_credit(m):
+    """目录行 credits 形如 'x0.00' / 'x0.29' / 'x0.34 credits'；只有明确 0 才算免费。
+    空串/'-' 是未知倍率（Auto 档），不当免费模型用。"""
+    c = str((m or {}).get("credit") or "").strip().lower().lstrip("x")
+    if not c or c == "-":
+        return False
+    try:
+        return float(c.split()[0]) == 0.0
+    except (ValueError, IndexError):
+        return False
 
 
 def note_trial_use(name, ent, model):
@@ -438,7 +539,12 @@ def note_trial_use(name, ent, model):
     try:
         if not name or not model or ent.get("trial_start"):
             return
-        _, trial, _tstart = promo_state(ent)
+        try:
+            gw_models(ent)
+        except Exception:
+            pass
+        with _cat_lock:
+            trial = (_catalog["trial"] and dict(_catalog["trial"]))
         tm = ((trial or {}).get("model") or "").strip()
         hit = (tm and str(model).strip() == tm) or \
               (not tm and str(model).strip().startswith("hy4-preview"))  # config 拉取失败时按当前已知试用模型兜底
@@ -531,7 +637,20 @@ def _acct_usage_today(name):
             d = json.load(open(p, encoding="utf-8"))
             inner = (d.get("__acct") or {}).get("wbai/%s" % name) or {}
             today = inner.get(time.strftime("%Y-%m-%d")) or {}
-            return {k: v for k, v in today.items() if isinstance(v, dict)}
+            # 反代记账用的是客户端原始模型名（带 wb: 前缀），卡片按裸模型名查；
+            # 不归一化会导致「今日调用次数」恒为 0（2026-10-20 修）。
+            out = {}
+            for k, v in today.items():
+                if not isinstance(v, dict):
+                    continue
+                kk = str(k)
+                low = kk.lower()
+                for pre in ("wb:", "tb:", "codearts:", "teleagent:", "officeace:", "oa:"):
+                    if low.startswith(pre):
+                        kk = kk[len(pre):]
+                        break
+                out[kk] = v
+            return out
     except Exception:
         pass
     return {}
@@ -595,16 +714,26 @@ def read_account(name, ent):
                 else:
                     t.update(started=False)
                 ex["trial"] = t
-            # 免费模型维度（2026-10-20）：限免模型 0 积分（unlimited credits），
-            # 「积分余量」参考意义弱；重点看每模型用量（反代自记账聚合）+ 免费剩余天数。
+            # 免费模型维度（2026-10-20 改版）：面板要的是「四个免费行 × 每号各自的
+            # 窗口用量」。之前只铺限免活动名单，活动一结束那一行就整条消失
+            # （hy4-preview-f 10-10 到期后面板上再也看不到它，而它仍是 x0.00 行）。
+            # 现在按目录倍率取 0 的行做底，活动/试用只补 days_left/until。
             usage = _acct_usage_today(name)
-            fm = []
+            pm_by_model = {p["model"]: p for p in (ex.get("promos") or [])}
+            order = list(WBAI_FREE_ORDER)
+            seen = set(order)
             for p in (ex.get("promos") or []):
-                u = usage.get(str(p["model"])) or {}
-                fm.append({"model": str(p["model"]),
+                if p["model"] not in seen:
+                    order.append(p["model"])
+                    seen.add(p["model"])
+            fm = []
+            for mid in order:
+                p = pm_by_model.get(mid) or {}
+                u = usage.get(str(mid)) or {}
+                fm.append({"model": str(mid),
                            "days_left": p.get("days_left"),
-                           "until": p.get("until"),
-                           "note": "",
+                           "until": p.get("until") or "",
+                           "note": ("限免中" if p else ""),
                            "calls": int(u.get("calls") or 0),
                            "prompt_tokens": int(u.get("prompt_tokens") or 0),
                            "completion_tokens": int(u.get("completion_tokens") or 0)})

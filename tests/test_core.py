@@ -231,6 +231,115 @@ class TestOfficeaceIdentity(unittest.TestCase):
         self.assertEqual(server._ident_of("officeace", old),
                          server._ident_of("officeace", new))
 
+    def test_domain_prefixed_and_bare_uid_are_one_identity(self):
+        """2026-10-20 重复卡事故回归：网页登录落盘 `domain:user`，
+        本地导入落盘裸 `user`，字符串不等 ⇒ 同一人两张卡（其一无 AK/SK 恒报异常）。"""
+        composite = {"user_id": "01a080ec6520260f:01a080ec165be",
+                     "user_name": "yizhizongchai"}
+        bare = {"user_id": "01a080ec165be", "ak": "HST3-A", "sk": "S", "sts_token": "T"}
+        self.assertEqual(server._ident_of("officeace", composite),
+                         server._ident_of("officeace", bare))
+
+    def test_stub_key_reused_by_full_creds_no_suffix(self):
+        """先落「仅身份」残条占了主名，再导入完整凭据 → 沿用旧键，不得加 ·尾号。"""
+        path = _tmp_cred_file()
+        try:
+            server._cred_store_set(path, "yizhizongchai",
+                                   {"user_id": "dom:01a080ec165be"})
+            got = server._alloc_account_name(path, "officeace", "yizhizongchai",
+                                             {"user_id": "01a080ec165be",
+                                              "ak": "HST3-A"})
+            self.assertEqual(got, "yizhizongchai")
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+
+    def test_dedupe_drops_normalized_twin(self):
+        """完整凭据归并时，必须把归一后同身份的 ·尾号孪生键清掉。"""
+        path = _tmp_cred_file()
+        try:
+            server._cred_store_set(path, "yizhizongchai", {"user_id": "dom:01a080ec165be"})
+            server._cred_store_set(path, "yizhizongchai·1d5e",
+                                   {"user_id": "01a080ec165be", "ak": "HST3-A"})
+            server._cred_store_set(path, "别人", {"user_id": "01a080ec9999"})
+            dropped = server._dedupe_store(path, "officeace", "yizhizongchai",
+                                           {"user_id": "01a080ec165be"})
+            self.assertEqual(dropped, ["yizhizongchai·1d5e"])
+            self.assertIn("别人", server._read_json(path, {}))
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+
+    def test_save_cred_merges_stub_into_full_record(self):
+        """save_cred 回路：残条 + 完整凭据 = 一条卡，且 AK/SK/STS 不被身份空壳盖掉。"""
+        d = tempfile.mkdtemp(prefix="oac_ident_")
+        target = os.path.join(d, "officeace_accounts.json")
+        cred_files = {"officeace": target}
+        k1 = server._save_cred("officeace", {"user_id": "dom:01a080ec165be",
+                                             "user_name": "yizhizongchai"},
+                               "yizhizongchai", cred_files)
+        k2 = server._save_cred("officeace", {"user_id": "01a080ec165be", "ak": "A",
+                                             "sk": "S", "sts_token": "T"},
+                               "yizhizongchai", cred_files)
+        data = server._read_json(target, {})
+        self.assertEqual(k1, k2, "归一后同一身份必须沿用同一个键名")
+        self.assertEqual(len(data), 1, "归一后同一账号只剩一张卡")
+        self.assertEqual(data[k2]["ak"], "A")
+
+
+class TestMiniMaxV2JwtIdentityFallback(unittest.TestCase):
+    """2026-10-20「分身」事故回归：v2 会话令牌仅 ~1h，客户端没在跑时早已过期
+    ⇒ 身份反查 401 ⇒ 账号被判匿名，用令牌尾号另立一张 `MiniMax·rMAjWw`；
+    而 read_account 又会静默续期查到积分，于是它看起来像「健康的分身」。
+    修复：恰好只有一条 v2 会话且身份拿不到时，用本机长寿命 JWT 反查身份并号归并。"""
+
+    UID = "542150044671864839"
+    INFO = {"name": "一只总柴", "sub_name": "一只总柴", "user_id": "881234",
+            "real_user_id": UID, "phone": "13800001111"}
+
+    def setUp(self):
+        self._orig = {}
+        for f in ("load_auth_store", "fetch_user_info", "_local_jwt_identity",
+                  "_cn_config_users", "_cred_file_items", "load_token_cache",
+                  "_real_uid_from_local"):
+            self._orig[f] = getattr(mm, f)
+        mm.load_auth_store = lambda: [{
+            "access_token": "mmoat_000000rMAjWw", "auth_mode": "bearer",
+            "refresh_token": "mmort_x", "expires_at_ms": 1}]
+        mm.fetch_user_info = lambda tok, mode="bearer", **kw: None  # 令牌已过期
+        mm._cn_config_users = lambda: []
+        mm._cred_file_items = lambda: [("一只总柴", {"access_token": "mmoat_saved",
+                                                     "user_id": self.UID,
+                                                     "refresh_token": "mmort_saved"})]
+        mm.load_token_cache = lambda: ""
+        mm._real_uid_from_local = lambda: ""
+        mm._local_jwt_identity = lambda: dict(self.INFO)
+
+    def tearDown(self):
+        for f, fn in self._orig.items():
+            setattr(mm, f, fn)
+
+    def test_expired_v2_session_merges_into_real_card(self):
+        accs = mm.load_accounts()
+        self.assertEqual(list(accs), ["一只总柴"], "只应剩一张卡，不得另立匿名分身")
+        self.assertEqual(accs["一只总柴"]["user_id"], self.UID)
+
+    def test_two_v2_sessions_are_not_stamped_with_one_jwt(self):
+        """多条会话时无法判断对应关系 ⇒ 不许把 JWT 身份硬盖到每条上（防串号）。"""
+        mm.load_auth_store = lambda: [
+            {"access_token": "mmoat_000000AAAAAA", "auth_mode": "bearer"},
+            {"access_token": "mmoat_000000BBBBBB", "auth_mode": "bearer"}]
+        accs = mm.load_accounts()
+        self.assertEqual(sorted(accs), ["MiniMax·AAAAAA", "MiniMax·BBBBBB", "一只总柴"])
+        self.assertEqual(len(accs), 3, "多会话时宁保匿名卡，也不串到 JWT 身份上")
+
+    def test_bug_reproduces_without_the_fallback(self):
+        """证伪：把兜底摘掉必须重现分身 —— 否则这条断言只是跟着默认值一起绿。"""
+        mm._local_jwt_identity = lambda: None
+        accs = mm.load_accounts()
+        self.assertIn("MiniMax·rMAjWw", accs, "摘掉兜底后分身应重现")
+        self.assertEqual(len(accs), 2)
+
 
 class TestCodeartsSsoCookies(unittest.TestCase):
     """2026-10-18 回归：CodeArts SSO 会话 cookie 抓取/重放。

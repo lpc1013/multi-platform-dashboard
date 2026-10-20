@@ -1,6 +1,6 @@
 <!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WorkBuddy Token消耗看板</title>
+<title>AI Token 消耗看板</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#fafaf9;--card:#fff;--border:#e8e5df;--border2:#e4e1da;--border3:#efede8;--t1:#1f2328;--t2:#6f6c64;--t3:#9a978f;--t4:#b5b2a9;--t5:#a3a099;--t6:#55524b;--wcnm:#374151;--tdc:#3d3b36;--row:#f2f0ea;--empty:#f4f2ed;--hover:#fbfaf7;--focus:#c9c6be;--sep:#d4d1c9;--selbg:#e9f0f7;--selfg:#3f6b99;--selbd:#aec9e0;--red:#d64545;--blue:#5f8cb6;--tipbg:#1f2328;--tiptc:#fff;--font-ui:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;--fs-hero:76px;--fs-hero-md:44px;--fs-hero-sm:37px;--fs-kpi:24px;--fs-kpi-md:19px;--fs-kpi-sm:17px;--fs-t1:20px;--fs-t2:18px;--fs-t3:16.5px;--fs-body:15px;--fs-aux:13px;--fs-cap:11.5px;--fs-micro:10.5px;--sb-thumb:#c9c6be;--sb-thumb-hover:#a8a49b}
@@ -398,6 +398,19 @@ html{scrollbar-width:thin;scrollbar-color:var(--sb-thumb) transparent}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation:none!important;transition:none!important}
 }
+/* 平台卡：WorkBuddy 国内/国际、Qoder、Codex 并排；点击即过滤全看板 */
+.platrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-bottom:24px}
+.pcard{display:flex;flex-direction:column;gap:6px;align-items:flex-start;text-align:left;background:var(--card);border:1px solid var(--border);border-radius:15px;padding:16px 18px;cursor:pointer;font-family:inherit;min-width:0;transition:border-color .15s,box-shadow .15s,background .15s}
+.pcard:hover{border-color:var(--focus);background:var(--hover)}
+.pcard.on{border-color:var(--pc);box-shadow:0 0 0 1px var(--pc) inset}
+.pcard .pn{display:flex;align-items:center;gap:7px;font-size:var(--fs-aux);color:var(--t2);white-space:nowrap}
+.pcard .pn i{width:9px;height:9px;border-radius:50%;background:var(--pc);flex:none}
+.pcard .pest{font-style:normal;font-size:var(--fs-micro);color:var(--pc);border:1px solid var(--pc);border-radius:4px;padding:0 4px;line-height:1.5}
+.pcard .pv{font-size:var(--fs-kpi);font-weight:700;letter-spacing:-.4px;font-variant-numeric:tabular-nums;color:var(--t1);white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.pcard .pv small{font-size:var(--fs-cap);font-weight:500;color:var(--t3);margin-left:6px;letter-spacing:0}
+.pcard .pm{font-size:var(--fs-cap);color:var(--t3);white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+.pcard .pbar{width:100%;height:4px;border-radius:2px;background:var(--empty);overflow:hidden;margin-top:2px}
+.pcard .pbar>span{display:block;height:100%;background:var(--pc);border-radius:2px;min-width:0}
 </style></head><body data-view="overview">
 
 <div id="busy" class="busy" aria-hidden="true">筛选中…</div>
@@ -423,6 +436,10 @@ html{scrollbar-width:thin;scrollbar-color:var(--sb-thumb) transparent}
         </span>
       </div>
       <div class="tgroup">
+        <span class="flabel">平台</span>
+        <select id="platSel" class="tsel" title="按平台过滤"><option value="">全部平台</option></select>
+      </div>
+      <div class="tgroup">
         <span class="flabel">账号</span>
         <select id="acctSel" class="tsel" title="下钻到指定账号"><option value="-1">全部账号</option></select>
       </div>
@@ -431,6 +448,8 @@ html{scrollbar-width:thin;scrollbar-color:var(--sb-thumb) transparent}
     </div>
   </div>
 
+
+<section class="platrow" id="platRow"></section>
 
 <section class="kpis kpi-hero" id="kpis"></section>
 
@@ -527,6 +546,7 @@ const multOf=name=>{const n=(name||'').toLowerCase();for(const k in MULT){if(k==
 let MPM=D.models.map(m=>multOf(m));
 let win=30, customStart=0, customEnd=0, wsSort='tt', q='', state={ws:null,ses:null};
 let ACCT=-1;   // 账号筛选：-1 表示全部账号；>=0 表示只看该账号索引
+let PLAT='';   // 平台筛选：'' 表示全部平台；否则只看该平台（WorkBuddy 国内/国际、Qoder、Codex）
 let wsMult=3,PCTX=null,wsMode='ws',SHD=new Map();
 function vizCells(m){
   const days=PCTX?PCTX.days:[],avgD=PCTX?PCTX.avgD:1;
@@ -557,10 +577,13 @@ function buildViz(w){
   }
   return h;
 }
-function syncChrome(){const ld=$('#liveBadge');if(ld)ld.title='数据截至 '+D.gen+' · 请求级真实 usage'+(D._sys?' · '+D._sys:'');}
+function syncChrome(){const ld=$('#liveBadge');if(ld){const qm=D._qoderMeta||{};ld.title='数据截至 '+D.gen+' · 请求级 usage'+(qm.estReq>0?'（Qoder 含估算）':'')+(D._sys?' · '+D._sys:'');}}
 let genMs=D.genMs;
 const cut=()=>win?genMs-win*86400e3:(customStart?customStart*60000:0);
 const cutHi=()=>(!win&&customEnd)?customEnd*60000:Infinity;
+// 平台是会话属性：同一账号可能横跨国内/国际版；旧数据没有 s.p 时按账号回退
+const platOf=s=>s.p||(D.acctPlatform&&D.acctPlatform[s.a])||'WorkBuddy 国内版';
+const sessOn=s=>ACCT>=0?s.a===ACCT:(!PLAT||platOf(s)===PLAT);
 function fmt(n){if(n>=1e8)return (n/1e8).toFixed(2)+' 亿';if(n>=1e4)return (n/1e4).toFixed(1)+' 万';return String(Math.round(n));}
 const nf=n=>n.toLocaleString('en-US');
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -570,7 +593,7 @@ function ftime(d){const p=x=>String(x).padStart(2,'0');return p(d.getHours())+':
 
 function iterReq(cb){
   const c=cut();
-  for(const s of D.sess){if(ACCT>=0&&s.a!==ACCT)continue;
+  for(const s of D.sess){if(!sessOn(s))continue;
     let tt=0,tn=0;
     const reqs=[];
     for(const r of s.r){const ts=r[0]*60000;if(ts<c)continue;reqs.push(r);tt+=r[2];tn++;}
@@ -579,18 +602,24 @@ function iterReq(cb){
 }
 function aggregate(){
   const c=cut(),hiC=cutHi();
+  const hiB=Math.min(hiC,genMs||Date.now());
+  const len=Math.max(0,hiB-c),cPrev=c-len;
   const daily={},ws={},band=[0,0,0,0];
   const hr=new Array(24).fill(0);
   const mTot=new Array(D.models.length).fill(0);
   const dm={};
-  let tot=0,inp=0,out=0,ch=0,turns=0,nsess=0,cost=0,creds=0,ocred=0,ocredN=0,turnsN=0,busy=0,saved=0;
+  let tot=0,inp=0,out=0,ch=0,turns=0,nsess=0,cost=0,creds=0,ocred=0,ocredN=0,ocredWB=0,ocredQ=0,turnsN=0,busy=0,saved=0;
+  let pTot=0,pTurns=0,pOcred=0,pOcredWB=0,pOcredQ=0;
   const tools={};
   const sessAgg=[];
   const mCred=new Array(D.models.length).fill(0);
   const mApi=new Array(D.models.length).fill(0);
-  for(const s of D.sess){if(ACCT>=0&&s.a!==ACCT)continue;
+  for(const s of D.sess){if(!sessOn(s))continue;
+    const isQ=platOf(s)==='Qoder';
     let tt=0,tn=0,first=0,last=0;
-    for(const r of s.r){const ts=r[0]*60000;if(ts<c||ts>=hiC)continue;
+    for(const r of s.r){const ts=r[0]*60000;
+      if(ts>=cPrev&&ts<c){pTot+=r[2];pTurns++;if(r[7]!=null){pOcred+=r[7];if(isQ)pOcredQ+=r[7];else pOcredWB+=r[7];}}
+      if(ts<c||ts>=hiC)continue;
       const d=hm(r[0]);const dk=fdate(d);const h=d.getHours();
       (daily[dk]=daily[dk]||{h:new Array(24).fill(0),hh:new Array(72).fill(0),tt:0});
       daily[dk].h[h]+=r[2];daily[dk].tt+=r[2];
@@ -599,8 +628,8 @@ function aggregate(){
       (dm[dk]=dm[dk]||{});dm[dk][r[1]]=(dm[dk][r[1]]||0)+r[2];
       const wn=s.w;ws[wn]=ws[wn]||{tt:0,n:0,cred:0,api:0};ws[wn].tt+=r[2];if(r[7]!=null)ws[wn].cred+=r[7];
       const bi=Math.floor(h/6);band[bi]+=r[2];
-      tot+=r[2];inp+=r[3];out+=r[4];ch+=r[5];turns++;tn++;tt+=r[2];if(r[7]!=null){ocred+=r[7];ocredN++;}
-      const pp=MP[r[1]];const cht=Math.max(0,Math.min(r[5],r[3]));const cwt=Math.max(0,Math.min(r[6]||0,r[3]-cht));const chunk=(cht*pp[2]+cwt*1.25*pp[0]+(r[3]-cht-cwt)*pp[0]+r[4]*pp[1])/1e6;cost+=chunk;
+      tot+=r[2];inp+=r[3];out+=r[4];ch+=r[5];turns++;tn++;tt+=r[2];if(r[7]!=null){ocred+=r[7];ocredN++;if(isQ)ocredQ+=r[7];else ocredWB+=r[7];}
+      const pp=isQ?[0,0,0]:MP[r[1]];const cht=Math.max(0,Math.min(r[5],r[3]));const cwt=Math.max(0,Math.min(r[6]||0,r[3]-cht));const chunk=(cht*pp[2]+cwt*1.25*pp[0]+(r[3]-cht-cwt)*pp[0]+r[4]*pp[1])/1e6;cost+=chunk;
       saved+=cht*(pp[0]-pp[2])/1e6;  // 缓存省钱：命中部分若按输入价买 API 需多付的差价
       if(r[7]!=null){mCred[r[1]]+=r[7];mApi[r[1]]+=chunk;ws[wn].api+=chunk;}
       creds+=r[2]/1e6*MPM[r[1]];
@@ -610,7 +639,8 @@ function aggregate(){
   }
   const wsArr=D.ws.map((nm,i)=>({i,n:nm,tt:(ws[i]||{tt:0}).tt,cnt:(ws[i]||{n:0}).n,cred:(ws[i]||{cred:0}).cred,api:(ws[i]||{api:0}).api})).filter(x=>x.tt>0);
   const tkArr=Object.entries(tools).sort((a,b)=>b[1]-a[1]);
-  return {daily,wsArr,band,tot,inp,out,ch,turns,nsess,sessAgg,hr,mTot,dm,cost,creds,ocred,ocredN,busy,tkArr,saved,mCred,mApi};
+  return {daily,wsArr,band,tot,inp,out,ch,turns,nsess,sessAgg,hr,mTot,dm,cost,creds,ocred,ocredN,ocredWB,ocredQ,busy,tkArr,saved,mCred,mApi,
+    prev:{tot:pTot,turns:pTurns,ocred:pOcred,ocredWB:pOcredWB,ocredQ:pOcredQ}};
 }
 
 /* fnote 展开态记忆：面板周期性重渲 #kpis 会重置 <details>，用捕获级 toggle 事件记住状态、重渲时还原 */
@@ -619,29 +649,26 @@ document.addEventListener('toggle',e=>{if(e.target&&e.target.matches&&e.target.m
 function renderKpis(A){
   const days=Object.keys(A.daily).length||1;
   const ce=A.inp?A.ch/A.inp*100:0;
-  const ocredS=A.ocred>=100?Math.round(A.ocred).toLocaleString():A.ocred.toFixed(2);
+  const scopeQ=PLAT==='Qoder'||(ACCT>=0&&D.accts&&D.accts[ACCT]==='Qoder');
+  const scopeAll=!PLAT&&ACCT<0;
+  const mixedCred=scopeAll&&A.ocredQ>0&&A.ocredWB>0;
+  const ocredShow=scopeQ?A.ocredQ:A.ocred;
+  const ocredS=ocredShow>=100?Math.round(ocredShow).toLocaleString():ocredShow.toFixed(2);
   const cover=A.turns?Math.round(A.ocredN/A.turns*100):0;
   const money=A.cost>=1e4?'¥'+(A.cost/1e4).toFixed(1)+' 万':'¥'+A.cost.toFixed(1);
   const MB=D._memb||{hi:0.05,mo:0.035,yr:0.028,src:'',bases:{}};
-  const yuanLo=A.ocred*MB.yr,yuanHi=A.ocred*MB.hi;
+  const yuanLo=A.ocredWB*MB.yr,yuanHi=A.ocredWB*MB.hi;
   const fy=v=>v>=1e4?'¥'+(v/1e4).toFixed(1)+' 万':v>=100?'¥'+Math.round(v).toLocaleString():'¥'+v.toFixed(1);
   const yuanS=yuanHi>=100?fy(yuanLo)+' ~ '+fy(yuanHi):'¥'+yuanLo.toFixed(2)+' ~ ¥'+yuanHi.toFixed(2);
   const busyH=A.busy/3600;
   const busyS=busyH>=1?busyH.toFixed(1)+' 小时':Math.round(busyH*60)+' 分钟';
   const sub=t=>'<span style="display:block;font-size:var(--fs-aux);color:var(--t3);font-weight:400;margin-top:3px">'+t+'</span>';
   const toolS=nf(A.tkArr.length)+' 个'+(A.tkArr.length?sub('主力 '+esc(A.tkArr[0][0])):'');
-  // ---- 环比：本期 vs 上一期同等长度窗口（从按日聚合现算，无需历史快照）----
-  let prev={ocred:null,tot:null,turns:null};
-  try{
-    const c=cut(),hi=Math.min(cutHi(),genMs),len=hi-c;
-    if(len>0&&D._daily&&D._daily.length){
-      const sum=a=>a.reduce((x,y)=>x+y,0);
-      const inWin=(x,lo,hi_)=>x.m>=lo&&x.m<hi_;
-      const cur=D._daily.filter(x=>inWin(x,c,hi)),pre=D._daily.filter(x=>inWin(x,c-len,c));
-      const acc=a=>({ocred:sum(a.map(x=>x.ocred)),tot:sum(a.map(x=>x.tot)),turns:sum(a.map(x=>x.turns))});
-      prev=acc(pre);prev.cur=acc(cur);
-    }
-  }catch(e){}
+  // ---- 环比：本期 vs 上一期同等长度窗口（按当前平台/账号过滤后现算）----
+  const prev=A.prev||{ocred:0,tot:0,turns:0,ocredWB:0,ocredQ:0};
+  const credPrev=scopeQ?prev.ocredQ:(scopeAll?prev.ocred:prev.ocredWB);
+  const moneyBit=A.ocredWB>0?('折合'+(mixedCred?' WB ':'官方')+'积分 '+fy(A.ocredWB)+' · '):'';
+  const credSub=mixedCred?sub('WB + Qoder 独立计费'):'';
   const dlt=(cur,pre)=>{
     if(pre==null||!(pre>0)||cur==null)return '';
     const d=(cur-pre)/pre*100;
@@ -655,21 +682,23 @@ function renderKpis(A){
   const fitTxt=fmKeys.length
     ?'本机逐模型实测计费（回归 R² 按模型内计算）：'+fmKeys.map(m=>esc(m)+' 每1M输入 '+FM[m].a+' / 每1M输出 '+FM[m].b+' 积分（R²='+FM[m].r2+'）').join('；')+'。'
     :'本机样本不足，未做计费公式回归。';
+  const qm=D._qoderMeta||{};
+  const qnote=qm.estReq>0?('<br><b>Qoder</b>：新版客户端/CLI 的日志把 token 字段恒写成 0，本页按每条请求的 <code>context_usage_ratio</code> × 会话校准窗口（200k / 400k / 1M）估算输入，输出按回复文本长度估算；请求数、会话与积分取自日志原文（全量 估算 '+nf(qm.estReq)+' 条 / 精确 '+nf(qm.exactReq)+' 条）。'+(qm.gate?'用户环境变量 QODERCN_EXPOSE_TOKEN_USAGE=1 已写入（重启 Qoder 后新会话生效）。':'设置 QODERCN_EXPOSE_TOKEN_USAGE=1 并重启 Qoder 后，新会话可记录真实 token。')+' 跨平台合计时，WorkBuddy 与 Qoder 的「积分」各自独立计费，不可互换；金额估算与 API 直购价仅按 WorkBuddy 统计，Qoder 不参与折算。'):'';
   $('#kpis').innerHTML=[
-    ['合计 Token',fmt(A.tot)+dlt(A.tot,prev.tot),sub('窗口共 '+days+' 天 · 折合官方积分 '+fy(A.ocred)+' · 覆盖 '+nf(A.nsess)+' 个会话')],
+    ['合计 Token',fmt(A.tot)+dlt(A.tot,prev.tot),sub('窗口共 '+days+' 天 · '+moneyBit+'覆盖 '+nf(A.nsess)+' 个会话')],
     ['日均（有数据天）',fmt(A.tot/days)],
     ['会话',nf(A.nsess)],
     ['轮次',nf(A.turns)+dlt(A.turns,prev.turns)],
     ['输入 / 输出比',(A.out?Math.round(A.inp/A.out):0)+':1'],
-    ['缓存命中率',ce.toFixed(1)+'%'+(A.saved>0?sub('为你省 '+fy(A.saved)+'（API 口径）'):'')],
+    ['缓存命中率',(scopeQ&&!A.ch)?'—'+sub('估算未含缓存'):(ce.toFixed(1)+'%'+(A.saved>0?sub('为你省 '+fy(A.saved)+'（API 口径）'):''))],
     ['使用工具',toolS],
     ['AI 耗时',busyS+sub('事件间隔≤5 分钟合并')],
-    ['官方实际积分',ocredS+dlt(A.ocred,prev.ocred)],
-    ['消耗金额估算',yuanS],
-    ['同用量 API 直购价',money]
+    [scopeQ?'Qoder 积分':(mixedCred?'平台积分合计':'官方实际积分'),ocredS+dlt(ocredShow,credPrev)+credSub],
+    scopeQ?['消耗金额估算','—',sub('Qoder 积分不折算')]:[(mixedCred?'WB ':'')+'消耗金额估算',yuanS],
+    scopeQ?['同用量 API 直购价','—',sub('无外部 API 牌价')]:[mixedCred?'API 直购价（WB）':'同用量 API 直购价',money]
   ].map((x,i)=>'<div class="kpi'+(i===0?' lead':'')+'"><div class="k">'+x[0]+'</div><div class="v">'+x[1]+'</div>'+(x[2]?'<div class="s">'+x[2]+'</div>':'')+'</div>').join('')
   +'<details class="fnote"'+(window._fnOpen?' open':'')+' style="grid-column:1/-1"><summary>计价口径与数据来源说明</summary>'
-  +'<div class="fnbody">「官方实际积分」= 日志逐请求 credit 汇总（覆盖率 '+cover+'%），与 App 账单同源。'+fitTxt+'1 积分 ≈ '+MB.hi+' 元（月付原价）／'+MB.mo+'（连续包月）／'+MB.yr+'（连续包年）（积分单价源：'+esc(MB.src)+'）。「同用量 API 直购价」为按厂商牌价的理论费用，非实际支出（价格源：'+esc(PRICE_SRC)+'）；「缓存省的钱」为缓存命中部分按输入价计的差价，同一口径。</div></details>';
+  +'<div class="fnbody">「官方实际积分」= 日志逐请求 credit 汇总（覆盖率 '+cover+'%），与 App 账单同源。'+fitTxt+'1 积分 ≈ '+MB.hi+' 元（月付原价）／'+MB.mo+'（连续包月）／'+MB.yr+'（连续包年）（积分单价源：'+esc(MB.src)+'）。「同用量 API 直购价」为按厂商牌价的理论费用，非实际支出（价格源：'+esc(PRICE_SRC)+'）；「缓存省的钱」为缓存命中部分按输入价计的差价，同一口径。'+qnote+'</div></details>';
 }
 
 function renderTopCred(A){
@@ -773,7 +802,7 @@ function hourData(){
   const vals=Array.from({length:24},()=>[]),hrTot=new Array(24).fill(0),dom=new Array(24).fill(-1);
   const mH=Array.from({length:24},()=>({})),mC=Array.from({length:24},()=>({}));
   let gmax=0;
-  for(const s of D.sess){if(ACCT>=0&&s.a!==ACCT)continue;for(const r of s.r){const ts=r[0]*60000;if(ts<c||ts>=hiC)continue;const h=hm(r[0]).getHours();vals[h].push(r[2]);hrTot[h]+=r[2];if(r[2]>gmax)gmax=r[2];const mm=mH[h];mm[r[1]]=(mm[r[1]]||0)+r[2];const cc=mC[h];cc[r[1]]=(cc[r[1]]||0)+1;}}
+  for(const s of D.sess){if(!sessOn(s))continue;for(const r of s.r){const ts=r[0]*60000;if(ts<c||ts>=hiC)continue;const h=hm(r[0]).getHours();vals[h].push(r[2]);hrTot[h]+=r[2];if(r[2]>gmax)gmax=r[2];const mm=mH[h];mm[r[1]]=(mm[r[1]]||0)+r[2];const cc=mC[h];cc[r[1]]=(cc[r[1]]||0)+1;}}
   for(let h=0;h<24;h++){let bm=-1,bv=-1;for(const k in mH[h])if(mH[h][k]>bv){bv=mH[h][k];bm=+k;}dom[h]=bm;}
   return {vals,hrTot,dom,gmax,mH,mC};
 }
@@ -900,7 +929,7 @@ function renderModelDist(){
   const svg=$('#mdSvg');const W=svg.clientWidth||300;
   const c=cut(),hiC=cutHi();
   const bym={};
-  for(const s of D.sess){if(ACCT>=0&&s.a!==ACCT)continue;for(const r of s.r){const ts=r[0]*60000;if(ts<c||ts>=hiC)continue;(bym[r[1]]=bym[r[1]]||[]).push(r[2]);}}
+  for(const s of D.sess){if(!sessOn(s))continue;for(const r of s.r){const ts=r[0]*60000;if(ts<c||ts>=hiC)continue;(bym[r[1]]=bym[r[1]]||[]).push(r[2]);}}
   const rows=Object.keys(bym).map(Number).sort((a,b)=>bym[b].length-bym[a].length).slice(0,8);
   if(!rows.length){svg.setAttribute('viewBox','0 0 '+W+' 60');svg.setAttribute('height',60);svg.innerHTML='<text x="16" y="30" font-size="11" fill="'+CJ.muted+'">该时间范围内无数据</text>';$('#mdCap').textContent='';return;}
   const st=rows.map(m=>{const a=bym[m].slice().sort((x,y)=>x-y);const n=a.length;
@@ -980,7 +1009,7 @@ function renderPanel(A){
   const tools=$('#wsTools');
   const c=cut(),hiC=cutHi();
   const WHD={},dset={};SHD=new Map();
-  for(const s of D.sess){if(ACCT>=0&&s.a!==ACCT)continue;
+  for(const s of D.sess){if(!sessOn(s))continue;
     let sm=null;
     for(const r of s.r){const ts=r[0]*60000;if(ts<c||ts>=hiC)continue;const d=hm(r[0]);const dk=fdate(d);
       dset[dk]=1;
@@ -1101,13 +1130,15 @@ function renderAccts(){
   const c=cut(),hiC=cutHi();
   const agg={};
   for(const s of D.sess){
+    if(PLAT&&platOf(s)!==PLAT)continue;
     const ai=(s.a<0)?D.accts.length:s.a;
     const a=agg[ai]=agg[ai]||{tt:0,cred:0,n:0};
-    for(const r of s.r){const ts=r[0]*60000;if(ts<c||ts>=hiC)continue;a.tt+=r[2];if(r[7]!=null)a.cred+=r[7];}
-    a.n++;
+    let any=false;
+    for(const r of s.r){const ts=r[0]*60000;if(ts<c||ts>=hiC)continue;a.tt+=r[2];if(r[7]!=null)a.cred+=r[7];any=true;}
+    if(any)a.n++;
   }
   const labels=D.accts.concat(['未知/未归属']);
-  const order=Object.keys(agg).map(Number).sort((x,y)=>agg[y].tt-agg[x].tt);
+  const order=Object.keys(agg).map(Number).filter(i=>agg[i].tt>0||agg[i].n>0).sort((x,y)=>agg[y].tt-agg[x].tt);
   const grand=order.reduce((s,i)=>s+agg[i].tt,0);
   const maxT=Math.max(1,...order.map(i=>agg[i].tt));
   let h='';
@@ -1121,21 +1152,68 @@ function renderAccts(){
   }
   box.innerHTML=h;
   box.querySelectorAll('[data-acct]').forEach(el=>el.onclick=()=>{const v=+el.dataset.acct;setAcct(ACCT===v?-1:v);});
-  if($('#acctCap'))$('#acctCap').textContent='窗口内按账号拆分（点击某行＝把全看板下钻到该账号）';
+  if($('#acctCap'))$('#acctCap').textContent='窗口内按账号拆分'+(PLAT?' · 平台：'+PLAT:'')+'（点击某行＝把全看板下钻到该账号）';
+}
+const PLAT_COLORS={'WorkBuddy 国内版':'#0B5FA5','WorkBuddy 国际版':'#1B9AAA','Qoder':'#7c3aed','Codex':'#6f6c64','未归属':'#9a978f'};
+const platformList=()=>(D._platforms&&D._platforms.length)?D._platforms:['WorkBuddy 国内版','WorkBuddy 国际版','Qoder'];
+function renderPlatCards(){
+  const box=$('#platRow');if(!box)return;
+  const c=cut(),hiC=cutHi();
+  const agg={};
+  for(const s of D.sess){
+    const p=platOf(s);
+    const a=agg[p]=agg[p]||{tt:0,cred:0,n:0};
+    let any=false;
+    for(const r of s.r){const ts=r[0]*60000;if(ts<c||ts>=hiC)continue;a.tt+=r[2];if(r[7]!=null)a.cred+=r[7];any=true;}
+    if(any)a.n++;
+  }
+  const grand=Object.keys(agg).reduce((x,k)=>x+agg[k].tt,0);
+  const qm=D._qoderMeta||{};
+  box.innerHTML=platformList().map(p=>{
+    const a=agg[p]||{tt:0,cred:0,n:0};
+    const pct=grand?a.tt/grand*100:0;
+    const badge=(p==='Qoder'&&qm.estReq>0)?'<em class="pest" title="Qoder 新版日志不写 token：按上下文占比 × 校准窗口估算">估算</em>':'';
+    return '<button type="button" class="pcard'+(PLAT===p?' on':'')+'" data-plat="'+esc(p)+'" style="--pc:'+(PLAT_COLORS[p]||'#8a877f')+'">'
+      +'<span class="pn"><i></i>'+esc(p)+badge+'</span>'
+      +'<span class="pv">'+fmt(a.tt)+(a.cred>0?'<small>'+Math.round(a.cred).toLocaleString()+' 积分</small>':'')+'</span>'
+      +'<span class="pm">'+a.n+' 会话 · '+pct.toFixed(1)+'%'+(grand?'':' · 窗口内无数据')+'</span>'
+      +'<span class="pbar"><span style="width:'+(a.tt?Math.max(2,pct):0)+'%"></span></span></button>';
+  }).join('');
+  box.querySelectorAll('[data-plat]').forEach(el=>el.onclick=()=>setPlat(PLAT===el.dataset.plat?'':el.dataset.plat));
+}
+function populatePlatSel(){
+  const box=$('#platSel');if(!box)return;
+  box.innerHTML='<option value="">全部平台</option>'+platformList().map(p=>'<option value="'+esc(p)+'"'+(PLAT===p?' selected':'')+'>'+esc(p)+'</option>').join('');
 }
 function populateAcctPills(){
   const box=$('#acctSel');if(!box||!D.accts)return;
+  const allow={};
+  if(PLAT){for(const s of D.sess){if(platOf(s)===PLAT&&s.a>=0)allow[s.a]=1;}}
+  if(ACCT>=0&&PLAT&&!allow[ACCT])ACCT=-1;
   let h='<option value="-1">全部账号</option>';
-  D.accts.forEach((nm,i)=>{h+='<option value="'+i+'"'+(ACCT===i?' selected':'')+'>'+esc(nm)+'</option>';});
+  D.accts.forEach((nm,i)=>{
+    if(PLAT&&!allow[i])return;
+    h+='<option value="'+i+'"'+(ACCT===i?' selected':'')+'>'+esc(nm)+'</option>';
+  });
   box.innerHTML=h;
 }
 $('#acctSel').addEventListener('change',e=>setAcct(+e.target.value));
+$('#platSel').addEventListener('change',e=>setPlat(e.target.value));
 function setAcct(v){
-  ACCT=v;
+  ACCT=v;state={ws:null,ses:null};
   populateAcctPills();   // 同步更新顶部药丸高亮（先改 DOM）
   renderAccts();         // 同步更新账号分布面板选中态（轻量）
   const b=$('#busy');if(b)b.style.display='flex';   // 立即显示"筛选中…"，让用户看到点击已生效
   // 双重 rAF：先把高亮与浮层绘制出来，再执行整页重型渲染，避免主线程阻塞导致"点了没反应"
+  requestAnimationFrame(()=>requestAnimationFrame(()=>{
+    render();
+    if(b)b.style.display='none';
+  }));
+}
+function setPlat(v){
+  PLAT=v;ACCT=-1;state={ws:null,ses:null};
+  populatePlatSel();populateAcctPills();
+  const b=$('#busy');if(b)b.style.display='flex';
   requestAnimationFrame(()=>requestAnimationFrame(()=>{
     render();
     if(b)b.style.display='none';
@@ -1149,7 +1227,7 @@ function renderEmpty(){
   el.innerHTML='<div style="font-size:var(--fs-hero-md);margin-bottom:12px">📭</div>'
     +'<div style="font-size:var(--fs-t2);font-weight:600;margin-bottom:8px">还没有可统计的使用数据</div>'
     +'<div style="font-size:var(--fs-body);color:var(--t2);line-height:1.9;text-align:left;margin:16px 0">'
-    +'看板数据来自本机会话日志（<code>~/.workbuddy/projects/**/*.jsonl</code>）。首次使用请：<br>'
+    +'看板数据来自本机会话日志（<code>~/.workbuddy/projects/**/*.jsonl</code>、<code>~/.workbuddy-ai/projects/**/*.jsonl</code>、<code>~/.qoder-cn/projects/**/*.jsonl</code>）。首次使用请：<br>'
     +'1. 正常使用 WorkBuddy 跑几个任务（产生对话与工具调用）<br>'
     +'2. 重新生成看板（对本 skill 说"看看我的 token 用量"）<br>'
     +'3. 数据积累越久，趋势与续航推算越准</div>'
@@ -1158,7 +1236,7 @@ function renderEmpty(){
 }
 function render(){
   const A=aggregate();LASTA=A;
-  renderKpis(A);renderHeat(A);renderBand4(A);renderCrumb();renderPanel(A);
+  renderPlatCards();renderKpis(A);renderHeat(A);renderBand4(A);renderCrumb();renderPanel(A);
   renderRidge(A);renderTop5(A);renderDailyModel(A);
   renderModelDist();renderTopCred(A);renderAccts();
   const ps=document.querySelector('.panel-scroll:not(.tall)'),hc=document.querySelector('#heatCard');
@@ -1178,6 +1256,7 @@ window.addEventListener('resize',()=>{if(window.innerWidth===_lw)return;_lw=wind
 clearTimeout(window._wzT);window._wzT=setTimeout(()=>{if(D.sess.length)render();},200);});
 function bootRender(){
   syncChrome();
+  populatePlatSel();
   populateAcctPills();
   if(!D.sess.length){renderEmpty();return;}
   render();
@@ -1194,6 +1273,7 @@ window.__applyData=function(nd){
   MPM=D.models.map(m=>multOf(m));
   genMs=D.genMs;
   ACCT=-1;selModel=null;hrSel=null;state={ws:null,ses:null};
+  if(PLAT&&!(D._platforms||[]).includes(PLAT))PLAT='';
   document.querySelectorAll('.wrap').forEach(w=>w.style.display='');
   document.querySelectorAll('body > div').forEach(d=>{if(d.id!=='tip'&&d.id!=='busy'&&!d.classList.contains('wrap'))return;});
   bootRender();

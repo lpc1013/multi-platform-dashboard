@@ -375,9 +375,9 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .upcard{background:#fff;border:1px solid var(--line);border-radius:14px;padding:14px 16px;box-shadow:var(--shadow);
   scroll-margin-top:12px;display:flex;flex-direction:column;transition:transform .16s,box-shadow .16s,padding .18s,border-radius .18s}
 .upcard:hover{transform:translateY(-1px);box-shadow:var(--shadow-lg)}
-.upcard .uhead{display:flex;align-items:center;gap:8px;font-size:var(--fs-t3);font-weight:600;margin-bottom:10px}
+.upcard .uhead{display:flex;align-items:center;gap:8px;font-size:var(--fs-t3);font-weight:600;margin-bottom:10px;flex-wrap:wrap}
 .upcard .dot2{width:9px;height:9px;border-radius:50%;flex:none}
-.upcard .st{margin-left:auto;font-size:var(--fs-cap);font-weight:600;padding:2px 9px;border-radius:99px}
+.upcard .st{margin-left:auto;font-size:var(--fs-cap);font-weight:600;padding:2px 9px;border-radius:99px;white-space:nowrap;flex:none}
 .upcard .st.ok{background:var(--green-soft);color:var(--green)}
 .upcard .st.bad{background:var(--red-soft);color:var(--red)}
 .upcard .st.idle{background:#eef2f6;color:var(--muted)}
@@ -385,47 +385,230 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .upcard .urow{padding:5px 0;color:var(--ink2);font-size:var(--fs-aux);line-height:1.45}
 .upcard .uk{display:block;color:var(--muted);font-size:var(--fs-cap);font-weight:600;letter-spacing:.3px}
 .upcard .uv{display:block;font-variant-numeric:tabular-nums;overflow-wrap:break-word}
-.upcard .uerr{margin-top:6px;font-size:var(--fs-cap);color:var(--red);line-height:1.5}
+.upcard .uerr{margin-top:6px;font-size:var(--fs-cap);color:var(--red);line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .upcard .uidle{margin-top:6px;font-size:var(--fs-cap);color:var(--muted);line-height:1.5}
-/* 账号池：每号一行（名 + 剩余额度条 + 百分比），点击行打开详情弹窗 */
-.upcard .acctrow{display:flex;align-items:center;gap:7px;padding:3px 0;cursor:pointer;font-size:var(--fs-cap);color:var(--ink2)}
-.upcard .acctrow:hover{color:var(--ink)}
-.upcard .acctrow .anm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.upcard .abar{width:64px;height:5px;border-radius:3px;background:var(--line,#e6e4de);overflow:hidden;flex:none}
-.upcard .abar i{display:block;height:100%;background:var(--brand,#008BA3);border-radius:3px}
-.upcard .abar.low i{background:var(--red,#c0392b)}
-.upcard .apct{width:38px;text-align:right;font-variant-numeric:tabular-nums;flex:none}
-.upcard .cool{font-size:var(--fs-cap);color:var(--red)}
+/* 通用额度条：卡片与弹窗共用 */
+.qbar{display:block;height:6px;border-radius:99px;background:var(--line);overflow:hidden;flex:1;min-width:36px}
+.qbar>i{display:block;height:100%;border-radius:99px;background:var(--brand);transition:width .45s ease}
+.qbar.daily>i{background:#0d9488}
+.qbar.credits>i{background:var(--brand)}
+.qbar.signin>i{background:var(--green)}
+.qbar.acct>i{background:var(--blue)}
+.qbar.low>i{background:var(--red)}
+.qbar.unknown>i{background:repeating-linear-gradient(135deg,#c9d1dc 0 5px,#e6ebf1 5px 10px)}
+/* 账号池：卡片只做概览（额度条 + 每号状态），点整卡看详情 */
+.upcard .qbars{display:flex;flex-direction:column;gap:6px;padding:2px 0 9px}
+.upcard .qrow{display:flex;align-items:center;gap:8px;font-size:var(--fs-cap);color:var(--ink2)}
+.upcard .qk{flex:none;width:58px;color:var(--muted);font-weight:600;letter-spacing:.2px}
+.upcard .qv{flex:none;width:38px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700;color:var(--ink2)}
+.upcard .qnote{padding:2px 0 9px;font-size:var(--fs-cap);color:var(--muted)}
+.upcard .qskeleton{display:flex;flex-direction:column;gap:8px;padding:4px 0 11px}
+.upcard .qskeleton i{display:block;height:6px;border-radius:99px;
+  background:linear-gradient(90deg,#eef1f6,#e2e8f2,#eef1f6);background-size:200% 100%;animation:qshimmer 1.2s linear infinite}
+.upcard .qskeleton i:nth-child(2){width:72%}
+@keyframes qshimmer{to{background-position:-200% 0}}
+.upcard .acctrow{display:flex;align-items:center;gap:8px;padding:4px 0;font-size:var(--fs-cap);color:var(--ink2)}
+.upcard .acctrow + .acctrow{border-top:1px dashed #eef1f5}
+.upcard .acctrow .anm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.upcard .ast{flex:none;font-size:var(--fs-micro);font-weight:700;padding:1px 7px;border-radius:99px;
+  background:#eef2f6;color:var(--muted);white-space:nowrap}
+.upcard .ast.ok{background:var(--green-soft);color:var(--green)}
+.upcard .ast.bad{background:var(--red-soft);color:var(--red)}
+.upcard .ast.cool{background:var(--orange-soft);color:var(--orange)}
+.upcard .ast.pending{background:#eef2f6;color:var(--muted)}
 /* 账号池大字摘要（N 号可用）， important 信息上移 */
-.upcard .poolsum{font-size:var(--fs-t2);font-weight:700;color:var(--ink);line-height:1.3;padding:2px 0 6px}
+.upcard .poolsum{font-size:var(--fs-t2);font-weight:700;color:var(--ink);line-height:1.3;padding:2px 0 8px}
 .upcard .poolsum small{font-size:var(--fs-cap);font-weight:600;color:var(--muted);margin-left:7px}
-/* 账号详情弹窗（楷体正文；重要的大字摘要在最上面） */
-.acct-kai{font-family:"楷体","KaiTi","STKaiti","KaiTi_GB2312",serif}
-.acct-hero{display:flex;gap:12px;margin:2px 0 14px}
-.acct-hero .cell{flex:1;background:#f8f7f2;border:1px solid var(--line);border-radius:14px;padding:12px 14px}
-.acct-hero .cell .k{font-size:var(--fs-cap);color:var(--muted);font-weight:600;margin-bottom:4px}
-.acct-hero .cell .v{font-size:25px;font-weight:700;color:var(--ink);line-height:1.25;font-variant-numeric:tabular-nums}
-.acct-hero .cell .s{font-size:var(--fs-cap);color:var(--muted);margin-top:2px}
-.acct-hero .cell.warn .v{color:var(--red)}
-.acct-fm{border-top:1px dashed var(--line);padding-top:8px}
-.acct-fm .fmr{display:flex;align-items:baseline;gap:10px;padding:6px 0;font-size:16px;color:var(--ink2)}
-.acct-fm .fmr .m{font-weight:700;color:var(--ink);font-size:17px}
-.acct-fm .fmr .u{font-size:var(--fs-aux)}
-.acct-fm .fmr .d{margin-left:auto;flex:none;font-size:var(--fs-cap);font-weight:700;color:var(--green);
-  background:var(--green-soft);border-radius:99px;padding:2px 10px}
-.acct-fm .fmr .d.soon{color:var(--red);background:var(--red-soft)}
-.acct-fm .fmr .d.lim{color:var(--red);background:var(--red-soft);margin-left:0}
-.acct-fm .fmr .d.lim + .d{margin-left:0}
-.acct-pkgs{border-top:1px dashed var(--line);margin-top:10px;padding-top:10px;
-  font-size:15px;color:var(--ink2);line-height:1.9}
-.acct-pkgs b{font-weight:700;color:var(--ink)}
-.acct-pkgs .pk{display:flex;justify-content:space-between;gap:12px}
-.acct-pkgs .pk .r{flex:none;color:var(--muted);font-variant-numeric:tabular-nums}
-.acct-pkgs .none{color:var(--muted)}
 .upcard.clickable{cursor:pointer}
 .upcard.clickable:hover{border-color:#cfd7e3}
-/* hint 吸底：可选行（默认模型缺失等）不同也不影响各行卡片底部对齐 */
-.upcard .uhint{margin-top:auto;padding-top:10px;font-size:var(--fs-cap);color:var(--brand);font-weight:600}
+/* 反代限流条（WorkBuddy 国际版）：卡片上只报「几行被限 / 几点恢复 / 有没有在等」 */
+.upcard .pchip{font-size:var(--fs-micro);font-weight:700;padding:2px 8px;border-radius:99px;
+  background:#eef2f6;color:var(--muted);white-space:nowrap;flex:none}
+.upcard .pchip.warn{background:var(--red-soft);color:var(--red)}
+.upcard .pchip.ok{background:var(--green-soft);color:var(--green)}
+.upcard .limbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:0 0 9px;line-height:1.4}
+.upcard .limbar .tk-spin{width:11px;height:11px;border-width:2px;display:inline-block;
+  vertical-align:-1px;margin-right:5px}
+/* 底部入口吸底：不同卡片的可选行不影响对齐 */
+.upcard .ucue{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:auto;
+  padding-top:10px;font-size:var(--fs-cap);font-weight:700;color:var(--brand)}
+.upcard .ucue .arr{font-size:16px;line-height:1;transition:transform .16s}
+.upcard.clickable:hover .ucue .arr{transform:translateX(3px)}
+/* ── 上游额度 / 路由弹窗：账号 tabs + 圆环 + 分类卡 ── */
+.prov-hero{display:grid;grid-template-columns:repeat(auto-fit,minmax(176px,1fr));gap:10px;margin:2px 0 14px}
+.ovt{display:flex;align-items:center;gap:11px;background:linear-gradient(180deg,#fbfcfe,#f6f9fc);
+  border:1px solid var(--line);border-radius:16px;padding:11px 13px;min-width:0}
+.ovt-k{font-size:var(--fs-cap);color:var(--muted);font-weight:700;white-space:nowrap}
+.ovt-v{font-size:22px;font-weight:800;line-height:1.15;color:var(--ink);font-variant-numeric:tabular-nums;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.ovt-v small{font-size:var(--fs-aux);font-weight:600;color:var(--muted)}
+.ovt-s{font-size:var(--fs-micro);color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ovt.warn .ovt-v{color:var(--red)}
+.ovt-main{min-width:0;flex:1}
+.ovt.partial{border-color:#f3d6a5;background:#fffaf0}
+.ovt.partial .ovt-s{color:#b45309;font-weight:700}
+/* 圆环图 */
+.ring{position:relative;display:inline-flex;flex:none;width:var(--sz);height:var(--sz);vertical-align:middle}
+.ring>svg{width:100%;height:100%;transform:rotate(-90deg)}
+.ring circle{fill:none;stroke-width:var(--sw);stroke-linecap:round}
+.ring .rg{stroke:#e7ecf3}
+.ring .rf{stroke:var(--rc,#5b45d9);transition:stroke-dasharray .45s ease}
+.ring .rc{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  color:var(--ink);font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+.ring .rc b{font-size:calc(var(--sz) * .215)}
+.ring .rc small{font-size:calc(var(--sz) * .13);color:var(--muted);font-weight:700;margin-top:2px}
+.ring.acct{--rc:#2563eb}.ring.daily{--rc:#0d9488}.ring.credits{--rc:#6d5efc}.ring.signin{--rc:#16a34a}
+.ring.low{--rc:var(--red)}
+.ring.unknown .rg{stroke-dasharray:2.6 3.4}
+.ring.unknown .rf{display:none}
+.ring.unknown .rc{color:var(--muted)}
+.ring.unknown .rc b{font-size:calc(var(--sz) * .15)}
+/* 账号切换 */
+#provAcctTabs{margin:0 0 10px}
+.atabs-wrap{display:flex;align-items:center;gap:9px;min-width:0}
+.atabs-label{font-size:var(--fs-cap);color:var(--muted);font-weight:800;flex:none}
+.atabs{display:flex;gap:7px;overflow-x:auto;padding:1px 1px 3px;min-width:0;scrollbar-width:thin}
+.atab{display:inline-flex;align-items:center;gap:7px;flex:none;max-width:300px;padding:7px 10px;
+  border:1px solid var(--line);border-radius:12px;background:#fff;color:var(--ink2);cursor:pointer;
+  font:inherit;transition:border-color .15s,background .15s,box-shadow .15s}
+.atab:hover{border-color:#c9d2e3;background:#fafbfe}
+.atab.on{border-color:#bdb5ff;background:var(--brand-soft);box-shadow:0 2px 8px rgba(91,69,217,.10)}
+.atab-dot{width:7px;height:7px;border-radius:50%;background:var(--muted);flex:none}
+.atab-dot.ok{background:var(--green)}.atab-dot.bad{background:var(--red)}
+.atab-dot.cool{background:var(--orange)}.atab-dot.pending{background:#9aa6b8}
+.atab-name{font-size:var(--fs-aux);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.atab-badge{font-size:var(--fs-micro);font-weight:800;color:var(--muted);background:#eef2f6;
+  border-radius:99px;padding:1px 7px;white-space:nowrap}
+.atab.on .atab-badge{background:#fff;color:var(--brand)}
+.atab-badge.warn{background:var(--red-soft);color:var(--red)}
+/* 账号面板 */
+.prov-accts{display:flex;flex-direction:column;gap:12px}
+.pacct{border:1px solid var(--line);border-top:3px solid var(--pc,var(--brand));border-radius:16px;
+  padding:15px 17px 16px;background:#fff;box-shadow:0 8px 24px rgba(16,24,40,.045)}
+.pacct-h{display:flex;align-items:center;gap:11px;flex-wrap:wrap}
+.pav{width:42px;height:42px;border-radius:13px;flex:none;display:grid;place-items:center;
+  color:#fff;font-size:18px;font-weight:800;background:var(--pc,var(--brand));
+  box-shadow:inset 0 -10px 20px rgba(0,0,0,.08)}
+.pid{flex:1 1 230px;min-width:0}
+.pacct .pname{font-size:var(--fs-t3);font-weight:800;color:var(--ink);overflow-wrap:anywhere}
+.pacct .pmeta{font-size:var(--fs-cap);color:var(--muted);margin-top:2px}
+.ptags{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.pacct .pchip{font-size:var(--fs-micro);font-weight:700;padding:3px 9px;border-radius:99px;
+  background:#eef2f6;color:var(--muted);white-space:nowrap}
+.pacct .pchip.ok{background:var(--green-soft);color:var(--green)}
+.pacct .pchip.warn{background:var(--red-soft);color:var(--red)}
+.pacct .pchip.cool{background:var(--orange-soft);color:var(--orange)}
+.pacct .pchip.idle{background:#f0f2f6;color:var(--muted)}
+.pacct .perr{font-size:var(--fs-aux);color:var(--red);line-height:1.55;padding:10px 12px;margin-top:10px;
+  background:#fdf3f3;border:1px solid #f3d4d4;border-radius:10px;overflow-wrap:anywhere}
+/* 分类区块 */
+.sec{margin-top:16px}
+.sec-h{display:flex;align-items:baseline;gap:7px;margin-bottom:9px;flex-wrap:wrap}
+.sec-t{font-size:var(--fs-aux);font-weight:800;color:var(--ink);letter-spacing:.2px}
+.sec-n{font-size:var(--fs-micro);font-weight:800;color:var(--brand);background:var(--brand-soft);
+  border-radius:99px;padding:1px 7px}
+.sec-s{font-size:var(--fs-micro);color:var(--muted)}
+/* 额度圆环卡 */
+.qgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(272px,1fr));gap:9px}
+.qcard{border:1px solid var(--line);border-radius:14px;padding:11px 13px 12px;background:#fbfcfe;min-width:0;max-width:460px}
+.qcard.daily{border-top:3px solid #0d9488}
+.qcard.credits{border-top:3px solid var(--brand)}
+.qcard.missing{border-style:dashed;background:#fafbfd}
+.qcard.warn{border-color:#f0c9c9}
+.qcard-h{display:flex;align-items:center;gap:8px}
+.qcard-k{font-size:var(--fs-aux);font-weight:800;color:var(--ink)}
+.qcard-tag{margin-left:auto;font-size:var(--fs-micro);font-weight:700;color:var(--muted);
+  background:#eef2f6;border-radius:99px;padding:2px 8px;white-space:nowrap}
+.qcard.missing .qcard-tag{background:var(--red-soft);color:var(--red)}
+.qcard-b{display:flex;align-items:center;gap:14px;margin-top:10px;min-width:0}
+.qcard-info{min-width:0;flex:1}
+.qcard-v{font-size:23px;font-weight:800;color:var(--ink);line-height:1.12;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.qcard-v small{font-size:var(--fs-cap);font-weight:600;color:var(--muted)}
+.qcard-v.muted{color:var(--muted);font-size:19px}
+.qcard-s{font-size:var(--fs-cap);color:var(--ink2);margin-top:3px}
+.qcard-f{font-size:var(--fs-micro);color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.qcard.warn .qcard-v{color:var(--red)}
+/* 免费模型：卡片网格 */
+.fm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px}
+.fmc{border:1px solid var(--line);border-left:3px solid #a5b4fc;border-radius:12px;padding:9px 11px;background:#fff}
+.fmc.urgent{border-left-color:var(--red)}
+.fmc-h{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.fmc-name{font-size:var(--fs-aux);font-weight:800;color:var(--ink);
+  font-family:var(--font-mono,ui-monospace,monospace);overflow-wrap:anywhere}
+.fmc-m{font-size:var(--fs-micro);color:var(--muted);margin-top:3px}
+.fmc-f{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:7px}
+/* 限流与等待（弹窗内：账号 × 模型的实时冷却） */
+.limwait{display:flex;align-items:flex-start;gap:8px;font-size:var(--fs-aux);color:var(--green);
+  background:var(--green-soft);border:1px solid #cfe9d8;border-radius:11px;
+  padding:9px 12px;margin-bottom:8px;line-height:1.6;overflow-wrap:anywhere}
+.limwait .tk-spin{width:13px;height:13px;border-width:2px;flex:none;margin-top:4px}
+.limlist{display:flex;flex-direction:column;gap:5px}
+.limrow{display:flex;align-items:baseline;gap:9px;font-size:var(--fs-aux);padding:7px 11px;
+  border:1px solid var(--line);border-left:3px solid var(--red);border-radius:11px;background:#fdf5f5}
+.limrow .limm{flex:1;min-width:0;font-weight:800;color:var(--ink);
+  font-family:var(--font-mono,ui-monospace,monospace);overflow-wrap:anywhere}
+.limrow .limt{font-size:var(--fs-micro);font-weight:700;color:var(--muted);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.limrow .liml{font-size:var(--fs-micro);font-weight:800;color:var(--red);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.limev{margin-top:8px;display:flex;flex-direction:column;gap:3px}
+.limevr{display:flex;align-items:baseline;gap:9px;font-size:var(--fs-micro);color:var(--muted);
+  padding:5px 9px;border-radius:9px;background:#f6f8fb;cursor:default}
+.limevr .evcode{font-weight:800;color:var(--red);font-family:var(--font-mono);flex:none}
+.limevr .evmdl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink2)}
+.limevr .evat,.limevr .evreset{font-variant-numeric:tabular-nums;white-space:nowrap;flex:none}
+/* 积分包：卡片网格 + 短条 */
+.pkg-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:8px}
+.pkgc{border:1px solid var(--line);border-radius:12px;padding:9px 11px;background:#fff;min-width:0}
+.pkgc-h{display:flex;align-items:baseline;gap:8px}
+.pkgc-n{font-size:var(--fs-aux);font-weight:800;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pkgc-end{margin-left:auto;font-size:var(--fs-micro);color:var(--muted);white-space:nowrap;flex:none}
+.pkgc-v{font-size:var(--fs-aux);font-weight:800;color:var(--ink);margin:6px 0 5px;font-variant-numeric:tabular-nums}
+.pkgc-v small{font-weight:600;color:var(--muted)}
+.pkgc .qbar{height:5px;display:flex}
+.ppmore{font-size:var(--fs-micro);color:var(--muted);padding:7px 2px 0}
+/* Tabbit 等无数值额度账号：状态卡 */
+.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(172px,1fr));gap:8px}
+.scard{border:1px solid var(--line);border-radius:13px;padding:11px 12px;background:#fbfcfe;min-width:0}
+.sc-k{font-size:var(--fs-cap);font-weight:800;color:var(--muted)}
+.sc-b{display:flex;align-items:center;gap:10px;margin-top:7px}
+.sc-num{font-size:25px;font-weight:800;color:var(--ink);margin-top:6px;line-height:1.1;font-variant-numeric:tabular-nums}
+.sc-num small{font-size:var(--fs-aux);font-weight:600;color:var(--muted);margin-left:3px}
+.sc-s{font-size:var(--fs-micro);color:var(--muted);margin-top:3px}
+.prov-routes{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
+.pr-head{display:flex;align-items:baseline;gap:8px;margin-bottom:9px}
+.pr-t{font-size:var(--fs-t3);font-weight:800;color:var(--ink)}
+.pr-s{font-size:var(--fs-cap);color:var(--muted)}
+.pr-flow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.pr-node{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:9px;
+  font-size:var(--fs-aux);font-weight:700;border:1px solid transparent}
+.pr-node i{width:7px;height:7px;border-radius:50%;background:currentColor}
+.pr-arrow{color:var(--muted);font-weight:700}
+.pr-group{margin-top:8px}
+.pr-glabel{font-size:var(--fs-cap);color:var(--muted);font-weight:700;margin-bottom:5px}
+.pr-chips{display:flex;flex-wrap:wrap;gap:6px}
+.rchip{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:99px;
+  background:#f4f6fa;border:1px solid var(--line);color:var(--ink2);font-size:var(--fs-micro);
+  font-family:var(--font-mono,ui-monospace,monospace)}
+.rchip.free{background:var(--green-soft);border-color:#cceedd;color:var(--green)}
+.rchip.cost{background:var(--brand-soft);border-color:#dcd9ff;color:#4b41d6}
+.rchain{display:flex;align-items:center;flex-wrap:wrap;gap:5px}
+.prov-foot{display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap}
+.prov-loading{display:flex;align-items:center;gap:10px;padding:28px 4px;color:var(--muted);font-size:var(--fs-aux)}
+.prov-loading .tk-spin{width:20px;height:20px;border-width:2px}
+/* API 接入弹窗内的路由可视化（取代长段说明） */
+.apiroute{display:flex;align-items:center;flex-wrap:wrap;gap:6px;font-size:var(--fs-cap)}
+.rt-model{padding:3px 9px;border-radius:99px;background:#f1f4f8;color:var(--ink);font-weight:700;
+  font-family:var(--font-mono,ui-monospace,monospace)}
+.rt-arrow{color:var(--muted);font-weight:700}
+.rt-prov{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:99px;
+  font-weight:700;border:1px solid transparent}
+.rt-prov i{width:7px;height:7px;border-radius:50%;background:currentColor}
+.rt-pill{padding:2px 8px;border-radius:99px;background:#f4f6fa;border:1px solid var(--line);
+  color:var(--muted);font-weight:600}
+.rt-chain{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:6px}
+.rt-chain .rt-pill{background:#fff}
 .upcard.ph{text-align:center;padding:52px 20px;color:var(--muted);grid-column:1/-1}
 .upcard.ph .pht{font-size:var(--fs-t3);font-weight:600;color:var(--ink2);margin-bottom:6px}
 /* 小图标（紧凑）模式：只留「名称 + 状态 + 模型数」，卡片矮胖、栅格更密；切换有过渡动画 */
@@ -437,7 +620,10 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .upgrid.compact .upcard .urow.keep{display:flex;align-items:baseline;gap:6px;padding:5px 0 0}
 .upgrid.compact .upcard .urow.keep .uk{display:inline}
 .upgrid.compact .upcard .urow.keep .uv{display:inline;font-size:var(--fs-cap);font-weight:600}
-.upgrid.compact .upcard .uhint{display:none}
+.upgrid.compact .upcard .qbars,
+.upgrid.compact .upcard .acctrow,
+.upgrid.compact .upcard .ucue{display:none}
+.upgrid.compact .upcard .poolsum{font-size:var(--fs-aux);padding:3px 0 0}
 .upgrid.compact .upcard .uerr,.upgrid.compact .upcard .uidle{margin-top:4px}
 /* 刷新按钮忙碌态（图标旋转 + 防重复点击） */
 .phead-btn.busy{opacity:.75;pointer-events:none}
@@ -1227,35 +1413,26 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
         <span style="font-size:var(--fs-cap);color:var(--muted)" id="apiMeta"></span>
       </div>
 
-      <div class="hint-sm" style="margin:6px 0 10px">
-        反代把上游统一暴露为本机 OpenAI API：<b>CodeArts Agent</b>（华为免费额度模型）、
-        <b>TeleAgent</b>（星辰）、<b>OfficeACE</b>（华为云果办）、<b>WorkBuddy 国际版</b>与
-        <b>Tabbit</b>（浏览器免费额度）——<b>模型名即路由</b>：
-        <code>chat-*</code> / <code>deepseek-v3</code> 等走星辰；
-        <code>GLM-5.2</code> 等内置模型与福利模型（<code>deepseek-v4.1-flash</code> 等 5 个交集）走 CodeArts
-        （福利模型吃每日免费额度，内置模型计积分）；
-        <code>glm-5.3</code> / <code>kimi-k2.6</code> 等其余走 OfficeACE；
-        <code>wb:</code> 前缀（如 <code>wb:auto</code>）走 WorkBuddy 国际版；
-        <code>tb:</code> 前缀（如 <code>tb:Default</code>）走 Tabbit。服务只监听 <b>127.0.0.1</b>
-        （不出本机），默认无需 API Key；限流 <span id="apiRate"></span>。用量看底部「今日 token 消耗」卡片。</div>
     </div>
   </div>
 </div>
 
-<!-- 账号额度详情弹窗：点卡片上的账号行打开（不再卡片内展开），楷体、大字摘要在上 -->
-<div class="modal-mask" id="acctMask" style="display:none">
-  <div class="modal" style="max-width:560px">
+<!-- 上游额度 / 路由弹窗：点上游卡片打开（可视化额度条） -->
+<div class="modal-mask" id="provMask" style="display:none">
+  <div class="modal prov-modal" style="max-width:840px">
     <div class="modal-head">
-      <div class="mtitle" id="acctTitle">账号额度</div>
-      <button class="x" id="acctClose" title="关闭">×</button>
+      <div class="mtitle" id="provTitle">上游额度</div>
+      <button class="x" id="provClose" title="关闭">×</button>
     </div>
-    <div class="modal-body acct-kai" style="padding:0 24px 20px;overflow-y:auto">
-      <div class="acct-hero" id="acctHero"></div>
-      <div class="acct-fm" id="acctFreeModels" style="display:none"></div>
-      <div class="acct-pkgs" id="acctPkgs"></div>
-      <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
-        <button class="tab" id="acctRefresh">↻ 刷新额度</button>
-        <span class="hint-sm" id="acctUpdated"></span>
+    <div class="modal-body" style="padding:0 24px 20px;overflow-y:auto">
+      <div id="provHero" class="prov-hero"></div>
+      <div id="provAcctTabs"></div>
+      <div id="provAccounts" class="prov-accts"></div>
+      <div id="provRoutes" class="prov-routes"></div>
+      <div class="prov-foot">
+        <button class="tab" id="provRefresh">↻ 刷新额度</button>
+        <button class="tab" id="provApiBtn">🔌 接入信息</button>
+        <span class="hint-sm" id="provUpdated"></span>
       </div>
     </div>
   </div>
@@ -2240,85 +2417,443 @@ const POOL_QUOTA = {};
 function fetchPoolQuota(pid, force){
   return fetch("/api/pool_quota?provider=" + encodeURIComponent(pid) + (force ? "&force=1" : ""), {cache:"no-store"})
     .then(r=>r.json())
-    .then(d=>{ if(d && (d.accounts || []).length) POOL_QUOTA[pid] = d; return d || null; })
+    .then(d=>{ if(d && ((d.accounts || []).length || d.error)) POOL_QUOTA[pid] = d; return d || null; })
     .catch(()=>null);
 }
-/* 账号额度详情弹窗（楷体；大字摘要在最上面，明细在下） */
-let ACCT_PID = null, ACCT_NAME = null;
-const _fmtN = v => (v == null || isNaN(+v)) ? "—" : (Math.round(+v * 10) / 10).toLocaleString("zh-CN");
-const _pctOf = o => { o = o || {}; const t = +o.total || 0, r = +o.remain || 0;
-                      return t > 0 ? Math.round(r * 100 / t) : null; };
-function openAcctDetail(pid, name){
-  ACCT_PID = pid; ACCT_NAME = name;
-  $("#acctMask").style.display = "flex";
-  renderAcctDetail();
-  fetchPoolQuota(pid, true).then(()=>{ if(ACCT_PID===pid && ACCT_NAME===name) renderAcctDetail(); });
+/* WorkBuddy 国际版限流实时态（/api/wbai_limits：全部取自反代内存，不打上游）。
+   限流以前只写在服务日志里，客户端只会看到「转几秒自己取消」——面板必须显出来。 */
+let WBAI_LIM = null;
+function fetchWbaiLimits(force){
+  const now = Date.now();
+  if(!force && WBAI_LIM && now - (WBAI_LIM._t || 0) < 10000) return Promise.resolve(WBAI_LIM);
+  return fetch("/api/wbai_limits", {cache:"no-store"}).then(r=>r.json())
+    .then(d=>{ d._t = Date.now(); WBAI_LIM = d; return d; })
+    .catch(()=>null);
 }
-function closeAcctDetail(){ $("#acctMask").style.display = "none"; ACCT_PID = ACCT_NAME = null; }
-function renderAcctDetail(){
-  const pid = ACCT_PID, name = ACCT_NAME;
-  if(!pid || !name) return;
-  const a = (((POOL_QUOTA[pid] || {}).accounts || []).find(x=>x.name===name)) || {};
-  $("#acctTitle").textContent = name + " · 额度详情";
-  const df = a.daily_free, lt = a.long_term, fms = a.free_models || [];
-  /* 大字摘要：每日免费 / 长期积分 分开；没有拆分口径的平台退回总额度 */
-  const hero = [];
-  if(df && +df.total > 0){
-    hero.push({k:"每日免费额度", v:_fmtN(df.remain),
-               s:"/ " + _fmtN(df.total) + (df.daily_limit ? ` · 今日已用 ${_fmtN(df.daily_used||0)} / ${_fmtN(df.daily_limit)}` : ""),
-               warn:_pctOf(df) != null && _pctOf(df) < 20});
-  } else if(df && df.remain != null){
-    hero.push({k:"每日免费额度", v:_fmtN(df.remain),
-               s:(+df.remain) <= 0 ? "今日已用完（每日重置）" : "剩余（每日重置）",
-               warn:(+df.remain) <= 0});
+function _fmtHM(epoch){ return new Date(+epoch * 1000).toTimeString().slice(0, 5); }
+function _limLeft(until){
+  const s = Math.max(0, Math.round(+until - Date.now() / 1000));
+  if(s >= 3600) return Math.floor(s / 3600) + " 小时 " + Math.round(s % 3600 / 60) + " 分";
+  if(s >= 60) return Math.round(s / 60) + " 分";
+  return s + " 秒";
+}
+function _limRowsFor(acct){
+  const rows = (WBAI_LIM && WBAI_LIM.rows) || {};
+  const m = rows[acct] || {};
+  return Object.keys(m).map(k=>({model:k, until:+m[k]})).sort((a,b)=>a.until - b.until);
+}
+function _limSummary(){
+  const rows = (WBAI_LIM && WBAI_LIM.rows) || {};
+  let n = 0, accts = 0, earliest = null;
+  Object.keys(rows).forEach(a=>{
+    const ms = Object.keys(rows[a] || {});
+    if(!ms.length) return;
+    accts++;
+    ms.forEach(m=>{ n++; const t = +rows[a][m]; if(earliest == null || t < earliest) earliest = t; });
+  });
+  const wait = ((WBAI_LIM && WBAI_LIM.waiting) || []).length;
+  if(!n && !wait) return null;
+  return {n, accts, earliest, wait};
+}
+function _limChipHtml(lm){
+  if(!lm) return "";
+  return `<div class="limbar">` +
+    `<span class="pchip warn">限流 ${lm.n} 行 · ${lm.accts} 号</span>` +
+    (lm.earliest ? `<span class="pchip warn" title="最早恢复时刻：解析自上游 6004/14003/14018 报错原文">` +
+      `${_fmtHM(lm.earliest)} 恢复 · 还有 ${_limLeft(lm.earliest)}</span>` : "") +
+    (lm.wait ? `<span class="pchip ok"><span class="tk-spin"></span>正在替客户端等待重试 ×${lm.wait}</span>` : "") +
+    `</div>`;
+}
+function _wbaiLimHtml(acct){
+  const rows = _limRowsFor(acct);
+  const wait = (((WBAI_LIM || {}).waiting) || []).filter(w=>w.acct === acct);
+  const evs = ((((WBAI_LIM || {}).events) || []).filter(e=>e.acct === acct)).slice(-8).reverse();
+  if(!rows.length && !wait.length && !evs.length) return "";
+  const now = Date.now() / 1000;
+  let inner = "";
+  if(wait.length){
+    inner += `<div class="limwait">` + wait.map(w=>
+      `<span class="tk-spin"></span>正在等待重试：<b>${esc(w.model || "")}</b> · ` +
+      `还有 ${_limLeft(w.until || now)}`).join("<br>") + `</div>`;
   }
-  if(lt && +lt.total > 0){
-    hero.push({k:"长期积分", v:_fmtN(lt.remain), s:"/ " + _fmtN(lt.total) + " · 已用 " + _fmtN(lt.used||0),
-               warn:_pctOf(lt) != null && _pctOf(lt) < 20});
-  } else if(df && a.total != null && +a.total > 0){
-    hero.push({k:"积分（长期）", v:_fmtN(a.remain), s:"/ " + _fmtN(a.total) + " · 已用 " + _fmtN((+a.total)-(+a.remain||0)),
-               warn:a.pct != null && a.pct < 20});
+  if(rows.length){
+    inner += `<div class="limlist">` + rows.map(r=>
+      `<div class="limrow"><span class="limm">${esc(r.model)}</span>` +
+      `<span class="limt">${_fmtHM(r.until)} 恢复</span>` +
+      `<span class="liml">还有 ${_limLeft(r.until)}</span></div>`).join("") + `</div>`;
   }
-  if(!hero.length){
-    hero.push({k:"总额度", v:(a.remain != null ? _fmtN(a.remain) : "—"),
-               s:(a.total != null && +a.total > 0) ? "/ " + _fmtN(a.total)
-                 : (a.ok ? "暂无额度数据" : "状态异常"),
-               warn:a.pct != null && a.pct < 20});
+  if(evs.length){
+    inner += `<div class="limev">` + evs.map(e=>{
+      const msg = String(e.msg || "").replace(/\s+/g, " ").slice(0, 160);
+      return `<div class="limevr" title="${esc(msg)}">` +
+        `<span class="evcode">${esc(e.code || "—")}</span>` +
+        `<span class="evmdl">${esc(e.model || "")}</span>` +
+        `<span class="evat">${e.at ? new Date(e.at * 1000).toTimeString().slice(0, 8) : ""}</span>` +
+        `<span class="evreset">${e.reset ? _fmtHM(e.reset) + " 恢复" : "重置时刻未解析"}</span></div>`;
+    }).join("") + `</div>`;
   }
-  $("#acctHero").innerHTML = hero.map(h=>
-    `<div class="cell${h.warn?" warn":""}"><div class="k">${esc(h.k)}</div>` +
-    `<div class="v">${esc(h.v)}</div><div class="s">${esc(h.s||"")}</div></div>`).join("");
-  /* 免费模型行（WorkBuddy 国际版：限免目录 + 反代自记账用量 + 剩余天数） */
-  const fmBox = $("#acctFreeModels");
-  if(fms.length){
-    fmBox.style.display = "";
-    fmBox.innerHTML = fms.map(f=>{
-      const calls = +f.calls || 0;
-      const tok = (+f.prompt_tokens||0) + (+f.completion_tokens||0);
-      const used = calls ? `${calls} 次${tok ? " · " + _fmtN(tok) + " tok" : ""}` : "今日未用";
-      const days = f.days_left;
-      const dcls = (days != null && days <= 3) ? " soon" : "";
-      const dtxt = days != null ? `免费剩 ${days} 天` : (f.until ? `免费至 ${f.until}` : "限免中");
-      // 6004 行级限流：反代记录的重置时刻 → 红色徽章「限流 · HH:MM 重置」
-      let lim = "";
-      if(f.limited_until){
-        const hh = new Date(f.limited_until * 1000).toTimeString().slice(0,5);
-        lim = `<span class="d lim" title="6004 行级限流；社区实测约 44 次/5h 或 74 次/24h 触发">限流 · ${esc(hh)} 重置</span>`;
-      }
-      return `<div class="fmr"><span class="m">${esc(f.model)}</span>` +
-             `<span class="u">${f.note ? esc(f.note) + " · " : ""}${esc(used)}</span>` +
-             (lim || "") + `<span class="d${dcls}">${esc(dtxt)}</span></div>`;
-    }).join("") +
-      `<div class="hint-sm" style="margin-top:4px">免费模型 0 积分（限免期不限积分用量），但按模型限流：触发后重置时刻以弹窗为准（解析自上游报错）。次数与 token 来自反代自记账，仅统计经看板反代的请求。</div>`;
-  } else fmBox.style.display = "none";
-  /* 包明细（楷体正文） */
-  const pk = a.packages || [];
-  $("#acctPkgs").innerHTML = pk.length ? pk.map(x=>
-      `<div class="pk"><span><b>${esc(x.name || x.label || "积分包")}</b></span>` +
-      `<span class="r">余 ${_fmtN(x.remain != null ? x.remain : x.remain_credit)} / ${_fmtN(x.amount != null ? x.amount : x.total)}` +
-      `${x.end ? " · 至 " + esc(String(x.end)) : ""}</span></div>`).join("")
-    : `<div class="none">${a.error ? "⚠ " + esc(a.error) : "暂无额度明细"}</div>`;
-  $("#acctUpdated").textContent = "数据时间 " + new Date().toLocaleTimeString("zh-CN",{hour12:false});
+  return _sectionHtml("限流与等待", rows.length, inner,
+    "反代实时状态 · 每 15 秒刷新（6004=24 小时 token 窗口，14003=模型繁忙，14018=额度包）");
+}
+/* ── 额度可视化：数值、百分比、条形 ── */
+const _fmtN = v => (v == null || isNaN(+v)) ? "—" : (Math.round(+v * 10) / 10).toLocaleString("zh-CN");
+function _fmtShort(v){
+  if(v == null || isNaN(+v)) return "—";
+  const n = +v, a = Math.abs(n);
+  if(a >= 1e8) return (n/1e8).toFixed(2).replace(/0+$/,"").replace(/\.$/,"") + "亿";
+  if(a >= 1e4) return (n/1e4).toFixed(1).replace(/\.0$/,"") + "万";
+  return (Math.round(n*10)/10).toLocaleString("zh-CN");
+}
+function _pctOf(remain, total){ return +total > 0 ? Math.max(0, Math.min(100, Math.round(+remain*100/+total))) : null; }
+function _bar(pct, cls){
+  const known = pct != null && isFinite(+pct);
+  const w = known ? Math.max(2, Math.min(100, Math.round(+pct))) : 100;
+  return `<span class="qbar ${cls||""}${known && +pct < 20 ? " low" : ""}${known ? "" : " unknown"}"><i style="width:${w}%"></i></span>`;
+}
+function _acctMetrics(a){
+  a = a || {};
+  const out = [], df = a.daily_free || null, lt = a.long_term || null, cr = a.credits || {};
+  if(df && (df.remain != null || +df.total > 0)){
+    out.push({key:"daily", label:"每日免费额度", short:"每日免费", remain:+df.remain||0, total:+df.total||0,
+      pct:_pctOf(df.remain, df.total), used:+df.used||0,
+      dailyUsed:+df.daily_used||0, dailyLimit:+df.daily_limit||0,
+      sub:"每日重置"});
+  }
+  if(lt && (lt.remain != null || +lt.total > 0)){
+    out.push({key:"credits", label:"长期积分", remain:+lt.remain||0, total:+lt.total||0,
+      pct:_pctOf(lt.remain, lt.total), used:+lt.used||0,
+      sub:"已用 " + _fmtShort(lt.used)});
+  } else if(+cr.total > 0 || +cr.remain > 0){
+    out.push({key:"credits", label:"积分", remain:+cr.remain||0, total:+cr.total||0,
+      pct:_pctOf(cr.remain, cr.total), used:+cr.used||0,
+      sub:+cr.total > 0 ? "已用 " + _fmtShort(cr.used) : "总量未知"});
+  } else if(!lt && (a.total != null || a.remain != null) && (+a.total > 0 || +a.remain > 0)){
+    /* /api/pool_quota 把积分同时摊平到顶层；wbai / CodeArts 部分号没有 credits 子对象 */
+    const rem = +a.remain || 0, tot = +a.total || 0;
+    out.push({key:"credits", label:"积分", remain:rem, total:tot,
+      pct:_pctOf(rem, tot), used:Math.max(0, tot - rem),
+      sub:tot > 0 ? "已用 " + _fmtShort(Math.max(0, tot - rem)) : "总量未知"});
+  }
+  return out;
+}
+function _aggMetrics(accounts){
+  const agg = {};
+  (accounts || []).forEach(a=>_acctMetrics(a).forEach(m=>{
+    const o = agg[m.key] || (agg[m.key] = {key:m.key, label:m.label, short:m.short,
+      remain:0, total:0, used:0, dailyUsed:0, dailyLimit:0, n:0});
+    o.remain += m.remain; o.total += m.total; o.used += m.used || 0;
+    o.dailyUsed += m.dailyUsed || 0; o.dailyLimit += m.dailyLimit || 0; o.n++;
+  }));
+  return Object.values(agg).map(o=>Object.assign(o, {pct:_pctOf(o.remain, o.total)}));
+}
+function _acctTone(a, cooling, pending){
+  if(cooling) return {cls:"cool", text:`冷却 ${Math.ceil(cooling/60)} 分`};
+  if(pending) return {cls:"pending", text:"读取中"};
+  if(!a) return {cls:"pending", text:"未知"};
+  if(a.error) return {cls:"bad", text:"异常"};
+  if(a.ok === false) return {cls:"bad", text:"不可用"};
+  return {cls:"ok", text:"可用"};
+}
+function _ring(pct, cls, size, stroke, center, sub){
+  const known = pct != null && isFinite(+pct);
+  const p = known ? Math.max(0, Math.min(100, Math.round(+pct))) : 0;
+  const sz = size || 64, sw = stroke || 6;
+  return `<span class="ring ${cls || ""}${known ? "" : " unknown"}${known && +pct < 20 ? " low" : ""}"` +
+    ` style="--sz:${sz}px;--sw:${sw}px">` +
+    `<svg viewBox="0 0 42 42" aria-hidden="true"><circle class="rg" cx="21" cy="21" r="18"/>` +
+    `<circle class="rf" cx="21" cy="21" r="18" pathLength="100" stroke-dasharray="${known ? p : 0} 100"/></svg>` +
+    `<span class="rc"><b>${esc(center == null ? "—" : center)}</b>${sub ? `<small>${esc(sub)}</small>` : ""}</span></span>`;
+}
+function _dailyMissing(a){
+  return !_acctMetrics(a).some(m=>m.key === "daily") && !!(a.extra && a.extra.free_token_error);
+}
+function _quotaCardHtml(m){
+  const low = m.pct != null && m.pct < 20;
+  const foot = m.key === "daily"
+    ? (m.dailyLimit > 0 ? `今日已用 ${_fmtShort(m.dailyUsed)} / ${_fmtShort(m.dailyLimit)}` : "每天 00:00 重置")
+    : (m.total > 0 ? `已用 ${_fmtShort(m.used)}` : "总量未知");
+  return `<div class="qcard ${m.key}${low ? " warn" : ""}">
+    <div class="qcard-h"><span class="qcard-k">${esc(m.label)}</span>` +
+    `<span class="qcard-tag">${m.key === "daily" ? "每日重置" : "长期有效"}</span></div>
+    <div class="qcard-b">${_ring(m.pct, m.key, 86, 8, m.pct == null ? "—" : m.pct + "%")}` +
+    `<div class="qcard-info"><div class="qcard-v">${_fmtShort(m.remain)}<small> / ${_fmtShort(m.total)}</small></div>` +
+    `<div class="qcard-f">${esc(foot)}</div></div></div></div>`;
+}
+function _missingDailyHtml(err){
+  const noBenefit = /benefit not found/i.test(err || "");
+  return `<div class="qcard daily missing">
+    <div class="qcard-h"><span class="qcard-k">每日免费额度</span><span class="qcard-tag">未开通</span></div>
+    <div class="qcard-b">${_ring(null, "daily", 86, 8, "—")}` +
+    `<div class="qcard-info"><div class="qcard-v muted">未开通</div>` +
+    `<div class="qcard-s">${noBenefit ? "上游未返回免费 token 包" : "每日免费额度读取失败"}</div>` +
+    `<div class="qcard-f" title="${esc(err || "")}">${noBenefit ? "该账号无此权益 · 积分不受影响" : "稍后刷新重试"}</div>` +
+    `</div></div></div>`;
+}
+function _sectionHtml(title, count, body, sub){
+  return `<div class="sec"><div class="sec-h"><span class="sec-t">${esc(title)}</span>` +
+    `${count != null ? `<span class="sec-n">${esc(count)}</span>` : ""}` +
+    `${sub ? `<span class="sec-s">${esc(sub)}</span>` : ""}</div>${body}</div>`;
+}
+function _freeModelsHtml(fms){
+  if(!fms || !fms.length) return "";
+  return `<div class="fm-grid">` + fms.map(f=>{
+    const calls = +f.calls || 0;
+    const tok = (+f.prompt_tokens || 0) + (+f.completion_tokens || 0);
+    const used = calls ? `今日 ${calls} 次 · ${_fmtShort(tok)} tok` : "今日未用";
+    const days = f.days_left;
+    const urgent = days != null && days <= 3;
+    let lim = "";
+    if(f.limited_until){
+      const hh = new Date(f.limited_until * 1000).toTimeString().slice(0,5);
+      lim = `<span class="pchip warn" title="6004 行级限流；解析自上游报错">限流 · ${esc(hh)} 重置</span>`;
+    }
+    const dtxt = days != null ? `免费剩 ${days} 天` : (f.until ? `免费至 ${f.until}` : "限免中");
+    const dtitle = f.until ? `免费至 ${f.until}` : "";
+    return `<div class="fmc${urgent ? " urgent" : ""}">
+      <div class="fmc-h"><span class="fmc-name">${esc(f.model)}</span>${lim}</div>
+      <div class="fmc-m">${esc(used)}</div>
+      <div class="fmc-f">${f.note ? `<span class="pchip">${esc(f.note)}</span>` : ""}` +
+      `<span class="pchip${urgent ? " warn" : ""}"${dtitle ? ` title="${esc(dtitle)}"` : ""}>${esc(dtxt)}</span>` +
+      `</div></div>`;
+  }).join("") + `</div>`;
+}
+function _pkgsHtml(pk){
+  if(!pk || !pk.length) return "";
+  const items = pk.map(x=>{
+    const name = x.name || x.label || "积分包";
+    const remain = x.remain != null ? x.remain : x.remain_credit;
+    const amount = x.amount != null ? x.amount : x.total;
+    const end = x.end || x.expire || "";
+    return {name, remain, amount, end};
+  });
+  const live = items.filter(x=>x.remain == null || +x.remain > 0);
+  const deadN = items.length - live.length;
+  const shown = live.slice(0, 6), hiddenN = live.length - shown.length;
+  const cards = shown.map(x=>{
+    const end = x.end ? String(x.end).replace("T", " ").slice(0, 10) : "";
+    return `<div class="pkgc"><div class="pkgc-h"><span class="pkgc-n" title="${esc(x.name)}">${esc(x.name)}</span>` +
+      `${end ? `<span class="pkgc-end">至 ${esc(end)}</span>` : ""}</div>` +
+      `<div class="pkgc-v">${_fmtShort(x.remain)}<small> / ${_fmtShort(x.amount)}</small></div>` +
+      `${_bar(_pctOf(x.remain, x.amount), "credits")}</div>`;
+  }).join("");
+  const more = [
+    hiddenN ? `${hiddenN} 个有余额未展开` : "",
+    deadN ? `${deadN} 个已用完` : ""
+  ].filter(Boolean).join("、");
+  return `<div class="pkg-grid">${cards}</div>` +
+    `${more ? `<div class="ppmore">另有 ${more}</div>` : ""}`;
+}
+function _statusGridHtml(a, ex){
+  const cards = [];
+  const signed = !!a.signed_today;
+  cards.push(`<div class="scard"><div class="sc-k">今日签到</div><div class="sc-b">` +
+    `${_ring(signed ? 100 : 0, "signin", 58, 6, signed ? "已签" : "未签")}` +
+    `<div><div class="sc-num" style="margin-top:0">${signed ? "已签到" : "未签到"}</div>` +
+    `<div class="sc-s">${signed ? "今日已完成" : "今日尚未签到"}</div></div></div></div>`);
+  if(ex.token_remain_days != null){
+    cards.push(`<div class="scard"><div class="sc-k">凭据剩余</div>` +
+      `<div class="sc-num">${Math.round(+ex.token_remain_days)}<small>天</small></div>` +
+      `<div class="sc-s">${esc(ex.token_expire || "")} 到期</div></div>`);
+  }
+  if(ex.streak_days != null){
+    cards.push(`<div class="scard"><div class="sc-k">连续签到</div>` +
+      `<div class="sc-num">${esc(ex.streak_days)}<small>天</small></div>` +
+      `<div class="sc-s">当前连续记录</div></div>`);
+  }
+  if(ex.total_signed_days != null){
+    cards.push(`<div class="scard"><div class="sc-k">累计签到</div>` +
+      `<div class="sc-num">${esc(ex.total_signed_days)}<small>天</small></div>` +
+      `<div class="sc-s">历史累计</div></div>`);
+  }
+  return `<div class="status-grid">${cards.join("")}</div>`;
+}
+function _acctTabsHtml(accts, coolMap){
+  if(!accts.length) return "";
+  return `<div class="atabs-wrap"><span class="atabs-label">账号</span><div class="atabs">` +
+    accts.map(a=>{
+      const tone = _acctTone(a, coolMap[a.name], !!a._pending);
+      const m = _acctMetrics(a)[0];
+      const missing = _dailyMissing(a);
+      const badge = missing ? "未开通" : (m && m.pct != null ? m.pct + "%" : tone.text);
+      return `<button type="button" class="atab${a.name === PROV_ACCT ? " on" : ""}"` +
+        ` data-acct="${esc(a.name)}" title="${esc(a.name)}">` +
+        `<span class="atab-dot ${tone.cls}"></span>` +
+        `<span class="atab-name">${esc(a.name || "—")}</span>` +
+        `<span class="atab-badge${missing ? " warn" : ""}">${esc(badge)}</span></button>`;
+    }).join("") + `</div></div>`;
+}
+function _acctBlock(a, cooling, p){
+  const pending = !!a._pending;
+  const tone = _acctTone(a, cooling, pending);
+  const ex = a.extra || {};
+  const metrics = _acctMetrics(a);
+  const missing = _dailyMissing(a);
+  const tags = [
+    `<span class="pchip ${tone.cls === "cool" ? "cool" : tone.cls}">${esc(tone.text)}</span>`
+  ];
+  if(a.signed_today) tags.push(`<span class="pchip ok">今日已签</span>`);
+  else if(!pending && !a.error && a.signed_today === false) tags.push(`<span class="pchip idle">今日未签</span>`);
+  if(ex.token_remain_days != null) tags.push(`<span class="pchip">凭据剩 ${Math.round(+ex.token_remain_days)} 天</span>`);
+  if(ex.plan) tags.push(`<span class="pchip">${esc(ex.plan)}</span>`);
+  if(ex.streak_days) tags.push(`<span class="pchip">连续 ${esc(ex.streak_days)} 天</span>`);
+  if(ex.total_signed_days) tags.push(`<span class="pchip">累计 ${esc(ex.total_signed_days)} 天</span>`);
+  let body = "";
+  if(a.error) body += `<div class="perr">⚠ ${esc(a.error)}</div>`;
+  if(pending && !a.error){
+    body += `<div class="prov-loading"><span class="tk-spin"></span><span>正在读取该账号额度…</span></div>`;
+  } else {
+    if(metrics.length || missing){
+      body += _sectionHtml("额度", null,
+        `<div class="qgrid">${missing ? _missingDailyHtml(ex.free_token_error) : ""}${metrics.map(_quotaCardHtml).join("")}</div>`,
+        "每日免费额度与积分分池计算");
+    } else if(!a.error){
+      body += _sectionHtml("账号状态", null, _statusGridHtml(a, ex), "该上游没有数值额度接口");
+    }
+    if(a.free_models && a.free_models.length){
+      body += _sectionHtml("免费模型", a.free_models.length, _freeModelsHtml(a.free_models), "0 积分 · 按模型限流");
+    }
+    if(p.id === "workbuddy_intl") body += _wbaiLimHtml(a.name);
+    if(a.packages && a.packages.length){
+      const liveN = a.packages.filter(x=>{
+        const rem = x.remain != null ? x.remain : x.remain_credit;
+        return rem == null || +rem > 0;
+      }).length;
+      body += _sectionHtml("积分包", a.packages.length, _pkgsHtml(a.packages),
+        liveN ? `${liveN} 个有余额` : "均已用完");
+    }
+  }
+  const initial = String(a.name || "?").trim().charAt(0).toUpperCase();
+  return `<div class="pacct" style="--pc:${PLAT_CLR[p.id] || "var(--brand)"}">
+    <div class="pacct-h"><span class="pav">${esc(initial)}</span>` +
+    `<div class="pid"><div class="pname">${esc(a.name || "—")}</div>` +
+    `<div class="pmeta">${esc(p.label || p.id || "")}</div></div>` +
+    `<div class="ptags">${tags.join("")}</div></div>${body}</div>`;
+}
+function _heroHtml(accts, coolMap){
+  const total = accts.length;
+  const coolN = Object.keys(coolMap || {}).length;
+  const okN = Math.max(0, total - coolN);
+  const cells = [{k:"账号可用", cls:"acct", pct: total ? Math.round(okN * 100 / total) : null,
+    center:`${okN}/${total}`, v:`${okN} <small>/ ${total}</small>`,
+    sub: total ? (coolN ? `${coolN} 个冷却中` : "全部在线") : "未配置账号"}];
+  _aggMetrics(accts).forEach(m=>{
+    const partial = m.key === "daily" && total > 0 && m.n < total;
+    cells.push({k:m.label, cls:m.key, pct:m.pct, center:m.pct == null ? "—" : m.pct + "%",
+      v:_fmtShort(m.remain),
+      sub:`${m.n}/${total} 号${m.key === "daily" ? "开通" : "有积分"}`,
+      warn:m.pct != null && m.pct < 20, partial});
+  });
+  const signedKnown = accts.filter(a=>!a._pending && a.signed_today !== undefined);
+  if(signedKnown.length){
+    const sn = signedKnown.filter(a=>a.signed_today).length;
+    cells.push({k:"今日签到", cls:"signin", pct:Math.round(sn * 100 / signedKnown.length),
+      center:`${sn}/${signedKnown.length}`, v:`${sn} <small>/ ${signedKnown.length}</small>`,
+      sub:"今日签到状态"});
+  }
+  return cells.map(c=>`<div class="ovt ${c.cls}${c.warn ? " warn" : ""}${c.partial ? " partial" : ""}">` +
+    `${_ring(c.pct, c.cls, 56, 6, c.center)}` +
+    `<div class="ovt-main"><div class="ovt-k">${esc(c.k)}</div><div class="ovt-v">${c.v}</div>` +
+    `<div class="ovt-s">${esc(c.sub || "")}</div></div></div>`).join("");
+}
+function _routeHtml(p){
+  const clr = PLAT_CLR[p.id] || "#5f5e5a";
+  const prefix = p.id === "workbuddy_intl" ? "wb:" : p.id === "tabbit" ? "tb:" : "";
+  const nodeStyle = `color:${clr};border-color:${clr}44;background:${clr}12`;
+  const flow = `<div class="pr-flow">
+    <span class="pr-node" style="${nodeStyle}"><i></i>${prefix ? esc(prefix) + "*" : "模型名匹配"}</span>
+    <span class="pr-arrow">→</span>
+    <span class="pr-node" style="${nodeStyle}"><i></i>${esc(p.label || p.id)}</span></div>`;
+  const groups = [];
+  if(p.id === "codearts"){
+    if((p.benefit || []).length) groups.push({label:"福利模型 · 吃每日免费额度", models:p.benefit, cls:"free"});
+    if((p.builtin || []).length) groups.push({label:"内置模型 · 计积分", models:p.builtin, cls:"cost"});
+  } else if(p.id === "workbuddy_intl"){
+    const chain = p.auto_chain || [];
+    if(chain.length) groups.push({label:"auto 链 · 按顺序尝试", chain});
+    const rest = (p.models || []).filter(m=>!chain.includes(m) && m !== "wb:auto" && m !== "wb:default-model");
+    if(rest.length) groups.push({label:"指定模型 · wb: 前缀", models:rest, cls:"", cap:10});
+  } else {
+    const ms = p.models || [];
+    if(ms.length) groups.push({label:p.id === "tabbit" ? "tb: 前缀模型" : p.id === "teleagent" ? "模型名直接匹配" : "模型名匹配",
+      models:ms, cls:"", cap:12});
+  }
+  const groupsHtml = groups.map(g=>{
+    if(g.chain){
+      return `<div class="pr-group"><div class="pr-glabel">${esc(g.label)}</div><div class="rchain">` +
+        g.chain.map((m,i)=>`${i ? `<span class="pr-arrow">›</span>` : ""}<span class="rchip">${esc(m)}</span>`).join("") +
+        `</div></div>`;
+    }
+    const cap = g.cap || 10, shown = g.models.slice(0, cap), restN = g.models.length - shown.length;
+    return `<div class="pr-group"><div class="pr-glabel">${esc(g.label)} · ${g.models.length}</div><div class="pr-chips">` +
+      shown.map(m=>`<span class="rchip ${g.cls || ""}">${esc(m)}</span>`).join("") +
+      `${restN > 0 ? `<span class="rchip">+${restN}</span>` : ""}</div></div>`;
+  }).join("");
+  return `<div class="pr-head"><span class="pr-t">路由</span><span class="pr-s">模型名 → 上游</span></div>` +
+    flow + groupsHtml;
+}
+/* 上游额度 / 路由弹窗：点整张上游卡打开 */
+let PROV_PID = null, PROV_LOADED = false, PROV_ACCT = null;
+function _provData(pid){
+  return ((API_MODELS && API_MODELS.providers) || []).find(p=>p.id === pid) || null;
+}
+function openProvDetail(pid){
+  PROV_PID = pid; PROV_LOADED = false; PROV_ACCT = null;
+  $("#provMask").style.display = "flex";
+  $("#provUpdated").textContent = "正在读取额度…";
+  renderProvDetail();
+  if(pid === "workbuddy_intl"){
+    fetchWbaiLimits(true).then(d=>{ if(d && PROV_PID === pid) renderProvDetail(); });
+  }
+  fetchPoolQuota(pid, true).then(()=>{
+    PROV_LOADED = true;
+    if(PROV_PID !== pid) return;
+    renderProvDetail();
+    if(API_MODELS) renderProxyStatus(API_MODELS);
+  });
+}
+function closeProvDetail(){
+  $("#provMask").style.display = "none";
+  PROV_PID = null; PROV_LOADED = false; PROV_ACCT = null;
+}
+function renderProvDetail(){
+  const pid = PROV_PID;
+  if(!pid) return;
+  const p = _provData(pid) || {id:pid, label:pid};
+  const q = POOL_QUOTA[pid];
+  const rows = (q && q.accounts) || [];
+  const byName = {}; rows.forEach(a=>byName[a.name] = a);
+  const pool = p.pool || {}, coolMap = pool.cool || {};
+  const names = (pool.names && pool.names.length) ? pool.names : (p.account ? [p.account] : rows.map(a=>a.name));
+  /* /api/pool_quota 的 extra 只带白名单字段；老后端未透传 free_token_error 时，
+     用 /api/state 同账号的完整 extra 兜底（同一份 read_account 结果） */
+  const stAccts = (STATE && STATE.platforms && STATE.platforms[pid] && STATE.platforms[pid].accounts) || [];
+  const stExtra = {}; stAccts.forEach(a=>{ if(a && a.name && a.extra) stExtra[a.name] = a.extra; });
+  const accts = names.map(nm=>{
+    const row = byName[nm] || {name:nm, _pending:!q};
+    const fallback = stExtra[nm];
+    if(!fallback) return row;
+    return Object.assign({}, row, {extra: Object.assign({}, fallback, row.extra || {})});
+  });
+  if(!PROV_ACCT || !accts.some(a=>a.name === PROV_ACCT)){
+    PROV_ACCT = accts.length ? accts[0].name : null;
+  }
+  const sel = accts.find(a=>a.name === PROV_ACCT) || null;
+  $("#provTitle").textContent = (p.label || pid) + " · 额度与路由";
+  $("#provHero").innerHTML = _heroHtml(accts, coolMap);
+  $("#provAcctTabs").innerHTML = accts.length > 1 ? _acctTabsHtml(accts, coolMap) : "";
+  let body;
+  if(sel){
+    body = _acctBlock(sel, coolMap[sel.name], p);
+  }else{
+    body = `<div class="prov-loading"><span>${p.id === "teleagent" && !p.account ? "未配置账号 · 可在「添加账号 → TeleAgent」接入" : "暂无可查询账号"}</span></div>`;
+  }
+  if(q && q.error) body = `<div class="perr" style="padding:0 2px 10px">⚠ ${esc(q.error)}</div>` + body;
+  if(PROV_LOADED && !q) body = `<div class="perr" style="padding:0 2px 10px">⚠ 暂时读不到额度（上游未响应或网络异常）</div>` + body;
+  $("#provAccounts").innerHTML = body;
+  $("#provRoutes").innerHTML = _routeHtml(p);
+  $("#provUpdated").textContent = q
+    ? "数据时间 " + new Date().toLocaleTimeString("zh-CN",{hour12:false})
+    : (PROV_LOADED ? "额度读取失败" : "正在读取额度…");
 }
 function renderProxyStatus(I){
   const box = $("#proxyStatus");
@@ -2335,61 +2870,74 @@ function renderProxyStatus(I){
     let stCls = "ok", stTxt = "可用";
     if(idle){ stCls = "idle"; stTxt = "未配置"; }
     else if(p.error){ stCls = "bad"; stTxt = "异常"; }
-    // 账号池：一行大字摘要 + 每号一行（名 + 额度条 + 百分比，点行开详情弹窗）
+    /* 卡片只做概览：两条额度条 + 每号状态；点整卡看账号明细与路由 */
     const pool = p.pool || null;
     const coolMap = (pool && pool.cool) || {};
     const coolN = Object.keys(coolMap).length;
-    let acctBody;
-    if(pool && pool.n){
-      const byName = {};
-      ((POOL_QUOTA[p.id] || {}).accounts || []).forEach(a=>byName[a.name]=a);
-      const okN = (pool.names || []).filter(nm=>!coolMap[nm]).length;
-      const sum = `<div class="poolsum">${okN}<small>/ ${pool.n} 号可用</small>` +
-        (coolN ? `<small style="color:var(--red)">${coolN} 冷却</small>` : "") + `</div>`;
-      const rows = (pool.names || []).map(nm=>{
-        const a = byName[nm] || {};
-        const pct = (a.pct != null) ? a.pct : null;
-        const cooling = coolMap[nm];
-        const bar = (pct != null)
-          ? `<span class="abar${pct<20?" low":""}"><i style="width:${Math.max(2,pct)}%"></i></span><span class="apct">${pct}%</span>`
-          : `<span class="apct" style="width:auto;color:var(--muted)">${cooling ? "冷却" : (a.error ? "未知" : "…")}</span>`;
-        return `<div class="acctrow" data-pid="${p.id}" data-name="${esc(nm)}" title="点击查看额度详情${cooling?" · 冷却中":""}">` +
-                 `<span class="anm">${esc(nm)}</span>` +
-                 `${cooling ? `<span class="cool">${Math.ceil(cooling/60)} 分</span>` : ""}${bar}</div>`;
-      }).join("");
-      acctBody = sum + rows;
+    const q = POOL_QUOTA[p.id];
+    const rows = (q && q.accounts) || [];
+    const byName = {};
+    rows.forEach(a=>byName[a.name] = a);
+    const names = (pool && pool.names && pool.names.length)
+      ? pool.names : (p.account ? [p.account] : []);
+    const accts = names.map(nm=>byName[nm] || {name:nm, _pending:!q});
+    const agg = _aggMetrics(accts);
+    let bars;
+    if(agg.length){
+      bars = `<div class="qbars">${agg.slice(0,2).map(m=>
+        `<div class="qrow" title="${esc(m.label)}：剩余 ${esc(_fmtN(m.remain))} / ${esc(_fmtN(m.total))}">` +
+        `<span class="qk" title="${esc(m.label)}">${esc(m.short || m.label)}</span>${_bar(m.pct, m.key)}` +
+        `<span class="qv">${m.pct == null ? "—" : m.pct + "%"}</span></div>`).join("")}</div>`;
+    } else if(!q && names.length){
+      bars = `<div class="qskeleton" aria-hidden="true"><i></i><i></i></div>`;
     } else {
-      acctBody = `<span class="uv">${p.account || "—"}</span>`;
+      const sk = accts.filter(a=>!a._pending && a.signed_today !== undefined);
+      if(sk.length){
+        const sn = sk.filter(a=>a.signed_today).length;
+        bars = `<div class="qbars"><div class="qrow"><span class="qk">今日签到</span>` +
+          `${_bar(Math.round(sn * 100 / sk.length), "signin")}` +
+          `<span class="qv">${sn}/${sk.length}</span></div></div>`;
+      } else {
+        bars = `<div class="qnote">${idle ? "接入后显示额度" : (names.length ? "该上游暂无额度接口" : "未配置账号")}</div>`;
+      }
     }
-    const st = `<span class="st ${stCls}">${stTxt}</span>`;
-    const dm = `<div class="urow"><span class="uk">默认模型</span><span class="uv">${p.default_model || "—"}</span></div>`;
+    const okN = names.filter(nm=>!coolMap[nm]).length;
+    const sum = `<div class="poolsum">${okN}<small>/ ${names.length} 号可用</small>` +
+      (coolN ? `<small style="color:var(--red)">${coolN} 冷却</small>` : "") + `</div>`;
+    const lim = p.id === "workbuddy_intl" ? _limSummary() : null;
+    const acctHtml = names.length ? `<div class="acctlist">${names.map(nm=>{
+      const a = byName[nm];
+      const tone = _acctTone(a, coolMap[nm], !q && !a);
+      const lm = p.id === "workbuddy_intl" ? _limRowsFor(nm) : [];
+      return `<div class="acctrow"><span class="anm" title="${esc(nm)}">${esc(nm)}</span>` +
+        (lm.length ? `<span class="pchip warn" title="行级限流中：${esc(lm.map(x=>x.model).join("、"))}">` +
+          `限流 ${lm.length} 模型 · ${_fmtHM(lm[0].until)} 恢复</span>` : "") +
+        `<span class="ast ${tone.cls}">${esc(tone.text)}</span></div>`;
+    }).join("")}</div>` : "";
     const note = idle
-      ? `<div class="uidle">未配置账号 · 可手动接入后启用</div>`
-      : (p.error ? `<div class="uerr">⚠ ${p.error}</div>` : "");
-    const hint = idle ? "🔌 点击查看接入方式" : "额度详情：点账号行 →";
+      ? `<div class="uidle">未配置账号 · 点击卡片查看接入方式</div>`
+      : (p.error ? `<div class="uerr" title="${esc(p.error)}">⚠ ${esc(p.error)}</div>`
+        : (q && q.error ? `<div class="uerr" title="${esc(q.error)}">⚠ ${esc(q.error)}</div>` : ""));
     return `<div class="upcard clickable" data-pid="${p.id}" style="border-top:3px solid ${clr}">
-      <div class="uhead"><span class="dot2" style="background:${clr}"></span>${p.label || p.id}${st}</div>
-      <div class="urow"><span class="uk">账号池</span>${acctBody}</div>
-      ${dm}${note}
-      <div class="uhint">${hint}</div>
+      <div class="uhead"><span class="dot2" style="background:${clr}"></span>${esc(p.label || p.id)}<span class="st ${stCls}">${stTxt}</span></div>
+      ${sum}${_limChipHtml(lim)}${bars}${acctHtml}${note}
+      <div class="ucue"><span>额度 · 路由</span><span class="arr">›</span></div>
     </div>`;
   }).join("");
   box.querySelectorAll('.upcard[data-pid]').forEach(c=>{
-    c.addEventListener('click', ()=> openApi(c.dataset.pid));
+    c.addEventListener('click', ()=> openProvDetail(c.dataset.pid));
   });
-  // 账号行点击 → 详情弹窗（楷体；大字摘要在上），不再卡片内展开
-  box.querySelectorAll('.acctrow').forEach(r=>{
-    r.addEventListener('click', e=>{
-      e.stopPropagation();               // 不触发整卡的 openApi
-      openAcctDetail(r.dataset.pid, r.dataset.name);
-    });
-  });
-  // 异步填充每号额度百分比（有池且未拉过才拉；齐了整卡重绘一次）
+  // 异步填充每号额度（有池且未拉过才拉；齐了整卡重绘一次）
   ps.forEach(p=>{
     if(p.pool && p.pool.n && !POOL_QUOTA[p.id]){
       fetchPoolQuota(p.id).then(d=>{ if(d) renderProxyStatus(API_MODELS); });
     }
   });
+  // 国际版限流条：只有真打了接口才重绘（_t 相同＝命中 10s 缓存，重绘会自循环）
+  if(ps.some(p=>p.id === "workbuddy_intl")){
+    const t0 = (WBAI_LIM && WBAI_LIM._t) || 0;
+    fetchWbaiLimits().then(d=>{ if(d && d._t !== t0 && API_MODELS) renderProxyStatus(API_MODELS); });
+  }
   const cnt = $("#proxyRefreshBtn");
   if(cnt){
     const okN = ps.filter(p=>!p.error).length;
@@ -2404,6 +2952,7 @@ async function refreshProxyStatus(){
   if(!box) return;
   try{
     Object.keys(POOL_QUOTA).forEach(k=>delete POOL_QUOTA[k]);   // ⟳ 强制重拉额度
+    WBAI_LIM = null;                                             // ⟳ 限流实时态也重取
     const r = await fetch("/api/proxy_info", {cache:"no-store"});
     if(!r.ok) throw new Error("HTTP " + r.status);
     const I = await r.json();
@@ -2478,24 +3027,26 @@ function _apiMetaRefresh(filtered){
   const pid = _apiProviderOf(m);
   const p = ((I.providers||[]).find(x=>x.id===pid)) || {};
   const total = (I.providers||[]).reduce((s,x)=>s+(x.models?x.models.length:0), 0);
-  const cnt = (filtered != null && filtered !== total) ? `（匹配 ${filtered}/${total}）` : "";
-  const clr = PLAT_CLR[pid] || "";
+  const clr = PLAT_CLR[pid] || "#5f5e5a";
   const lbl = p.label || pid;
-  const dot = clr ? `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${clr};margin-right:5px;vertical-align:2px"></span>` : "";
-  // 账号池概况 + 免费额度策略（2026-10-19 池化后用户要知道「实际在用哪个」）
   const pool = p.pool || null;
   const coolN = pool ? Object.keys(pool.cool || {}).length : 0;
-  const poolTxt = (pool && pool.n)
-    ? ` · 池 ${pool.n} 号` + (coolN ? `（${coolN} 冷却中）` : "") : "";
-  let chainTxt = "";
-  if(pid === "workbuddy_intl" && (m === "wb:auto" || !m)){
-    const chain = p.auto_chain || [];
-    if(chain.length) chainTxt = `<div style="font-size:var(--fs-cap);color:#7a7873;margin-top:2px">auto 链（先吃每日免费额度，再动可累计积分）：${chain.join(" → ")}</div>`;
-  }
+  const pills = [];
+  if(pool && pool.n) pills.push(`<span class="rt-pill">池 ${pool.n} 号${coolN ? ` · ${coolN} 冷却` : ""}</span>`);
   const q = (p.quota || {})[p.account || ""];
-  const qTxt = q ? ` · ${p.account}（${q}）` : "";
+  if(q) pills.push(`<span class="rt-pill">${esc(p.account || "")} · ${esc(q)}</span>`);
+  if(filtered != null && filtered !== total) pills.push(`<span class="rt-pill">匹配 ${filtered}/${total}</span>`);
+  let chain = "";
+  if(pid === "workbuddy_intl" && (m === "wb:auto" || !m)){
+    const ch = p.auto_chain || [];
+    if(ch.length) chain = `<div class="rt-chain"><span class="rt-pill">auto 链</span>` +
+      ch.map((x,i)=>`${i ? `<span class="rt-arrow">›</span>` : ""}<span class="rt-pill">${esc(x)}</span>`).join("") +
+      `</div>`;
+  }
   $("#apiMeta").innerHTML = m
-    ? `当前模型 <b>${m}</b> → 走 ${dot}<b>${lbl}</b>${poolTxt}${qTxt}${cnt}${chainTxt}`
+    ? `<div class="apiroute"><span class="rt-model">${esc(m)}</span><span class="rt-arrow">→</span>` +
+      `<span class="rt-prov" style="color:${clr};border-color:${clr}44;background:${clr}12"><i></i>${esc(lbl)}</span>` +
+      `${pills.join("")}</div>${chain}`
     : "";
 }
 async function openApi(prefillPid){
@@ -2520,7 +3071,6 @@ async function openApi(prefillPid){
     $("#apiUrl").value = I.base_url || "";
     $("#apiKey").value = I.auth_required
       ? (I.api_key || "(后端设置了 Key 但未取到值)") : "（未设置，无需 API Key）";
-    $("#apiRate").textContent = I.rate_limit ? `${I.rate_limit.per_min}/分钟（突发 ${I.rate_limit.burst}）` : "—";
     _fillModelSelect($("#apiModelSel").value);
     // 点击某上游卡进入：自动把模型下拉定位到该上游的默认模型
     if(prefillPid){
@@ -2552,16 +3102,38 @@ async function openApi(prefillPid){
 function closeApi(){ $("#apiMask").style.display="none"; }
 $("#apiClose").addEventListener("click", closeApi);
 $("#apiMask").addEventListener("click", e=>{ if(e.target.id==="apiMask") closeApi(); });
-/* 账号额度详情弹窗：关闭 / 遮罩点击 / 强制刷新 */
-$("#acctClose").addEventListener("click", closeAcctDetail);
-$("#acctMask").addEventListener("click", e=>{ if(e.target.id==="acctMask") closeAcctDetail(); });
-$("#acctRefresh").addEventListener("click", ()=>{
-  if(ACCT_PID){ fetchPoolQuota(ACCT_PID, true).then(()=>renderAcctDetail()); }
+/* 上游额度 / 路由弹窗：关闭 / 遮罩点击 / 刷新 / 切到接入信息 */
+$("#provClose").addEventListener("click", closeProvDetail);
+$("#provMask").addEventListener("click", e=>{ if(e.target.id==="provMask") closeProvDetail(); });
+$("#provAcctTabs").addEventListener("click", e=>{
+  const b = e.target.closest(".atab[data-acct]");
+  if(!b || !PROV_PID) return;
+  PROV_ACCT = b.dataset.acct;
+  renderProvDetail();
+});
+$("#provRefresh").addEventListener("click", ()=>{
+  if(!PROV_PID) return;
+  const pid = PROV_PID;
+  PROV_LOADED = false;
+  $("#provUpdated").textContent = "正在刷新额度…";
+  renderProvDetail();
+  fetchPoolQuota(pid, true).then(()=>{
+    PROV_LOADED = true;
+    if(PROV_PID !== pid) return;
+    renderProvDetail();
+    if(API_MODELS) renderProxyStatus(API_MODELS);
+    toast("额度已刷新", "ok");
+  });
+});
+$("#provApiBtn").addEventListener("click", ()=>{
+  const pid = PROV_PID;
+  closeProvDetail();
+  openApi(pid);
 });
 document.addEventListener("keydown", e=>{
-  if(e.key==="Escape" && $("#acctMask").style.display !== "none") closeAcctDetail();
+  if(e.key==="Escape" && $("#provMask").style.display !== "none") closeProvDetail();
 });
-$("#apiModelSel").addEventListener("change", _apiMetaRefresh);
+$("#apiModelSel").addEventListener("change", ()=>_apiMetaRefresh());
 $("#apiModelFilter").addEventListener("input", ()=>_fillModelSelect());   // 输入即过滤（保留当前选中值）
 document.querySelectorAll("#apiMask .btncopy[data-copy]").forEach(b=>{
   b.addEventListener("click", ()=>{
@@ -2576,7 +3148,7 @@ document.querySelectorAll("#apiMask .btncopy[data-copy]").forEach(b=>{
   });
 });
 /* 上游卡片展示方式切换：大图标（详细卡）⇄ 小图标（紧凑卡），选择记忆到 localStorage。
-   「API 接入」入口随之收起：点击任一上游卡仍可打开接入弹窗，左栏「反代面板」亦可。 */
+   点击上游卡打开「额度 / 路由」可视化弹窗；API 接入在标题栏与弹窗内入口。 */
 const PROXY_VIEW_KEY = "proxyViewMode";
 function proxyViewMode(){ return localStorage.getItem(PROXY_VIEW_KEY) === "small" ? "small" : "large"; }
 function applyProxyView(){
@@ -3204,6 +3776,17 @@ load(false);
 /* 30s 轮询：配合后端 stale-while-revalidate——普通请求秒回旧快照、后台重读，
    轮询负责把后台刷新完成后的新值换上来（页面隐藏时暂停，省资源）。 */
 setInterval(()=>{ if(!document.hidden && BACKEND_OK) load(false); }, 30000);
+/* 15s：限流倒计时只活在反代内存里，面板停在页面上也要继续走（视图没打开、弹窗没开着就不刷）。 */
+setInterval(()=>{
+  if(document.hidden) return;
+  const provOpen = $("#provMask") && $("#provMask").style.display !== "none";
+  const proxyOn = !!document.querySelector("#view-proxy.on");
+  if(!provOpen && !proxyOn) return;
+  fetchWbaiLimits(true).then(()=>{
+    if(provOpen && PROV_PID === "workbuddy_intl") renderProvDetail();
+    if(proxyOn && API_MODELS) renderProxyStatus(API_MODELS);
+  });
+}, 15000);
 </script>
 </body>
 </html>

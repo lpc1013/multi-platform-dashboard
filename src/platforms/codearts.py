@@ -172,9 +172,10 @@ _TOMB_FILES = tuple(_acc_paths("codearts_deleted.json"))
 
 
 try:
-    from ._util import dec_cred, enc_cred
+    from ._util import dec_cred, enc_cred, exp_epoch
 except ImportError:  # 被独立脚本直接加载时的兜底
     dec_cred = enc_cred = (lambda o: o)
+    exp_epoch = lambda v: 0.0        # 比不出新旧 → 退化成「采纳客户端会话」的旧行为
 
 
 def _load_tombs():
@@ -232,7 +233,8 @@ def remove_account(name):
 def load_accounts():
     """凭据来源（合并，同键名时后加载者优先）：
        1) codearts_accounts.json —— 看板自建会话（带 refresh_token → 可自动续期）
-       2) 客户端 state.vscdb 里的最新会话（**只读**，永远最准，同键名覆盖自建会话）
+       2) 客户端 state.vscdb 里的会话（**只读**；同键名且比库里更新鲜才覆盖——
+          客户端只刷新当前登录的那个号，另一个号那条会停在一整天前）
        3) 环境变量 CODEARTS_AK / CODEARTS_SK / CODEARTS_STS
     """
     accs = {}
@@ -257,6 +259,8 @@ def load_accounts():
     #    refresh_token 与 client_id=codearts-agent、DPoP 私钥绑定，与当前 STS 无关；
     #    客户端导入的新鲜 AK/SK + 自建的 refresh_token 可以组合使用，且刷新成功
     #    后 _persist_entry 会把续期材料固化回 codearts_accounts.json）
+    #    但**更旧的会话不许覆盖库里刚续好的凭据**（2026-10-20 实证：客户端停在
+    #    08:27，库里已续到次日 12:18；无条件覆盖 ⇒ 面板报「凭证已过期」、账号读不出）
     _PRESERVE = ("refresh_token", "dpop_priv_pem", "dpop_pub_jwk", "code_verifier",
                  "browser_cookies")   # browser_cookies：SSO 会话 cookie 存档（2026-10-18）
     try:
@@ -270,6 +274,9 @@ def load_accounts():
                 for f in _PRESERVE:
                     if not (v.get(f) or "").strip() and (base.get(f) or "").strip():
                         v[f] = base[f]
+                if base.get("ak") and exp_epoch(v.get("expires_at")) < \
+                        exp_epoch(base.get("expires_at")):
+                    continue            # 客户端这条更旧 → 保留库里续好的凭据
                 accs[k] = v
     except Exception:
         pass

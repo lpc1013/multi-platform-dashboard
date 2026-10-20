@@ -36,6 +36,28 @@ def enc_cred(obj):
         return obj
 
 
+def exp_epoch(v):
+    """到期串 → epoch 秒（ISO，带 Z 或无时区都按 UTC 解释）；取不到返回 0。
+
+    比较「库里那条 vs 客户端那条谁更新鲜」必须解析后再比：
+    字符串形状不止一种（带/不带毫秒、带/不带 Z），按字典序比会把更新鲜的判成旧的。
+    """
+    s = str(v or "").strip()
+    if not s:
+        return 0.0
+    import datetime as _dt
+    try:
+        t = _dt.datetime.fromisoformat(s.replace("Z", "+00:00").replace(" ", "T", 1))
+    except ValueError:
+        try:
+            t = _dt.datetime.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            return 0.0
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=_dt.timezone.utc)
+    return t.timestamp()
+
+
 def to_float(v, default=0.0):
     """尽力把 v 转成 float，失败返回 default。
 

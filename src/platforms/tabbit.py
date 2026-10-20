@@ -562,6 +562,21 @@ def _thinking_text(j):
     return ""
 
 
+def _fresh_session(ent, tries=2):
+    """建新空会话；网络抖动重试一次，最终失败也给出可读的上游错误。"""
+    last = None
+    for i in range(tries):
+        try:
+            return get_session_id(ent, force=True)
+        except UpstreamError as e:
+            last = e
+        except Exception as e:
+            last = UpstreamError(502, "Tabbit 创建会话失败：%s" % str(e)[:120])
+        if i + 1 < tries:
+            time.sleep(0.6)
+    raise last
+
+
 def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
     """OpenAI 请求体 → Tabbit SSE → OpenAI chunk 行迭代器（恒流式，非流式由调用方聚合）。
 
@@ -598,10 +613,20 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
             proxies={"http": None, "https": None})
 
     def _open(session_id):
-        """开一轮聊天请求 → Response（已判 HTTP / SSE content-type）。"""
+        """开一轮聊天请求 → Response（已判 HTTP / SSE content-type）。
+        连接层瞬时错误重试一次：客户端侧的「网络连接失败」很多是这里一次抖动。"""
         body = _tabbit_body(session_id, model, content)
+        r = None
+        for try_i in (1, 2):
+            try:
+                r = _post(key, body)
+                break
+            except Exception as e:
+                if try_i == 1:
+                    time.sleep(0.5)
+                    continue
+                raise UpstreamError(502, "Tabbit 聊天请求失败：%s" % str(e)[:150])
         try:
-            r = _post(key, body)
             if r.status_code == 499:             # 签名 key 失效：刷新重试一次
                 _invalidate_sign_key(ent)
                 k = fetch_sign_key(ent, force=True)
@@ -706,6 +731,8 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
                 elif ev == "usage":
                     usage = _normalize_usage(j.get("usage") or j) or usage
                 elif ev in ("message_finish", "finish"):
+                    if done:
+                        continue            # 上游会连发 message_finish + finish：只发一条 stop
                     if think_pending:
                         yield _openai_chunk(cid, created, model,
                                             {"content": "\n</think>\n\n"})
@@ -733,31 +760,37 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
                     break
         except Exception:
             pass                                # 客户端断开等 IO 错误：收尾
-        finally:
-            if think_pending:                   # 流意外中断同样闭合思考块
-                yield _openai_chunk(cid, created, model,
-                                    {"content": "\n</think>\n\n"})
-                think_pending = False
-            if not done:
-                yield _openai_chunk(cid, created, model, {}, "stop", usage)
-            yield "data: [DONE]"
+        # 收尾只能在正常退出路径上做：放在 finally 里 yield，客户端断开时
+        # 会撞上 GeneratorExit → "generator ignored GeneratorExit"
+        # （2026-10-20 实测：真客户端取消一轮聊天就抛这个）。
+        if think_pending:                       # 流意外中断同样闭合思考块
+            yield _openai_chunk(cid, created, model, {"content": "\n</think>\n\n"})
+            think_pending = False
+        if not done:
+            yield _openai_chunk(cid, created, model, {}, "stop", usage)
+        yield "data: [DONE]"
 
     # 每次聊天都现场建新空会话（POST /panel/session）：无状态、不串上下文。
     # 上游若以「会话未登记」秒拒（error 无 code + "AI服务暂时不可用"），
     # 换新会话重试一次——2026-10-19 实证随机/失效 UUID 正是这个报错。
-    session_id = get_session_id(ent, force=True)
+    session_id = _fresh_session(ent)
     for attempt in (1, 2):
         r = _open(session_id)
-        evgen = _iter_events(r)
-        first = _first_output(evgen)
-        if first and first[0] == "error" and _session_stale(first[1]) and attempt == 1:
-            r.close()
-            _invalidate_session(ent)
-            session_id = get_session_id(ent, force=True)
-            continue
-        yield _openai_chunk(cid, created, model, {"role": "assistant"})
-        yield from _convert(evgen, first)
-        return
+        try:
+            evgen = _iter_events(r)
+            first = _first_output(evgen)
+            if first and first[0] == "error" and _session_stale(first[1]) and attempt == 1:
+                _invalidate_session(ent)
+                session_id = _fresh_session(ent)
+                continue
+            yield _openai_chunk(cid, created, model, {"role": "assistant"})
+            yield from _convert(evgen, first)
+            return
+        finally:
+            try:
+                r.close()       # 必须关：否则每次聊天都留一条上游连接，累积后上游拒绝新连接
+            except Exception:
+                pass
 
 
 # ════════════════════════════════════════════════════════════════
