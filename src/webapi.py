@@ -463,6 +463,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         row[k] = r[k]
                 if r.get("free_models"):
                     row["free_models"] = r["free_models"]
+                # wbai 行级限流（6004）：反代记录的 (账号,模型)→重置时刻 合入展示
+                if pid == "workbuddy_intl":
+                    try:
+                        import openai_proxy as _op
+                        lim = (_op.wbai_model_limits() or {}).get(name) or {}
+                        for fmrow in row["free_models"]:
+                            ts = lim.get(str(fmrow.get("model") or "").lower())
+                            if ts:
+                                fmrow["limited_until"] = ts
+                    except Exception:
+                        pass
             except Exception as e:
                 row["error"] = str(e)[:100]
             out.append(row)

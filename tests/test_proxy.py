@@ -316,5 +316,105 @@ class TestWbaiPool(unittest.TestCase):
         self.assertIn("14018", cm.exception.message)
 
 
+class TestWbaiModelLimit(unittest.TestCase):
+    """6004 行级限流：重置时刻解析、(账号,模型) 冷却、链过滤。"""
+
+    def setUp(self):
+        ox._WBAI_ML_COOL.clear()
+        ox._POOL_COOL.clear()
+
+    def tearDown(self):
+        ox._WBAI_ML_COOL.clear()
+        ox._POOL_COOL.clear()
+
+    def test_reset_ts_absolute_en(self):
+        # 2026-10-19 实测真实响应（英文文案，北京时间 UTC+8）
+        line = json.dumps({"code": 6004, "msg": "usage exceeds frequency limit, "
+                           "your usage will reset at 2026-10-20 19:41:31 UTC+8, "
+                           "alternatively, you can switch to the other models"})
+        ts = ox._wbai_reset_ts(line)
+        self.assertIsNotNone(ts)
+        import time as _t
+        self.assertEqual(_t.strftime("%Y-%m-%d %H:%M:%S", _t.localtime(ts)),
+                         "2026-10-20 19:41:31")
+
+    def test_reset_ts_absolute_zh(self):
+        # magpie#1361 实测中文文案
+        ts = ox._wbai_reset_ts("您的使用量已超出频率限制,将在 2026-08-06 15:49:30 UTC+8重置,"
+                               "您也可以切换其他模型继续使用。6004 | Trace ID: x")
+        self.assertIsNotNone(ts)
+        import time as _t
+        self.assertEqual(_t.strftime("%H:%M", _t.localtime(ts)), "15:49")
+
+    def test_reset_ts_relative_tomorrow(self):
+        ts = ox._wbai_reset_ts("您的使用量已超出频率限制,将在明天早上 9:30 重置")
+        self.assertIsNotNone(ts)
+        import datetime as _dt
+        d = _dt.datetime.fromtimestamp(ts)
+        self.assertEqual((d.year, d.month, d.day),
+                         (_dt.datetime.now() + _dt.timedelta(days=1)).timetuple()[:3])
+        self.assertEqual((d.hour, d.minute), (9, 30))
+
+    def test_reset_ts_unparsable_returns_none(self):
+        self.assertIsNone(ox._wbai_reset_ts("usage exceeds frequency limit"))
+        self.assertIsNone(ox._wbai_reset_ts(""))
+
+    def test_ml_limit_records_and_annotates(self):
+        line = json.dumps({"code": 6004,
+                           "msg": "your usage will reset at 2026-10-20 19:41:31 UTC+8"})
+        tag = ox._wbai_ml_limit("acct1", "DeepSeek-V4.1-Flash", line)
+        self.assertIn("重置", tag)
+        self.assertIn("19:41", tag)
+        self.assertTrue(ox._wbai_ml_hit("acct1", "deepseek-v4.1-flash"))   # 大小写不敏感
+        self.assertFalse(ox._wbai_ml_hit("acct2", "deepseek-v4.1-flash"))  # 其他号不受影响
+        # 解析不出时刻 → 退 5h 经验窗口
+        tag2 = ox._wbai_ml_limit("acct1", "hy3", "usage exceeds frequency limit")
+        self.assertIn("约", tag2)
+        self.assertTrue(ox._wbai_ml_hit("acct1", "hy3"))
+
+    def test_chain_skips_limited_rows(self):
+        ox._WBAI_ML_COOL[("A", "deepseek-v4.1-flash")] = ox.time.time() + 600
+        ox._WBAI_ML_COOL[("A", "deepseek-v4.1-flash-sg")] = ox.time.time() + 600
+        with mock.patch.object(ox.wai, "gw_models", side_effect=RuntimeError("no net")):
+            chain = ox._wbai_chain({}, None, name="A")
+        self.assertNotIn("deepseek-v4.1-flash", chain)
+        self.assertNotIn("deepseek-v4.1-flash-sg", chain)
+        # 显式点名被限流的模型 → 行过滤后为空，调用方拿到空链换号（不空转上游）
+        self.assertEqual(ox._wbai_chain({}, "deepseek-v4.1-flash", name="A"), [])
+
+    def test_pool_model_limited_keeps_account_alive(self):
+        # 行级限流（6004）：账号不进整号冷却，同号直接跳到链上下一个模型
+        accs = {"A": {"token": "t", "expires_at": "2027-01-01 00:00"}}
+        limit = 'data: ' + json.dumps({"code": 6004,
+                                       "msg": "your usage will reset at 2026-10-20 19:41:31 UTC+8"})
+        good = 'data: {"choices":[{"delta":{"content":"ok"}}]}'
+        calls = []
+
+        def fake_stream(ent, body, name=None):
+            calls.append(body["model"])
+            if body["model"] == "deepseek-v4.1-flash":
+                return iter([limit])
+            return iter([good])
+
+        with mock.patch.object(ox.wai, "load_accounts", return_value=accs), \
+             mock.patch.object(ox.wai, "gw_models", return_value=[
+                 {"id": "deepseek-v4.1-flash"}, {"id": "hy3"}, {"id": "default-model"}]), \
+             mock.patch.object(ox.wai, "chat_stream", side_effect=fake_stream), \
+             mock.patch("server.log"):
+            name, lines = ox._open_wbai({"model": "wb:auto", "messages": []})
+        self.assertEqual(name, "A")
+        self.assertEqual(calls, ["deepseek-v4.1-flash", "hy3"])   # 链上第二个模型顶上
+        self.assertEqual(list(lines), [good])
+        self.assertNotIn("A", ox._POOL_COOL.get("wbai", {}))      # 整号未被拉黑
+        self.assertTrue(ox._wbai_ml_hit("A", "deepseek-v4.1-flash"))
+
+    def test_wbai_model_limits_snapshot(self):
+        ox._WBAI_ML_COOL[("A", "hy3")] = ox.time.time() + 600
+        ox._WBAI_ML_COOL[("B", "x")] = ox.time.time() - 10        # 已过期 → 清理
+        snap = ox.wbai_model_limits()
+        self.assertIn("A", snap)
+        self.assertNotIn("B", snap)
+
+
 if __name__ == "__main__":
     unittest.main()

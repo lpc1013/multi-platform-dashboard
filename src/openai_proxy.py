@@ -473,15 +473,16 @@ def _wbai_free_ids(ent):
         return set()
 
 
-def _wbai_chain(ent, want):
+def _wbai_chain(ent, want, name=None):
     """本次请求要依次尝试的模型列表。
-    显式模型：只试它本身 + 同名付费退路；auto/空：按用户优先级链。"""
+    显式模型：只试它本身 + 同名付费退路；auto/空：按用户优先级链。
+    name 提供时跳过该号限流冷却中的模型行（6004 行级冷却）。"""
     if want:
         out = [want]
         alt = WBAI_PAID_ALIAS.get(want)
         if alt:
             out.append(alt)
-        return out
+        return [m for m in out if not (name and _wbai_ml_hit(name, m))]
     try:
         ids = {m["id"] for m in wai.gw_models(ent)}
     except Exception:
@@ -492,6 +493,8 @@ def _wbai_chain(ent, want):
             out.append(m)
     if (not ids) or ("default-model" in ids):
         out.append("default-model")
+    if name:
+        out = [m for m in out if not _wbai_ml_hit(name, m)]
     return out or ["default-model"]
 
 
@@ -571,6 +574,80 @@ def _wbai_err_kind(line):
     return None
 
 
+# ---- 模型行级限流（6004）：重置时间解析 + (账号,模型) 级冷却 ----
+# 社区实测参考（magpie#1361，与国内版同款网关）：6004 按「请求的模型」限流而非账号级；
+# 触发量级观测 ≈ 每模型 5 小时窗口 44-45 次或 24 小时窗口 74 次（官方未公开，仅参考）。
+# 重置时刻就在错误 msg 里（"将在 2026-08-06 15:49:30 UTC+8重置" / "明天早上 9:30 重置"），
+# 这里解析出来做精确冷却与前端展示，不再拍脑袋固定 1800s。
+_WBAI_ML_COOL = {}                            # (acct_name, model_lower) -> reset_epoch
+
+
+def _wbai_reset_ts(text):
+    """从上游错误消息解析限流重置时刻（本地 epoch），失败返回 None。
+    支持：绝对（"2026-08-06 15:49:30 UTC+8重置" / "will reset at 2026-10-20 19:41:31 UTC+8"）
+    与相对（"明天早上 9:30 重置"）。msg 里的时刻固定为北京时间（UTC+8）。"""
+    s = str(text or "")
+    import re as _re
+    m = _re.search(r"(20\d{2})[-/年]\s*(\d{1,2})[-/月]\s*(\d{1,2})日?\s*[T\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?", s)
+    if m:
+        try:
+            import calendar, datetime
+            dt = datetime.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                                   int(m.group(4)), int(m.group(5)), int(m.group(6) or 0))
+            return calendar.timegm(dt.timetuple()) - 8 * 3600   # 北京墙上时间 → UTC epoch
+        except Exception:
+            pass
+    # 相对表述："明天早上 9:30 重置" / "明天 02:44:26 重置"
+    m = _re.search(r"明天[^\d]{0,6}(\d{1,2}):(\d{2})(?::(\d{2}))?", s)
+    if m:
+        try:
+            import datetime
+            now = datetime.datetime.now()
+            t = datetime.datetime.combine(now.date() + datetime.timedelta(days=1),
+                                          datetime.time(int(m.group(1)), int(m.group(2)),
+                                                        int(m.group(3) or 0)))
+            return t.timestamp()
+        except Exception:
+            pass
+    return None
+
+
+def _wbai_ml_hit(name, model):
+    """该 (账号,模型) 行是否处于限流冷却中。过期即清理。"""
+    k = (name, str(model or "").lower())
+    ts = _WBAI_ML_COOL.get(k)
+    if ts is None:
+        return False
+    if time.time() >= ts:
+        _WBAI_ML_COOL.pop(k, None)
+        return False
+    return True
+
+
+def _wbai_ml_limit(name, model, line):
+    """记录模型行限流冷却（从错误行解析重置时刻），返回人类可读的「HH:MM 重置」后缀。"""
+    ts = _wbai_reset_ts(line)
+    if ts:
+        _WBAI_ML_COOL[(name, str(model or "").lower())] = ts
+        return "（%s 重置）" % time.strftime("%H:%M", time.localtime(ts))
+    # 解析不到精确时刻：退回 5 小时窗口经验值（社区实测触发窗口）
+    ts = time.time() + 5 * 3600
+    _WBAI_ML_COOL[(name, str(model or "").lower())] = ts
+    return "（约 %s 重置）" % time.strftime("%H:%M", time.localtime(ts))
+
+
+def wbai_model_limits():
+    """供 pool_quota 展示：{acct: {model: reset_epoch}}，只含未过期的行级限流。"""
+    now = time.time()
+    out = {}
+    for (nm, mdl), ts in list(_WBAI_ML_COOL.items()):
+        if ts <= now:
+            _WBAI_ML_COOL.pop((nm, mdl), None)
+            continue
+        out.setdefault(nm, {})[mdl] = ts
+    return out
+
+
 def _open_wbai_pool(openai_body):
     """国际版专用池：账号按「免费额度优先」排序，账号内按模型优先级链尝试。
     账号级错误 → 换号；模型行级限流 → 同号换下一个模型。"""
@@ -586,7 +663,7 @@ def _open_wbai_pool(openai_body):
 
     last_err = None
     for name, ent in ents:
-        for model in _wbai_chain(ent, want):
+        for model in _wbai_chain(ent, want, name=name):
             body = dict(openai_body)
             body["model"] = model
             try:
@@ -599,7 +676,9 @@ def _open_wbai_pool(openai_body):
                     last_err = UpstreamError(int(st), str(msg))
                     break                      # 换号
                 if st == 429:
-                    last_err = UpstreamError(429, str(msg))
+                    # HTTP 429：行级限流（6004 也可能走 HTTP 外壳）——解析重置时刻做行级冷却
+                    tag = _wbai_ml_limit(name, model, msg)
+                    last_err = UpstreamError(429, str(msg)[:160] + tag)
                     continue                   # 同号换模型
                 if "14018" in str(msg):
                     _pool_cool("wbai", name, msg)
@@ -630,7 +709,9 @@ def _open_wbai_pool(openai_body):
                     pass
                 break                          # 账号级 → 换号
             if kind == "model":
-                last_err = UpstreamError(429, first[:160])
+                # 6004 行级限流：解析 msg 里的重置时刻 → (账号,模型) 级冷却；账号不拉黑
+                tag = _wbai_ml_limit(name, model, first)
+                last_err = UpstreamError(429, first[:160] + tag)
                 try:
                     it.close()
                 except Exception:

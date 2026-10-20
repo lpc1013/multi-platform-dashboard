@@ -414,6 +414,8 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .acct-fm .fmr .d{margin-left:auto;flex:none;font-size:var(--fs-cap);font-weight:700;color:var(--green);
   background:var(--green-soft);border-radius:99px;padding:2px 10px}
 .acct-fm .fmr .d.soon{color:var(--red);background:var(--red-soft)}
+.acct-fm .fmr .d.lim{color:var(--red);background:var(--red-soft);margin-left:0}
+.acct-fm .fmr .d.lim + .d{margin-left:0}
 .acct-pkgs{border-top:1px dashed var(--line);margin-top:10px;padding-top:10px;
   font-size:15px;color:var(--ink2);line-height:1.9}
 .acct-pkgs b{font-weight:700;color:var(--ink)}
@@ -2297,11 +2299,17 @@ function renderAcctDetail(){
       const days = f.days_left;
       const dcls = (days != null && days <= 3) ? " soon" : "";
       const dtxt = days != null ? `免费剩 ${days} 天` : (f.until ? `免费至 ${f.until}` : "限免中");
+      // 6004 行级限流：反代记录的重置时刻 → 红色徽章「限流 · HH:MM 重置」
+      let lim = "";
+      if(f.limited_until){
+        const hh = new Date(f.limited_until * 1000).toTimeString().slice(0,5);
+        lim = `<span class="d lim" title="6004 行级限流；社区实测约 44 次/5h 或 74 次/24h 触发">限流 · ${esc(hh)} 重置</span>`;
+      }
       return `<div class="fmr"><span class="m">${esc(f.model)}</span>` +
              `<span class="u">${f.note ? esc(f.note) + " · " : ""}${esc(used)}</span>` +
-             `<span class="d${dcls}">${esc(dtxt)}</span></div>`;
+             (lim || "") + `<span class="d${dcls}">${esc(dtxt)}</span></div>`;
     }).join("") +
-      `<div class="hint-sm" style="margin-top:4px">免费模型 0 积分（限免期不限积分用量）；次数与 token 来自反代自记账，仅统计经看板反代的请求。</div>`;
+      `<div class="hint-sm" style="margin-top:4px">免费模型 0 积分（限免期不限积分用量），但按模型限流：触发后重置时刻以弹窗为准（解析自上游报错）。次数与 token 来自反代自记账，仅统计经看板反代的请求。</div>`;
   } else fmBox.style.display = "none";
   /* 包明细（楷体正文） */
   const pk = a.packages || [];
