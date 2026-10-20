@@ -9,13 +9,14 @@
   2) 旧时间戳是 `[HH:MM:SS]` 无日期，而 backend_run.log 跨天累积（只按 1MB
      轮转），无法区分昨天与今天。
 
-运行：python -m pytest tests/test_logstore.py -q
+运行：python -m unittest tests.test_logstore  或  python -m pytest tests/test_logstore.py -q
 """
 import os
 import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 sys.path.insert(0, SRC)
@@ -24,10 +25,27 @@ import logstore  # noqa: E402
 
 
 class TestLogIsolation(unittest.TestCase):
-    def test_detects_pytest_runtime(self):
-        """pytest 执行期间必须能识别出「我在测试里」。"""
+    def test_detects_test_runtime(self):
+        """当前 runner（pytest 或 unittest）执行期间必须识别出「我在测试里」。"""
         self.assertTrue(logstore._under_test(),
-                        "PYTEST_CURRENT_TEST 未生效：测试会污染生产日志")
+                        "未识别测试运行期：测试会污染生产日志")
+
+    def test_detects_unittest_argv(self):
+        """回归：本项目用 `python -m unittest` 跑测试，只认 PYTEST_CURRENT_TEST
+        会漏判 → 测试日志照样写进 backend_run.log（2026-10-20 二次踩坑）。"""
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("PYTEST_CURRENT_TEST", "DASHBOARD_TESTING")}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(sys, "argv", ["python", "-m", "unittest", "discover"]):
+            self.assertTrue(logstore._under_test())
+
+    def test_detects_env_switch(self):
+        """DASHBOARD_TESTING=1 手动开关（自写脚本/CI 用）。"""
+        env = {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"}
+        env["DASHBOARD_TESTING"] = "1"
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(sys, "argv", ["python", "server.py"]):
+            self.assertTrue(logstore._under_test())
 
     def test_log_not_written_to_file_under_test(self):
         """测试期间 log() 不得落盘（内存 LOG 与 stdout 仍保留，便于断言）。"""

@@ -5,6 +5,7 @@ logstore.py —— 运行日志（2026-10-13 从 server.py 抽出）
 超 1MB 轮转 .old 只保留一代）。日志是辅助设施，任何失败都不影响主流程。
 """
 import os
+import sys
 import threading
 from datetime import datetime
 
@@ -21,12 +22,20 @@ _log_lock = threading.Lock()
 
 
 def _under_test():
-    """是否跑在 pytest 里。
+    """是否跑在测试进程里（pytest 或 unittest 都认）。
+
     2026-10-20 实证：测试进程与看板进程共用同一个 backend_run.log，跑一次
-    pytest 会往里写 `账号 B 冷却 1800s（test）`、`codearts 额度用尽` 等**测试
+    测试会往里写 `账号 B 冷却 1800s（test）`、`codearts 额度用尽` 等**测试
     构造的假故障**，排障时被当成真实生产事件（本机已因此误判过一次）。
-    PYTEST_CURRENT_TEST 由 pytest 在每个用例执行期间自动设置，导入期与运行期都可靠。"""
-    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
+    识别两种 runner（本项目实际用 `python -m unittest discover`，仅认
+    PYTEST_CURRENT_TEST 会漏掉，测试日志照样污染生产日志——2026-10-20 二次踩坑）：
+      pytest   → PYTEST_CURRENT_TEST 在每个用例执行期间自动设置
+      unittest → sys.argv 里出现 unittest（`python -m unittest ...`）
+    另留 DASHBOARD_TESTING=1 手动开关（自写脚本/CI 用）。"""
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("DASHBOARD_TESTING"):
+        return True
+    return "unittest" in " ".join(sys.argv[:3])
 
 
 def _log_to_file(line):

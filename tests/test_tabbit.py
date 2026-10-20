@@ -405,6 +405,72 @@ class TestChatStream(unittest.TestCase):
         self.assertTrue(err)
         self.assertIn("Pro", err[0]["error_msg"])
 
+    # ── 零文本帧空流（2026-10-20 二次实证：`stream 1.4s lines=3` 仍空）──
+    # 首帧事件名是产出型（thinking/message_chunk）但**帧内文本为空**时，
+    # 旧判定只看事件名 → 误认为非空 → 照样 role+stop+[DONE] 三行空回复。
+    # 必须以「帧内是否真有文本」为准。
+    ZEROTEXT = ['event: ready\ndata: {"chat_session_id":"x"}',
+                'event: message_start\ndata: {"message_id":"y"}',
+                'event: thinking\ndata: {"reasoning_content":""}',
+                'event: thinking\ndata: {}',
+                'event: message_chunk\ndata: {"content":""}',
+                'data: {"type":"message_finish"}', 'data: [DONE]']
+
+    def test_zerotext_frames_treated_as_empty_and_retried(self):
+        """零文本 thinking/chunk 帧 + finish = 空流 → 换新会话重试后正常出文。"""
+        class _ZeroThenOk(_FakeRequests):
+            def __init__(self):
+                super().__init__(None)
+                self.n = 0
+
+            def post(self, url, **kw):
+                self.n += 1
+                self.calls.append(url)
+                return (_FakeResp(TestChatStream.ZEROTEXT) if self.n == 1
+                        else _FakeResp(UPSTREAM))
+
+        tbt.requests = _ZeroThenOk()
+        sessions = iter(["sess-zero", "sess-fresh"])
+        tbt.get_session_id = lambda ent, force=False: next(sessions)
+        lines = list(tbt.chat_stream(self.ent, dict(self.body)))
+        self.assertEqual(tbt.requests.n, 2)                    # 重试了一轮
+        self.assertFalse([c for c in self._chunks(lines) if c.get("error_code")])
+        self.assertEqual(self._text(lines), TAG_OPEN + "想想" + TAG_CLOSE + "你好")
+
+    def test_zerotext_frames_twice_raises_actionable(self):
+        """连续两次零文本空流 → 502 显式中文化报错，绝不静默空回复。"""
+        tbt.requests = _FakeRequests(_FakeResp(TestChatStream.ZEROTEXT))
+        with self.assertRaises(tbt.UpstreamError) as ctx:
+            list(tbt.chat_stream(self.ent, dict(self.body)))
+        self.assertEqual(ctx.exception.status, 502)
+        self.assertIn("空响应", ctx.exception.message)
+
+    def test_zerotext_frames_then_content_same_stream_not_retried(self):
+        """同一流内先零文本帧、后有真内容：不得误判空流，也不得多发一轮请求。"""
+        mixed = ['event: message_start\ndata: {"message_id":"y"}',
+                 'event: thinking\ndata: {"reasoning_content":""}',
+                 'event: message_chunk\ndata: {"content":"你好"}',
+                 'data: {"type":"message_finish"}', 'data: [DONE]']
+        tbt.requests = _FakeRequests(_FakeResp(mixed))
+        lines = list(tbt.chat_stream(self.ent, dict(self.body)))
+        self.assertEqual(len(tbt.requests.calls), 1)           # 未重试
+        self.assertEqual(self._text(lines), "你好")
+        self.assertFalse([c for c in self._chunks(lines) if c.get("error_code")])
+
+    def test_usage_frame_preserved_when_skipped_before_content(self):
+        """usage 是元信息帧（无文本）会被预读跳过，token 统计必须仍能拿到。"""
+        up = ['event: usage\ndata: {"usage":{"prompt_tokens":7,"completion_tokens":3}}',
+              'event: message_chunk\ndata: {"content":"好"}',
+              'data: {"type":"message_finish"}', 'data: [DONE]']
+        tbt.requests = _FakeRequests(_FakeResp(up))
+        lines = list(tbt.chat_stream(self.ent, dict(self.body)))
+        chs = self._chunks(lines)
+        self.assertEqual(self._text(lines), "好")
+        usage = [c.get("usage") for c in chs if c.get("usage")]
+        self.assertTrue(usage)
+        self.assertEqual(usage[-1]["prompt_tokens"], 7)
+        self.assertEqual(usage[-1]["total_tokens"], 10)
+
 
 class TestReadAccountAndLocalImport(unittest.TestCase):
     def test_read_account_no_cookie(self):
