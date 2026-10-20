@@ -623,14 +623,19 @@ def read_account(name, ent):
     else:
         extra["credits_ok"] = False
         extra["credits_error"] = cred_err
-    # 每日免费 token 额度（另一套体系，勿与积分混淆）→ 只进 extra
+    # 每日免费 token 额度（另一套体系，勿与积分混淆）→ 顶层 daily_free + extra
     bal, bal_err = fetch_balance(ent)
+    daily_free = None
     if bal:
         def _num(k):
             try:
                 return int(float(bal.get(k) or 0))
             except (TypeError, ValueError):
                 return 0
+        daily_free = {"remain": _num("total_balance"), "total": _num("total_quota"),
+                      "used": _num("used_amount"),
+                      "daily_used": _num("daily_tokens_used"),
+                      "daily_limit": _num("daily_token_limit")}
         extra.update({
             "free_token_total": _num("total_quota"),
             "free_token_remain": _num("total_balance"),
@@ -646,7 +651,8 @@ def read_account(name, ent):
         "name": name, "ok": True, "error": None,
         "level": "CodeArts Agent · 华为云",
         "signed_today": not daily_claimable,
-        "credits": credits,
+        "credits": credits,          # 长期积分（另一套体系）
+        "daily_free": daily_free,    # 每日免费 token 额度（每日重置，与积分分开算）
         "packages": pkgs,
         "extra": extra,
     }

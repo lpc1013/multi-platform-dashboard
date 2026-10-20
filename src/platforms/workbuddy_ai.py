@@ -516,6 +516,27 @@ def _parse_resource(d):
     return pkgs, remain, total
 
 
+def _acct_usage_today(name):
+    """反代自记账（proxy_usage.json 的 __acct 嵌套）里本账号今天的各模型用量。
+    结构：__acct -> "wbai/<号名>" -> {日期: {model: {calls, pt, ct}}}。
+    失败返回 {}（用量展示是尽力而为，不影响账号卡片）。"""
+    try:
+        try:
+            from .. import data_dir as _dd
+        except ImportError:
+            import data_dir as _dd
+        for p in _dd.candidates("proxy_usage.json"):
+            if not os.path.exists(p):
+                continue
+            d = json.load(open(p, encoding="utf-8"))
+            inner = (d.get("__acct") or {}).get("wbai/%s" % name) or {}
+            today = inner.get(time.strftime("%Y-%m-%d")) or {}
+            return {k: v for k, v in today.items() if isinstance(v, dict)}
+    except Exception:
+        pass
+    return {}
+
+
 def read_account(name, ent):
     """看板卡片数据：积分包 + 到期日。"""
     try:
@@ -574,12 +595,37 @@ def read_account(name, ent):
                 else:
                     t.update(started=False)
                 ex["trial"] = t
+            # 免费模型维度（2026-10-20）：限免模型 0 积分（unlimited credits），
+            # 「积分余量」参考意义弱；重点看每模型用量（反代自记账聚合）+ 免费剩余天数。
+            usage = _acct_usage_today(name)
+            fm = []
+            for p in (ex.get("promos") or []):
+                u = usage.get(str(p["model"])) or {}
+                fm.append({"model": str(p["model"]),
+                           "days_left": p.get("days_left"),
+                           "until": p.get("until"),
+                           "note": "",
+                           "calls": int(u.get("calls") or 0),
+                           "prompt_tokens": int(u.get("prompt_tokens") or 0),
+                           "completion_tokens": int(u.get("completion_tokens") or 0)})
+            tr = ex.get("trial") or {}
+            if tr.get("model") and tr.get("started") and \
+                    not any(x["model"] == tr["model"] for x in fm):
+                u = usage.get(str(tr["model"])) or {}
+                fm.append({"model": str(tr["model"]),
+                           "days_left": tr.get("days_left"),
+                           "until": tr.get("until") or "",
+                           "note": "14 天试用",
+                           "calls": int(u.get("calls") or 0),
+                           "prompt_tokens": int(u.get("prompt_tokens") or 0),
+                           "completion_tokens": int(u.get("completion_tokens") or 0)})
             return {"name": name, "ok": True,
                     "level": "intl",
                     "energy": None, "streak_days": None, "signed_today": False,
                     "credits": {"remain": remain, "total": total,
                                 "used": max(0.0, total - remain)},
                     "packages": pkgs,
+                    "free_models": fm,
                     "extra": ex,
                     "buddy": {"state": "none"}}
         msg = str(d.get("msg") or r.text)[:80]

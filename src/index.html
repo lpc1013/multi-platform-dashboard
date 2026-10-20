@@ -387,7 +387,7 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .upcard .uv{display:block;font-variant-numeric:tabular-nums;overflow-wrap:break-word}
 .upcard .uerr{margin-top:6px;font-size:var(--fs-cap);color:var(--red);line-height:1.5}
 .upcard .uidle{margin-top:6px;font-size:var(--fs-cap);color:var(--muted);line-height:1.5}
-/* 账号池：每号一行（名 + 剩余额度条 + 百分比），点击行展开包明细 */
+/* 账号池：每号一行（名 + 剩余额度条 + 百分比），点击行打开详情弹窗 */
 .upcard .acctrow{display:flex;align-items:center;gap:7px;padding:3px 0;cursor:pointer;font-size:var(--fs-cap);color:var(--ink2)}
 .upcard .acctrow:hover{color:var(--ink)}
 .upcard .acctrow .anm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -395,8 +395,31 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .upcard .abar i{display:block;height:100%;background:var(--brand,#008BA3);border-radius:3px}
 .upcard .abar.low i{background:var(--red,#c0392b)}
 .upcard .apct{width:38px;text-align:right;font-variant-numeric:tabular-nums;flex:none}
-.upcard .adetail{padding:4px 0 2px 10px;font-size:var(--fs-cap);color:var(--muted);line-height:1.55;border-left:2px solid var(--line,#e6e4de);margin-left:2px}
-.upcard .adetail b{color:var(--ink2);font-weight:600}
+.upcard .cool{font-size:var(--fs-cap);color:var(--red)}
+/* 账号池大字摘要（N 号可用）， important 信息上移 */
+.upcard .poolsum{font-size:var(--fs-t2);font-weight:700;color:var(--ink);line-height:1.3;padding:2px 0 6px}
+.upcard .poolsum small{font-size:var(--fs-cap);font-weight:600;color:var(--muted);margin-left:7px}
+/* 账号详情弹窗（楷体正文；重要的大字摘要在最上面） */
+.acct-kai{font-family:"楷体","KaiTi","STKaiti","KaiTi_GB2312",serif}
+.acct-hero{display:flex;gap:12px;margin:2px 0 14px}
+.acct-hero .cell{flex:1;background:#f8f7f2;border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+.acct-hero .cell .k{font-size:var(--fs-cap);color:var(--muted);font-weight:600;margin-bottom:4px}
+.acct-hero .cell .v{font-size:25px;font-weight:700;color:var(--ink);line-height:1.25;font-variant-numeric:tabular-nums}
+.acct-hero .cell .s{font-size:var(--fs-cap);color:var(--muted);margin-top:2px}
+.acct-hero .cell.warn .v{color:var(--red)}
+.acct-fm{border-top:1px dashed var(--line);padding-top:8px}
+.acct-fm .fmr{display:flex;align-items:baseline;gap:10px;padding:6px 0;font-size:16px;color:var(--ink2)}
+.acct-fm .fmr .m{font-weight:700;color:var(--ink);font-size:17px}
+.acct-fm .fmr .u{font-size:var(--fs-aux)}
+.acct-fm .fmr .d{margin-left:auto;flex:none;font-size:var(--fs-cap);font-weight:700;color:var(--green);
+  background:var(--green-soft);border-radius:99px;padding:2px 10px}
+.acct-fm .fmr .d.soon{color:var(--red);background:var(--red-soft)}
+.acct-pkgs{border-top:1px dashed var(--line);margin-top:10px;padding-top:10px;
+  font-size:15px;color:var(--ink2);line-height:1.9}
+.acct-pkgs b{font-weight:700;color:var(--ink)}
+.acct-pkgs .pk{display:flex;justify-content:space-between;gap:12px}
+.acct-pkgs .pk .r{flex:none;color:var(--muted);font-variant-numeric:tabular-nums}
+.acct-pkgs .none{color:var(--muted)}
 .upcard.clickable{cursor:pointer}
 .upcard.clickable:hover{border-color:#cfd7e3}
 /* hint 吸底：可选行（默认模型缺失等）不同也不影响各行卡片底部对齐 */
@@ -1213,6 +1236,25 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
         <code>wb:</code> 前缀（如 <code>wb:auto</code>）走 WorkBuddy 国际版；
         <code>tb:</code> 前缀（如 <code>tb:Default</code>）走 Tabbit。服务只监听 <b>127.0.0.1</b>
         （不出本机），默认无需 API Key；限流 <span id="apiRate"></span>。用量看底部「今日 token 消耗」卡片。</div>
+    </div>
+  </div>
+</div>
+
+<!-- 账号额度详情弹窗：点卡片上的账号行打开（不再卡片内展开），楷体、大字摘要在上 -->
+<div class="modal-mask" id="acctMask" style="display:none">
+  <div class="modal" style="max-width:560px">
+    <div class="modal-head">
+      <div class="mtitle" id="acctTitle">账号额度</div>
+      <button class="x" id="acctClose" title="关闭">×</button>
+    </div>
+    <div class="modal-body acct-kai" style="padding:0 24px 20px;overflow-y:auto">
+      <div class="acct-hero" id="acctHero"></div>
+      <div class="acct-fm" id="acctFreeModels" style="display:none"></div>
+      <div class="acct-pkgs" id="acctPkgs"></div>
+      <div style="margin-top:14px;display:flex;gap:10px;align-items:center">
+        <button class="tab" id="acctRefresh">↻ 刷新额度</button>
+        <span class="hint-sm" id="acctUpdated"></span>
+      </div>
     </div>
   </div>
 </div>
@@ -2199,21 +2241,76 @@ function fetchPoolQuota(pid, force){
     .then(d=>{ if(d && (d.accounts || []).length) POOL_QUOTA[pid] = d; return d || null; })
     .catch(()=>null);
 }
-function _poolDetailHtml(pid, name){
+/* 账号额度详情弹窗（楷体；大字摘要在最上面，明细在下） */
+let ACCT_PID = null, ACCT_NAME = null;
+const _fmtN = v => (v == null || isNaN(+v)) ? "—" : (Math.round(+v * 10) / 10).toLocaleString("zh-CN");
+const _pctOf = o => { o = o || {}; const t = +o.total || 0, r = +o.remain || 0;
+                      return t > 0 ? Math.round(r * 100 / t) : null; };
+function openAcctDetail(pid, name){
+  ACCT_PID = pid; ACCT_NAME = name;
+  $("#acctMask").style.display = "flex";
+  renderAcctDetail();
+  fetchPoolQuota(pid, true).then(()=>{ if(ACCT_PID===pid && ACCT_NAME===name) renderAcctDetail(); });
+}
+function closeAcctDetail(){ $("#acctMask").style.display = "none"; ACCT_PID = ACCT_NAME = null; }
+function renderAcctDetail(){
+  const pid = ACCT_PID, name = ACCT_NAME;
+  if(!pid || !name) return;
   const a = (((POOL_QUOTA[pid] || {}).accounts || []).find(x=>x.name===name)) || {};
-  if(a.error && !a.ok) return `⚠ ${esc(a.error)}`;
-  const fmt = v => (v == null ? "—" : (Math.round(v * 10) / 10).toLocaleString("zh-CN"));
-  let html = "";
-  if((a.packages || []).length){
-    html = a.packages.map(pk=>
-      `<div><b>${esc(pk.name || pk.label || "积分包")}</b>　余 ${fmt(pk.remain != null ? pk.remain : pk.remain_credit)} / ${fmt(pk.amount != null ? pk.amount : pk.total)}${pk.end ? " · 至 " + esc(String(pk.end)) : ""}</div>`
-    ).join("");
-  } else if(a.total != null && a.total > 0){
-    html = `<div><b>总额度</b>　余 ${fmt(a.remain)} / ${fmt(a.total)}</div>`;
-  } else {
-    html = `<div>暂无额度明细${a.ok ? "" : "（账号状态异常）"}</div>`;
+  $("#acctTitle").textContent = name + " · 额度详情";
+  const df = a.daily_free, lt = a.long_term, fms = a.free_models || [];
+  /* 大字摘要：每日免费 / 长期积分 分开；没有拆分口径的平台退回总额度 */
+  const hero = [];
+  if(df && +df.total > 0){
+    hero.push({k:"每日免费额度", v:_fmtN(df.remain),
+               s:"/ " + _fmtN(df.total) + (df.daily_limit ? ` · 今日已用 ${_fmtN(df.daily_used||0)} / ${_fmtN(df.daily_limit)}` : ""),
+               warn:_pctOf(df) != null && _pctOf(df) < 20});
+  } else if(df && df.remain != null){
+    hero.push({k:"每日免费额度", v:_fmtN(df.remain),
+               s:(+df.remain) <= 0 ? "今日已用完（每日重置）" : "剩余（每日重置）",
+               warn:(+df.remain) <= 0});
   }
-  return html;
+  if(lt && +lt.total > 0){
+    hero.push({k:"长期积分", v:_fmtN(lt.remain), s:"/ " + _fmtN(lt.total) + " · 已用 " + _fmtN(lt.used||0),
+               warn:_pctOf(lt) != null && _pctOf(lt) < 20});
+  } else if(df && a.total != null && +a.total > 0){
+    hero.push({k:"积分（长期）", v:_fmtN(a.remain), s:"/ " + _fmtN(a.total) + " · 已用 " + _fmtN((+a.total)-(+a.remain||0)),
+               warn:a.pct != null && a.pct < 20});
+  }
+  if(!hero.length){
+    hero.push({k:"总额度", v:(a.remain != null ? _fmtN(a.remain) : "—"),
+               s:(a.total != null && +a.total > 0) ? "/ " + _fmtN(a.total)
+                 : (a.ok ? "暂无额度数据" : "状态异常"),
+               warn:a.pct != null && a.pct < 20});
+  }
+  $("#acctHero").innerHTML = hero.map(h=>
+    `<div class="cell${h.warn?" warn":""}"><div class="k">${esc(h.k)}</div>` +
+    `<div class="v">${esc(h.v)}</div><div class="s">${esc(h.s||"")}</div></div>`).join("");
+  /* 免费模型行（WorkBuddy 国际版：限免目录 + 反代自记账用量 + 剩余天数） */
+  const fmBox = $("#acctFreeModels");
+  if(fms.length){
+    fmBox.style.display = "";
+    fmBox.innerHTML = fms.map(f=>{
+      const calls = +f.calls || 0;
+      const tok = (+f.prompt_tokens||0) + (+f.completion_tokens||0);
+      const used = calls ? `${calls} 次${tok ? " · " + _fmtN(tok) + " tok" : ""}` : "今日未用";
+      const days = f.days_left;
+      const dcls = (days != null && days <= 3) ? " soon" : "";
+      const dtxt = days != null ? `免费剩 ${days} 天` : (f.until ? `免费至 ${f.until}` : "限免中");
+      return `<div class="fmr"><span class="m">${esc(f.model)}</span>` +
+             `<span class="u">${f.note ? esc(f.note) + " · " : ""}${esc(used)}</span>` +
+             `<span class="d${dcls}">${esc(dtxt)}</span></div>`;
+    }).join("") +
+      `<div class="hint-sm" style="margin-top:4px">免费模型 0 积分（限免期不限积分用量）；次数与 token 来自反代自记账，仅统计经看板反代的请求。</div>`;
+  } else fmBox.style.display = "none";
+  /* 包明细（楷体正文） */
+  const pk = a.packages || [];
+  $("#acctPkgs").innerHTML = pk.length ? pk.map(x=>
+      `<div class="pk"><span><b>${esc(x.name || x.label || "积分包")}</b></span>` +
+      `<span class="r">余 ${_fmtN(x.remain != null ? x.remain : x.remain_credit)} / ${_fmtN(x.amount != null ? x.amount : x.total)}` +
+      `${x.end ? " · 至 " + esc(String(x.end)) : ""}</span></div>`).join("")
+    : `<div class="none">${a.error ? "⚠ " + esc(a.error) : "暂无额度明细"}</div>`;
+  $("#acctUpdated").textContent = "数据时间 " + new Date().toLocaleTimeString("zh-CN",{hour12:false});
 }
 function renderProxyStatus(I){
   const box = $("#proxyStatus");
@@ -2230,38 +2327,41 @@ function renderProxyStatus(I){
     let stCls = "ok", stTxt = "可用";
     if(idle){ stCls = "idle"; stTxt = "未配置"; }
     else if(p.error){ stCls = "bad"; stTxt = "异常"; }
-    // 账号池：每号一行（名 + 剩余额度条 + 百分比，pct 由 /api/pool_quota 异步填充）
+    // 账号池：一行大字摘要 + 每号一行（名 + 额度条 + 百分比，点行开详情弹窗）
     const pool = p.pool || null;
-    const coolN = pool ? Object.keys(pool.cool || {}).length : 0;
-    let poolRows;
+    const coolMap = (pool && pool.cool) || {};
+    const coolN = Object.keys(coolMap).length;
+    let acctBody;
     if(pool && pool.n){
       const byName = {};
       ((POOL_QUOTA[p.id] || {}).accounts || []).forEach(a=>byName[a.name]=a);
-      poolRows = (pool.names || []).map(nm=>{
+      const okN = (pool.names || []).filter(nm=>!coolMap[nm]).length;
+      const sum = `<div class="poolsum">${okN}<small>/ ${pool.n} 号可用</small>` +
+        (coolN ? `<small style="color:var(--red)">${coolN} 冷却</small>` : "") + `</div>`;
+      const rows = (pool.names || []).map(nm=>{
         const a = byName[nm] || {};
         const pct = (a.pct != null) ? a.pct : null;
-        const cooling = (pool.cool || {})[nm];
+        const cooling = coolMap[nm];
         const bar = (pct != null)
           ? `<span class="abar${pct<20?" low":""}"><i style="width:${Math.max(2,pct)}%"></i></span><span class="apct">${pct}%</span>`
-          : `<span class="apct" style="width:auto;color:var(--muted)">${cooling ? "冷却中" : (a.error ? "额度未知" : "…")}</span>`;
-        return `<div class="acctrow" data-pid="${p.id}" data-name="${esc(nm)}" title="点击查看额度明细${cooling?" · 冷却中":""}">` +
-                 `<span class="anm">${esc(nm)}</span>${bar}</div>` +
-               `<div class="adetail" data-detail-for="${p.id}/${esc(nm)}" style="display:none"></div>`;
+          : `<span class="apct" style="width:auto;color:var(--muted)">${cooling ? "冷却" : (a.error ? "未知" : "…")}</span>`;
+        return `<div class="acctrow" data-pid="${p.id}" data-name="${esc(nm)}" title="点击查看额度详情${cooling?" · 冷却中":""}">` +
+                 `<span class="anm">${esc(nm)}</span>` +
+                 `${cooling ? `<span class="cool">${Math.ceil(cooling/60)} 分</span>` : ""}${bar}</div>`;
       }).join("");
+      acctBody = sum + rows;
     } else {
-      poolRows = `<span class="uv">${p.account || "—"}</span>`;
+      acctBody = `<span class="uv">${p.account || "—"}</span>`;
     }
     const st = `<span class="st ${stCls}">${stTxt}</span>`;
-    // 默认模型行恒显（缺失显示 —）：五张卡行结构完全一致，高度才对得齐
     const dm = `<div class="urow"><span class="uk">默认模型</span><span class="uv">${p.default_model || "—"}</span></div>`;
     const note = idle
       ? `<div class="uidle">未配置账号 · 可手动接入后启用</div>`
       : (p.error ? `<div class="uerr">⚠ ${p.error}</div>` : "");
-    const hint = idle ? "🔌 点击查看接入方式" : "🔌 点击查看接入信息 →";
+    const hint = idle ? "🔌 点击查看接入方式" : "额度详情：点账号行 →";
     return `<div class="upcard clickable" data-pid="${p.id}" style="border-top:3px solid ${clr}">
       <div class="uhead"><span class="dot2" style="background:${clr}"></span>${p.label || p.id}${st}</div>
-      <div class="urow"><span class="uk">账号池${coolN ? `（${coolN} 冷却中）` : ""}</span>${poolRows}</div>
-      <div class="urow keep"><span class="uk">可用模型</span><span class="uv">${(p.models||[]).length} 个</span></div>
+      <div class="urow"><span class="uk">账号池</span>${acctBody}</div>
       ${dm}${note}
       <div class="uhint">${hint}</div>
     </div>`;
@@ -2269,16 +2369,11 @@ function renderProxyStatus(I){
   box.querySelectorAll('.upcard[data-pid]').forEach(c=>{
     c.addEventListener('click', ()=> openApi(c.dataset.pid));
   });
-  // 账号行点击 → 展开/收起该号的额度明细（数据来自 POOL_QUOTA）
+  // 账号行点击 → 详情弹窗（楷体；大字摘要在上），不再卡片内展开
   box.querySelectorAll('.acctrow').forEach(r=>{
     r.addEventListener('click', e=>{
       e.stopPropagation();               // 不触发整卡的 openApi
-      const det = r.nextElementSibling;
-      if(!det || !det.classList.contains("adetail")) return;
-      if(det.style.display === "none"){
-        det.innerHTML = _poolDetailHtml(r.dataset.pid, r.dataset.name);
-        det.style.display = "";
-      } else det.style.display = "none";
+      openAcctDetail(r.dataset.pid, r.dataset.name);
     });
   });
   // 异步填充每号额度百分比（有池且未拉过才拉；齐了整卡重绘一次）
@@ -2449,6 +2544,15 @@ async function openApi(prefillPid){
 function closeApi(){ $("#apiMask").style.display="none"; }
 $("#apiClose").addEventListener("click", closeApi);
 $("#apiMask").addEventListener("click", e=>{ if(e.target.id==="apiMask") closeApi(); });
+/* 账号额度详情弹窗：关闭 / 遮罩点击 / 强制刷新 */
+$("#acctClose").addEventListener("click", closeAcctDetail);
+$("#acctMask").addEventListener("click", e=>{ if(e.target.id==="acctMask") closeAcctDetail(); });
+$("#acctRefresh").addEventListener("click", ()=>{
+  if(ACCT_PID){ fetchPoolQuota(ACCT_PID, true).then(()=>renderAcctDetail()); }
+});
+document.addEventListener("keydown", e=>{
+  if(e.key==="Escape" && $("#acctMask").style.display !== "none") closeAcctDetail();
+});
 $("#apiModelSel").addEventListener("change", _apiMetaRefresh);
 $("#apiModelFilter").addEventListener("input", ()=>_fillModelSelect());   // 输入即过滤（保留当前选中值）
 document.querySelectorAll("#apiMask .btncopy[data-copy]").forEach(b=>{

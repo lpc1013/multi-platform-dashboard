@@ -442,7 +442,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         out = []
         for name, ent in accs.items():
             row = {"name": name, "ok": False, "error": None, "pct": None,
-                   "remain": None, "total": None, "packages": []}
+                   "remain": None, "total": None, "packages": [],
+                   "daily_free": None, "long_term": None, "free_models": []}
             try:
                 if mod is None or not isinstance(ent, dict):
                     raise RuntimeError("无额度查询能力")
@@ -455,6 +456,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 row["total"], row["remain"] = tot, rem
                 row["pct"] = round(rem * 100.0 / tot) if tot > 0 else None
                 row["packages"] = r.get("packages") or []
+                # 2026-10-20 拆分口径：CodeArts/OfficeAce 每日免费 vs 长期积分；
+                # wbai 每号免费模型（限免目录 + 自记账用量）
+                for k in ("daily_free", "long_term"):
+                    if r.get(k) is not None:
+                        row[k] = r[k]
+                if r.get("free_models"):
+                    row["free_models"] = r["free_models"]
             except Exception as e:
                 row["error"] = str(e)[:100]
             out.append(row)

@@ -847,10 +847,12 @@ USAGE_KEEP_DAYS = 30
 _usage_lock = threading.Lock()
 
 
-def _record_usage(model, u):
+def _record_usage(model, u, provider=None, acct=None):
     """按日/按模型聚合 token 用量，原子写 proxy_usage.json。
-    结构：{"2026-10-12": {model: {calls, prompt_tokens, completion_tokens}}}
-    只含模型名与数字，不含任何凭据/账号信息；写失败静默（不影响对话）。"""
+    结构：{"2026-10-12": {model: {calls, prompt_tokens, completion_tokens}},
+           "__acct": {"wbai/<号名>": {model: {calls, pt, ct}}}}（__acct 键嵌套，
+    模型名不会与之冲突；wbai 免费模型用量展示用，其他 provider 也顺手记）。
+    只含模型名/账号名与数字，不含任何凭据；写失败静默（不影响对话）。"""
     try:
         pt = (u or {}).get("prompt_tokens") or 0
         ct = (u or {}).get("completion_tokens") or 0
@@ -865,9 +867,25 @@ def _record_usage(model, u):
             m["calls"] += 1
             m["prompt_tokens"] += pt
             m["completion_tokens"] += ct
-            for k in [k for k in d if k < time.strftime(
+            if provider and acct:
+                ak = "%s/%s" % (provider, str(acct)[:40])
+                a = d.setdefault("__acct", {}).setdefault(ak, {}).setdefault(
+                    day, {}).setdefault(
+                    model, {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0})
+                a["calls"] += 1
+                a["prompt_tokens"] += pt
+                a["completion_tokens"] += ct
+            for k in [k for k in d if k not in ("__acct",) and k < time.strftime(
                     "%Y-%m-%d", time.localtime(time.time() - USAGE_KEEP_DAYS * 86400))]:
                 del d[k]                     # 裁掉 30 天前的旧数据
+            ac = d.get("__acct") or {}
+            for ak in list(ac):              # __acct 内层同口径裁剪
+                inner = ac.get(ak) or {}
+                for dd in [dd for dd in inner if dd < time.strftime(
+                        "%Y-%m-%d", time.localtime(time.time() - USAGE_KEEP_DAYS * 86400))]:
+                    del inner[dd]
+                if not inner:
+                    del ac[ak]
             tmp = USAGE_FILE + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(d, fh, ensure_ascii=False)
@@ -995,7 +1013,7 @@ def relay(handler, openai_body):
             _ca_release()
             srv.log("[proxy:%s] %s acct=%s stream %.1fs lines=%d%s"
                     % (provider, model, name, time.time() - t0, n_lines, _usage_str(usage)))
-            _record_usage(model, usage)
+            _record_usage(model, usage, provider=provider, acct=name)
         return
 
     # 非流式：聚合 SSE → 单个 OpenAI 响应
@@ -1078,4 +1096,4 @@ def relay(handler, openai_body):
     _ca_release()
     srv.log("[proxy:%s] %s acct=%s %.1fs%s" % (provider, model, name, time.time() - t0,
                                                _usage_str(usage)))
-    _record_usage(model, usage)
+    _record_usage(model, usage, provider=provider, acct=name)

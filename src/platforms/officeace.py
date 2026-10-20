@@ -585,12 +585,16 @@ def _num(v, default=0.0):
 
 
 def _parse_subscription(d):
-    """把 /v1/subscription 响应归一化为「积分 + 积分包 + 今日是否已签」。"""
+    """把 /v1/subscription 响应归一化为「积分 + 积分包 + 今日是否已签」。
+    2026-10-20 起拆分：daily_free=当天 daily 活动奖励（每日免费积分），
+    long_term=套餐周期额度 + 非今日活动（长期积分），两者分开统计。"""
     today = _today_cst()
     pkgs, total, used, remain = [], 0.0, 0.0, 0.0
+    d_free = d_free_total = d_free_used = 0.0
+    lt_total, lt_used, lt_remain = 0.0, 0.0, 0.0
     claimed, acts = False, []
 
-    # ① 套餐自带的周期额度（skus[].quotas[] 里 sku_attr_code == officeace_points）
+    # ① 套餐自带的周期额度（skus[].quotas[] 里 sku_attr_code == officeace_points）→ 长期
     for sku in (d.get("skus") or []):
         if not isinstance(sku, dict):
             continue
@@ -603,26 +607,37 @@ def _parse_subscription(d):
             pkgs.append({"name": "%s · 周期额度" % (sku.get("sku_name") or "套餐"),
                          "amount": qt, "remain": max(0.0, qt - qc), "used": qc,
                          "expire": sku.get("expired_time"), "source": "measured",
-                         "perpetual": False, "kind": "积分"})
+                         "perpetual": False, "kind": "积分", "bucket": "long"})
             total += qt; used += qc; remain += max(0.0, qt - qc)
+            lt_total += qt; lt_used += qc; lt_remain += max(0.0, qt - qc)
 
-    # ② 活动奖励（bonus_skus）：当天发放的 daily 活动 = 今天已签到
+    # ② 活动奖励（bonus_skus）：当天发放的 daily 活动 = 今天已签到 → 每日免费积分
     for b in (d.get("bonus_skus") or []):
         if not isinstance(b, dict):
             continue
         bp, bc = _num(b.get("points")), _num(b.get("current_value"))
         day, kind = _bonus_grant(b)
+        bucket = "daily" if (day == today and kind == "daily") else "long"
         pkgs.append({"name": str(b.get("activity_name") or b.get("activity_id") or "活动奖励"),
                      "amount": bp, "remain": max(0.0, bp - bc), "used": bc,
                      "expire": b.get("expired_time"), "source": "measured",
-                     "perpetual": False, "kind": "积分"})
+                     "perpetual": False, "kind": "积分", "bucket": bucket})
         total += bp; used += bc; remain += max(0.0, bp - bc)
+        if bucket == "daily":
+            d_free_total += bp; d_free_used += bc
+            d_free += max(0.0, bp - bc)
+        else:
+            lt_total += bp; lt_used += bc; lt_remain += max(0.0, bp - bc)
         if day == today and kind == "daily":
             claimed = True
             acts.append(str(b.get("activity_name") or b.get("activity_id") or ""))
 
     return {"total": total, "used": used, "remain": remain, "packages": pkgs,
-            "claimed": claimed, "activities": acts}
+            "claimed": claimed, "activities": acts,
+            "daily_free": {"remain": round(d_free), "total": round(d_free_total),
+                           "used": round(d_free_used)},   # 当天 daily 活动奖励（已领未用口径）
+            "long_term": {"remain": round(lt_remain), "total": round(lt_total),
+                          "used": round(lt_used)}}
 
 
 def read_account(name, ent):
@@ -691,6 +706,10 @@ def read_account(name, ent):
         "signed_today": claimed,
         "credits": {"remain": round(info["remain"]), "total": round(info["total"]),
                     "used": round(info["used"])},
+        "daily_free": {"remain": info["daily_free"]["remain"],
+                       "total": info["daily_free"]["total"],
+                       "used": info["daily_free"]["used"]},
+        "long_term": info["long_term"],
         "packages": info["packages"],
         "extra": {
             "phone": _phone,
