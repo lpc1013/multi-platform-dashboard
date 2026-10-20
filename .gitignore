@@ -59,6 +59,7 @@ outputs/
 
 # 一次性迁移 / 探针脚本（含真实账号标识，仅本机使用，不入库）
 tests/_*.py
+tests/_*.json
 
 # 第三方参考仓库（独立 git 克隆，仅本地逆向参考，不入主仓库）
 chatgpt-to-api/

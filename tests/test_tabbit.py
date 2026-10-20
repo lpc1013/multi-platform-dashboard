@@ -10,6 +10,9 @@
   - chat_stream：SSE（event:/data: 双形状）→ OpenAI chunk 转换、
     thinking→reasoning_content（含 reasoning_content 字段）、usage/finish、
     error chunk 中文化、499 自动刷新重试、会话失效换新会话重试
+  - 空流防护（2026-10-20 实证 lines=3 = role+stop+[DONE]）：
+    首次空流换新会话重试、连续两次空流显式报 502、仅 finish 首帧同为空流、
+    只有 thinking 不算空流
   - 会话端点：user-sessions 列表 JSON 解析/正则兜底、/panel/session 建会话、
     列表空现场兜底、_session_stale 特征判定
   - read_account 无 cookie 的可操作报错；read_tabbit 不抛异常
@@ -85,6 +88,11 @@ UPSTREAM = [
     'event: finish\ndata: {}',
     'data: [DONE]',
 ]
+
+# 思考块的起止标签按 **ASCII 尖括号**书写（\x3c / \x3e），避免源码里被写成
+# 视觉相近的 Unicode 字符导致断言出现「看起来一样却不相等」的假失败。
+TAG_OPEN = "\x3cthink\x3e\n"        # 前缀标签 + 换行
+TAG_CLOSE = "\n\x3c/think\x3e\n\n"  # 换行 + 闭合标签 + 空行
 
 
 class TestRegistration(unittest.TestCase):
@@ -309,6 +317,93 @@ class TestChatStream(unittest.TestCase):
         ent = {"cookie": "token=" + _mk_jwt("u", int(time.time()) - 5)}
         with self.assertRaises(tbt.UpstreamError):
             list(tbt.chat_stream(ent, dict(self.body)))
+
+    # ── 空流防护（2026-10-20 实证：后端日志 `tb:… stream 1.3s lines=3`）──
+    # 旧行为：上游零内容事件 → 照样产出 role+stop+[DONE]（恰好 3 行）→
+    # 客户端收到空回复，显示「用户已取消」。现必须重试，重试仍空必须报错。
+    EMPTY = ['event: ready\ndata: {"chat_session_id":"x"}',
+             'event: message_start\ndata: {"message_id":"y"}',
+             'data: [DONE]']
+
+    def _text(self, lines):
+        chs = self._chunks(lines)
+        return "".join(c["choices"][0]["delta"].get("content", "") for c in chs)
+
+    def test_empty_stream_retries_with_fresh_session(self):
+        """首次空流（无任何产出事件）→ 换新会话重试 → 正常出文，且不吐空回复。"""
+        class _EmptyThenOk(_FakeRequests):
+            def __init__(self):
+                super().__init__(None)
+                self.n = 0
+
+            def post(self, url, **kw):
+                self.n += 1
+                self.calls.append(url)
+                return (_FakeResp(TestChatStream.EMPTY) if self.n == 1
+                        else _FakeResp(UPSTREAM))
+
+        tbt.requests = _EmptyThenOk()
+        sessions = iter(["sess-empty", "sess-fresh"])
+        tbt.get_session_id = lambda ent, force=False: next(sessions)
+        lines = list(tbt.chat_stream(self.ent, dict(self.body)))
+        self.assertEqual(tbt.requests.n, 2)                    # 确实重试了一轮
+        self.assertFalse([c for c in self._chunks(lines) if c.get("error_code")])
+        self.assertEqual(self._text(lines),
+                         TAG_OPEN + "想想" + TAG_CLOSE + "你好")   # 重试后正常出文
+
+    def test_empty_stream_twice_raises_actionable(self):
+        """连续两次空流 → 必须显式报错，绝不静默产出空回复。"""
+        tbt.requests = _FakeRequests(_FakeResp(TestChatStream.EMPTY))
+        with self.assertRaises(tbt.UpstreamError) as ctx:
+            list(tbt.chat_stream(self.ent, dict(self.body)))
+        e = ctx.exception
+        self.assertEqual(e.status, 502)
+        self.assertIn("空响应", e.message)                      # 用户可读的中文原因
+        self.assertIn("重试", e.message)                        # 给出下一步动作
+
+    def test_finish_only_first_frame_treated_as_empty(self):
+        """边界：首帧即 message_finish（上游只给结束帧）同为空流，不得当正常回答。"""
+        tbt.requests = _FakeRequests(_FakeResp(
+            ['data: {"type":"message_finish"}', 'data: [DONE]']))
+        with self.assertRaises(tbt.UpstreamError) as ctx:
+            list(tbt.chat_stream(self.ent, dict(self.body)))
+        self.assertEqual(ctx.exception.status, 502)
+        self.assertIn("空响应", ctx.exception.message)
+
+    def test_codeless_error_retries_then_succeeds(self):
+        """无 code 的上游错误 = 疑似瞬时故障/风控 → 换新会话重试一次可自愈。"""
+        transient = ['event: error\ndata: {"message":"系统繁忙"}', 'data: [DONE]']
+
+        class _ErrThenOk(_FakeRequests):
+            def __init__(self):
+                super().__init__(None)
+                self.n = 0
+
+            def post(self, url, **kw):
+                self.n += 1
+                self.calls.append(url)
+                return (_FakeResp(transient) if self.n == 1
+                        else _FakeResp(UPSTREAM))
+
+        tbt.requests = _ErrThenOk()
+        sessions = iter(["s1", "s2"])
+        tbt.get_session_id = lambda ent, force=False: next(sessions)
+        lines = list(tbt.chat_stream(self.ent, dict(self.body)))
+        self.assertEqual(tbt.requests.n, 2)                    # 重试了一轮
+        chs = self._chunks(lines)
+        self.assertFalse([c for c in chs if c.get("error_code")])
+        self.assertEqual(self._text(lines), TAG_OPEN + "想想" + TAG_CLOSE + "你好")
+
+    def test_actionable_error_not_retried(self):
+        """带可操作码（492 需会员）的错误重试无意义：立即中文化返回，不浪费一轮。"""
+        premium = ['data: {"type":"error","code":492,"message":"premium only"}',
+                   'data: [DONE]']
+        tbt.requests = _FakeRequests(_FakeResp(premium))
+        lines = list(tbt.chat_stream(self.ent, dict(self.body)))
+        self.assertEqual(len(tbt.requests.calls), 1)           # 未重试
+        err = [c for c in self._chunks(lines) if c.get("error_code")]
+        self.assertTrue(err)
+        self.assertIn("Pro", err[0]["error_msg"])
 
 
 class TestReadAccountAndLocalImport(unittest.TestCase):

@@ -151,6 +151,9 @@ python backup_creds.py load <文件>.creds # 恢复（默认不覆盖已有文�
 - **冷却态可见**：整号冷却与「(账号, 模型)」行级冷却都会在面板上标出剩余时间
 - **读取失败如实上报**：上游查不到额度时卡片显示「每日免费额度读取失败」并附上游原文，
   不会静默显示 0
+- **接口契约**：`GET /api/pool_quota?provider=<上游>` 的 `provider` 必须显式指定
+  （`codearts` / `teleagent` / `officeace` / `tabbit` / `wbai`，国际版别名 `workbuddy_intl`）；
+  缺省或拼错返回 **400** 并列出可选值，不会降级成「有账号但查不了额度」的误导结果
 
 ---
 

@@ -436,6 +436,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pid = (q.get("provider") or [""])[0]
         force = (q.get("force") or [""])[0] == "1"
         key = {"workbuddy_intl": "wbai"}.get(pid, pid)
+        # 未知/缺省 provider 必须显式拒绝（2026-10-20 自检发现）：`_pool_spec` 对未知
+        # provider 会**兜底返回 wbai 账号**，而下面 `mod` 映射取不到就是 None →
+        # 每个号都返回 `ok:false, "无额度查询能力"` 且 HTTP 200，调用方拿到的是
+        # 「有账号但全都查不了额度」的误导性结果，而不是「provider 名写错了」。
+        _VALID_POOL = ("codearts", "teleagent", "officeace", "tabbit", "wbai")
+        if key not in _VALID_POOL:
+            self._send(400, {"provider": pid, "accounts": [], "error":
+                             "未知上游 provider=%r（可选：%s；国际版别名 workbuddy_intl）"
+                             % (pid, " / ".join(_VALID_POOL))})
+            return
         now = time.time()
         c = Handler._PQ_CACHE.get(pid)
         if not force and c and now - c[0] < Handler._PQ_TTL:

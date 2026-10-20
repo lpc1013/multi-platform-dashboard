@@ -69,6 +69,12 @@ except ImportError:
             self.status = int(status) if status else 502
             self.message = str(message)
 
+try:
+    from logstore import log as _run_log      # 反代偶发问题的唯一留痕途径
+except Exception:                             # 独立运行兜底
+    def _run_log(_m):
+        pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
@@ -688,6 +694,33 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
                 return ev, j
         return None
 
+    def _is_empty(first):
+        """上游是否没给任何内容：整条流没有产出事件，或开场即 finish。
+
+        ⚠ 反代「发了对话一会儿显示用户已取消」的根因（2026-10-20 实证
+        backend_run.log `tb:… stream 1.3s lines=3`）：上游偶发返回**零内容
+        事件**的空流，旧代码照样产出 role+stop+[DONE]（恰好 3 行）→ 客户端
+        收到空回复，判定为「用户已取消」。空流必须重试，重试仍空必须报错，
+        不能静默当正常回答。"""
+        return first is None or first[0] in ("message_finish", "finish")
+
+    # 上游错误码里「用户可操作、重试无意义」的一类：登录失效 / 权益不足 /
+    # 被限流。其余（含无 code 的瞬时故障、风控抖动）一律视为可重试。
+    _ACTIONABLE_CODES = {"401", "403", "429", "492", "493", "499"}
+
+    def _err_code(j):
+        return str((j or {}).get("code") or (j or {}).get("status") or "").strip()
+
+    def _is_retryable_err(first):
+        """上游错误是否值得换新会话再试一次（与 _is_empty 同为「疑似瞬时故障」）。
+
+        上游错误事件有两种读法：可操作码（登录失效/需会员/限流）→ 重试无意义；
+        **无 code 的未知错误** → 多为风控或瞬时故障，重试常能自愈。注意
+        「会话未登记」也是无 code，已由 _session_stale 单独识别（同样走重试）。"""
+        if not first or first[0] != "error":
+            return False
+        return _err_code(first[1]) not in _ACTIONABLE_CODES
+
     def _convert(evgen, first):
         """事件流 → OpenAI chunk 行（恒以 data: [DONE] 收尾）。
 
@@ -773,16 +806,43 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
     # 每次聊天都现场建新空会话（POST /panel/session）：无状态、不串上下文。
     # 上游若以「会话未登记」秒拒（error 无 code + "AI服务暂时不可用"），
     # 换新会话重试一次——2026-10-19 实证随机/失效 UUID 正是这个报错。
+    #
+    # ⚠ 上游还会偶发返回**零内容事件**的空流（2026-10-20 实证日志
+    # `tb:… stream 1.3s lines=3`）。旧代码不判定空流，直接产出
+    # role+stop+[DONE]（恰好 3 行）→ 客户端收到空回复，判定「用户已取消」。
+    # 现与「会话未登记」同路径处理：换新会话重试；重试仍空则**显式报错**，
+    # 不再静默把空流当正常回答（含首帧即 finish 的情况，同为空流）。
     session_id = _fresh_session(ent)
     for attempt in (1, 2):
         r = _open(session_id)
         try:
             evgen = _iter_events(r)
             first = _first_output(evgen)
-            if first and first[0] == "error" and _session_stale(first[1]) and attempt == 1:
+            stale = bool(first and first[0] == "error"
+                         and _session_stale(first[1]))
+            empty = _is_empty(first)
+            # 无 code 的上游错误多半是瞬时故障/风控，换新会话重试一次；
+            # 不行的话第二次会走 _convert 的正常错误中文化路径，不吞掉原因。
+            retry_err = _is_retryable_err(first) and not stale
+            if attempt == 1 and (stale or empty or retry_err):
+                why = ("会话未登记" if stale else
+                       "空流/仅 finish" if empty else
+                       "上游错误(%s)" % (_err_code(first[1]) or "无码"))
+                _run_log("[proxy:tabbit] %s 第 %d 次尝试无产出（%s），换新会话重试"
+                         % (model, attempt, why))
                 _invalidate_session(ent)
                 session_id = _fresh_session(ent)
                 continue
+            if empty:
+                # 两次都空：必须报错。502 + 非额度类消息 → 不触发换号（单账号
+                # 场景不会退化成误导性的「所有账号不可用」），错误直达客户端。
+                _run_log("[proxy:tabbit] %s 上游连续 %d 次返回空流，放弃"
+                         % (model, attempt))
+                raise UpstreamError(
+                    502, "Tabbit 上游连续返回空响应（无任何内容事件）。"
+                         "多为上游临时故障或该账号触发风控，请稍后重试；"
+                         "若持续出现，可在 Tabbit 浏览器发一条消息后于看板"
+                         "「从本地客户端导入」刷新 Cookie。")
             yield _openai_chunk(cid, created, model, {"role": "assistant"})
             yield from _convert(evgen, first)
             return
