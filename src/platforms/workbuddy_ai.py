@@ -769,28 +769,52 @@ def read_account(name, ent):
                 "packages": [], "buddy": {"state": "unknown"}}
 
 
+def _selfcheck_models():
+    """自检用的模型链：与反代 auto 链同序（免费行在前），不含付费行。
+
+    ⚠ 2026-10-21 根因：旧实现写死 `fast-model`——那是**付费行**，两号积分包
+    用完后恒回 14018「Credits exhausted」，于是看板日志把「两号都正常、
+    deepseek-v4.1-flash 免费可用」误报成「对话失败/额度耗尽」。
+    自检必须打反代实际会用的模型，否则结论与真实可用性无关。
+    """
+    try:                                   # 单一来源：反代 auto 链
+        from openai_proxy import WBAI_AUTO_CHAIN as chain
+        return list(chain)
+    except Exception:
+        return ["deepseek-v4.1-flash", "hy3", "step-5-preview", "hy4-preview-f"]
+
+
 def run_task(name, ent, task_key):
     if task_key != "chat":
         return {"ok": False, "msg": "未知任务"}
-    try:
-        lines = chat_stream(ent, {"model": "fast-model",
-                                  "messages": [{"role": "user", "content": "你好"}]}, name=name)
-        txt = ""
-        for line in lines:
-            if not line.startswith("data:") or "[DONE]" in line:
-                continue
-            try:
-                j = json.loads(line[5:])
-                for c in j.get("choices", []):
-                    txt += (c.get("delta") or {}).get("content") or ""
-            except Exception:
-                pass
-            if len(txt) > 20:
-                break
-        return {"ok": bool(txt.strip()),
-                "msg": ("已对话（回复：%s…）" % txt.strip()[:20]) if txt.strip()
-                       else "对话成功但无回复内容"}
-    except UpstreamErr as e:
-        return {"ok": False, "msg": "对话失败 HTTP%s：%s" % (e.status, e.message[:60])}
-    except Exception as e:
-        return {"ok": False, "msg": "对话异常：%s" % str(e)[:60]}
+    errs = []
+    for model in _selfcheck_models():
+        try:
+            lines = chat_stream(ent, {"model": model,
+                                      "messages": [{"role": "user", "content": "你好"}]},
+                                name=name)
+            txt = ""
+            for line in lines:
+                if not line.startswith("data:") or "[DONE]" in line:
+                    continue
+                try:
+                    j = json.loads(line[5:])
+                    for c in j.get("choices", []):
+                        txt += (c.get("delta") or {}).get("content") or ""
+                except Exception:
+                    pass
+                if len(txt) > 20:
+                    break
+            if txt.strip():
+                return {"ok": True, "msg": "已对话（%s 回复：%s…）" % (model, txt.strip()[:20])}
+            errs.append("%s：无回复内容" % model)
+        except UpstreamErr as e:
+            msg = str(e.message or "")[:60]
+            if e.status in (401, 403):          # 账号级失效：换模型无意义，直接报
+                return {"ok": False, "msg": "账号鉴权失效 HTTP%s：%s" % (e.status, msg)}
+            errs.append("%s：HTTP%s %s" % (model, e.status, msg))
+        except Exception as e:
+            errs.append("%s：%s" % (model, str(e)[:50]))
+    return {"ok": False,
+            "msg": "免费模型链全部失败（%s）——多为当日免费额度耗尽，积分/付费行另计"
+                   % "；".join(errs[:3])}

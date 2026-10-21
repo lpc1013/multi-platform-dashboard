@@ -471,6 +471,42 @@ class TestChatStream(unittest.TestCase):
         self.assertEqual(usage[-1]["prompt_tokens"], 7)
         self.assertEqual(usage[-1]["total_tokens"], 10)
 
+    # ── 纯空白帧（2026-10-21）：`" "`/`"\n"` 是**真值**，旧实现 `if _frame_text(...)`
+    #    会把它当产出 → 不重试、直接发 stop → 客户端一片空白（=「用户已取消」）。
+    #    纯空白必须与零文本同路：重试，两次仍空则显式报错。
+    BLANK = ['event: message_start\ndata: {"message_id":"y"}',
+             'event: message_chunk\ndata: {"content":" "}',
+             'event: message_chunk\ndata: {"content":"\\n"}',
+             'data: {"type":"message_finish"}', 'data: [DONE]']
+
+    def test_blank_only_frames_treated_as_empty(self):
+        """只有空白字符的流 → 判空流并重试，不能当正常结束。"""
+        class _BlankThenOk(_FakeRequests):
+            def __init__(self):
+                super().__init__(None)
+                self.n = 0
+
+            def post(self, url, **kw):
+                self.n += 1
+                self.calls.append(url)
+                return (_FakeResp(TestChatStream.BLANK) if self.n == 1
+                        else _FakeResp(UPSTREAM))
+
+        tbt.requests = _BlankThenOk()
+        sessions = iter(["sess-blank", "sess-fresh"])
+        tbt.get_session_id = lambda ent, force=False: next(sessions)
+        lines = list(tbt.chat_stream(self.ent, dict(self.body)))
+        self.assertEqual(tbt.requests.n, 2)                    # 重试了一轮
+        self.assertEqual(self._text(lines), TAG_OPEN + "想想" + TAG_CLOSE + "你好")
+
+    def test_blank_only_twice_raises_not_silent_stop(self):
+        """连续两次纯空白 → 502 报错（客户端能看见原因），不发空 stop。"""
+        tbt.requests = _FakeRequests(_FakeResp(TestChatStream.BLANK))
+        with self.assertRaises(tbt.UpstreamError) as ctx:
+            list(tbt.chat_stream(self.ent, dict(self.body)))
+        self.assertEqual(ctx.exception.status, 502)
+        self.assertIn("空响应", ctx.exception.message)
+
 
 class TestReadAccountAndLocalImport(unittest.TestCase):
     def test_read_account_no_cookie(self):

@@ -2579,14 +2579,14 @@ function _quotaCardHtml(m){
     `<div class="qcard-info"><div class="qcard-v">${_fmtShort(m.remain)}<small> / ${_fmtShort(m.total)}</small></div>` +
     `<div class="qcard-f">${esc(foot)}</div></div></div></div>`;
 }
-function _missingDailyHtml(err){
-  const noBenefit = /benefit not found/i.test(err || "");
+function _missingDailyHtml(err, na){
+  const noBenefit = na === true || /benefit not found/i.test(err || "");
   return `<div class="qcard daily missing">
     <div class="qcard-h"><span class="qcard-k">每日免费额度</span><span class="qcard-tag">未开通</span></div>
     <div class="qcard-b">${_ring(null, "daily", 86, 8, "—")}` +
-    `<div class="qcard-info"><div class="qcard-v muted">未开通</div>` +
-    `<div class="qcard-s">${noBenefit ? "上游未返回免费 token 包" : "每日免费额度读取失败"}</div>` +
-    `<div class="qcard-f" title="${esc(err || "")}">${noBenefit ? "该账号无此权益 · 积分不受影响" : "稍后刷新重试"}</div>` +
+    `<div class="qcard-info"><div class="qcard-v muted">${noBenefit ? "无此权益" : "未开通"}</div>` +
+    `<div class="qcard-s">${noBenefit ? "该账号按积分计量" : "每日免费额度读取失败"}</div>` +
+    `<div class="qcard-f" title="${esc(err || "")}">${noBenefit ? "上游无免费 token 包 · 积分不受影响" : "稍后刷新重试"}</div>` +
     `</div></div></div>`;
 }
 function _sectionHtml(title, count, body, sub){
@@ -2704,7 +2704,7 @@ function _acctBlock(a, cooling, p){
   } else {
     if(metrics.length || missing){
       body += _sectionHtml("额度", null,
-        `<div class="qgrid">${missing ? _missingDailyHtml(ex.free_token_error) : ""}${metrics.map(_quotaCardHtml).join("")}</div>`,
+        `<div class="qgrid">${missing ? _missingDailyHtml(ex.free_token_error, ex.free_token_na) : ""}${metrics.map(_quotaCardHtml).join("")}</div>`,
         "每日免费额度与积分分池计算");
     } else if(!a.error){
       body += _sectionHtml("账号状态", null, _statusGridHtml(a, ex), "该上游没有数值额度接口");

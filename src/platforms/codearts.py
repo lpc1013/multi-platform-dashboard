@@ -653,6 +653,13 @@ def read_account(name, ent):
         })
     else:
         extra["free_token_error"] = bal_err
+        # 上游明确回「该凭据没有这个 channel group」= 这个号本来就没有每日免费
+        # token 权益（华为云商用版按积分计量），不是查询失败。2026-10-21 实测：
+        # opengw 的 balance 与 gateway/config 同报 4000 invalid channel, group
+        # not found（加不加 channel 参数一模一样），而该号 statistics 只有
+        # 500 基础 + 7000 奖励积分、没有 token 包 → 前端不该一直提示「稍后重试」。
+        if "group not found" in (bal_err or "") or "invalid channel" in (bal_err or ""):
+            extra["free_token_na"] = True
 
     return {
         "name": name, "ok": True, "error": None,

@@ -695,29 +695,42 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
         return ""
 
     def _first_output(evgen):
-        """读到首个**真正带文本**的产出帧，返回 (first, skipped, pending)。
+        """读到首个**真正带文本**的产出帧，返回 (first, skipped, pending, dump)。
 
         skipped：被跳过的「产出型但零文本」帧的事件名计数（空流诊断用）。
         pending：被跳过的 usage 帧（token 统计要用，交给 _convert 回放）。
+        dump：前若干帧的原文摘要（ev + 截断 JSON），只在空流/异常时落日志，
+        下次复现时能直接看到上游到底发了什么，不必再猜。
 
         ⚠ 只看事件名判定「有产出」是不够的（2026-10-20 实证
         `tb:… stream 1.4s lines=3`）：上游会发**零文本的 thinking 帧**
         或空 content 帧后直接 finish——首帧事件名属于产出型，旧判定算作
         非空，结果仍产出 role+stop+[DONE] 三行空回复。必须以帧内文本为准。
+        ⚠ 2026-10-21 补：**纯空白帧**（"\n"、" "）同样不算产出——旧实现
+        `if _frame_text(...)` 对 " " 为真，会走「有产出」分支发 stop，
+        客户端仍是一片空白（表现为「用户已取消」）。
         终止类帧（message_finish/finish）与 error 立即返回，不跳过后面的判断。
         """
-        skipped, pending = {}, []
+        skipped, pending, dump = {}, [], []
         for ev, j in evgen:
+            if len(dump) < 12:
+                try:
+                    dump.append("%s:%s" % (ev, json.dumps(j, ensure_ascii=False)[:160]))
+                except Exception:
+                    dump.append("%s:%s" % (ev, str(j)[:160]))
             if ev not in _OUTPUT_EVENTS:
                 continue                    # ready / message_start / title / close 等
             if ev in ("message_finish", "finish", "error"):
-                return (ev, j), skipped, pending
-            if _frame_text(ev, j):
-                return (ev, j), skipped, pending
+                return (ev, j), skipped, pending, dump
+            if _frame_text(ev, j).strip():
+                return (ev, j), skipped, pending, dump
             skipped[ev] = skipped.get(ev, 0) + 1
             if ev == "usage":
                 pending.append((ev, j))
-        return None, skipped, pending
+        return None, skipped, pending, dump
+
+    def _dump_str(dump):
+        return " | ".join(dump) if dump else "（上游未发任何事件帧）"
 
     def _seen_str(seen):
         return ",".join("%s×%d" % (k, v) for k, v in sorted(seen.items())) or "无"
@@ -784,7 +797,8 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
                                                 {"content": "\n</think>\n\n"})
                             think_pending = False
                             think_open = False
-                        emitted += 1
+                        if c.strip():        # 纯空白不算产出（否则空回复当正常结束）
+                            emitted += 1
                         yield _openai_chunk(cid, created, model, {"content": c})
                 elif ev == "thinking":
                     t = _thinking_text(j)
@@ -794,7 +808,8 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
                                                 {"content": "<think>\n"})
                             think_open = True
                         think_pending = True
-                        emitted += 1
+                        if t.strip():
+                            emitted += 1
                         yield _openai_chunk(cid, created, model, {"content": t})
                 elif ev == "usage":
                     usage = _normalize_usage(j.get("usage") or j) or usage
@@ -860,7 +875,7 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
         r = _open(session_id)
         try:
             evgen = _iter_events(r)
-            first, skipped, pending = _first_output(evgen)
+            first, skipped, pending, dump = _first_output(evgen)
             stale = bool(first and first[0] == "error"
                          and _session_stale(first[1]))
             empty = _is_empty(first)
@@ -871,8 +886,9 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
                 why = ("会话未登记" if stale else
                        "空流/零文本帧" if empty else
                        "上游错误(%s)" % (_err_code(first[1]) or "无码"))
-                _run_log("[proxy:tabbit] %s 第 %d 次尝试无产出（%s；跳过帧 %s），"
-                         "换新会话重试" % (model, attempt, why, _seen_str(skipped)))
+                _run_log("[proxy:tabbit] %s 第 %d 次尝试无产出（%s；跳过帧 %s）"
+                         "换新会话重试｜原始帧 %s"
+                         % (model, attempt, why, _seen_str(skipped), _dump_str(dump)))
                 _invalidate_session(ent)
                 session_id = _fresh_session(ent)
                 continue
@@ -880,7 +896,8 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
                 # 两次都空：必须报错。502 + 非额度类消息 → 不触发换号（单账号
                 # 场景不会退化成误导性的「所有账号不可用」），错误直达客户端。
                 _run_log("[proxy:tabbit] %s 上游连续 %d 次无文本产出，放弃"
-                         "（跳过帧 %s）" % (model, attempt, _seen_str(skipped)))
+                         "（跳过帧 %s）｜原始帧 %s"
+                         % (model, attempt, _seen_str(skipped), _dump_str(dump)))
                 raise UpstreamError(
                     502, "Tabbit 上游连续返回空响应（无任何文本内容）。"
                          "多为上游临时故障或该账号触发风控，请稍后重试；"
