@@ -103,6 +103,14 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 CHAT_TIMEOUT = (15, 600)        # 连接 / 读超时（SSE 可能很长）
 SIGN_KEY_TTL = 600              # 签名 key 缓存 10 分钟（toy 同款）
 SESSION_TTL = 300               # 会话 id 缓存 5 分钟
+
+# Tabbit 免费档对**单条 content 字符串的字符数**有 ~2 万上限，超出返回
+# code=492 + 推广语（2026-10-21 直连实测：中文 20016 字符通过、22017 失败；
+# ASCII 24K 也失败 → 按字符计、与字节无关；50 条小消息总量 5K 正常 →
+# 只卡单条体量）。代理把全部历史拼成一条 content，对话变大后间歇越限，
+# 表现为「该模型需要 Pro 会员」误判文案。装配时按预算截断、遇 492 减半重试。
+CONTENT_MAX = 16000             # 首条尝试预算：对 20-22K 阈值留 ~20% 余量
+CONTENT_MIN = 2000              # 重试下限：再小上下文也救不回来了，放弃
 MODELS_TTL = 600                # 模型目录缓存 10 分钟
 
 # 缓存（进程级；key = base_url）
@@ -451,9 +459,20 @@ def _invalidate_session(ent):
 # 聊天（OpenAI 反代上游）
 # ════════════════════════════════════════════════════════════════
 
-def messages_to_content(messages):
+def messages_to_content(messages, budget=None):
     """OpenAI messages → Tabbit content 字符串。
-    单条：直接取文本；多条：带角色标注拼接（Tabbit 会话制，无状态代理自带历史）。"""
+    单条：直接取文本；多条：带角色标注拼接（Tabbit 会话制，无状态代理自带历史）。
+
+    budget=None：全量拼接（旧行为）。给了预算时按**字符数**从新往旧装配：
+    最后一条（当前提问）永远完整保留——除非它单独就超预算（硬截断保留
+    头部并加标记）；装不下的旧消息跳过（不保留中间空洞也无所谓，顶部有
+    截断说明）。返回 (content, stats)，stats 记录 dropped/orig/final，
+    供日志取证客户端真实历史体量（此前只能靠猜）。
+
+    背景（2026-10-21 直连实测）：Tabbit 免费档单条 content 上限约 2 万
+    字符，超出返回 492 + 推广语；代理全量拼接历史 → 对话变大后间歇越限，
+    客户端表现为「该模型需要 Pro 会员」的误导文案。
+    """
     valid = [m for m in (messages or []) if isinstance(m, dict) and m.get("content") is not None]
     if not valid:
         raise UpstreamError(400, "messages 为空")
@@ -466,11 +485,55 @@ def messages_to_content(messages):
                            if isinstance(p, dict) and p.get("type") in (None, "text"))
         return str(c)
 
-    if len(valid) == 1:
-        return _text(valid[0].get("content"))
     role_label = {"assistant": "Assistant", "system": "System", "user": "User"}
-    return "\n\n".join("[%s]\n%s" % (role_label.get(m.get("role"), "User"),
-                                     _text(m.get("content"))) for m in valid)
+
+    def _block(m):
+        return "[%s]\n%s" % (role_label.get(m.get("role"), "User"),
+                             _text(m.get("content")))
+
+    if budget is None:
+        if len(valid) == 1:
+            return _text(valid[0].get("content")), {"dropped": 0, "orig": 0, "final": 0}
+        content = "\n\n".join(_block(m) for m in valid)
+        return content, {"dropped": 0, "orig": len(content), "final": len(content)}
+
+    # orig = 全量装配后的真实长度（含角色标签与分隔符），仅用于日志对比；
+    # 不能用「文本原长」——否则单条请求也会被误判为「发生过截断」而打日志。
+    orig = sum(len(_block(m)) for m in valid) + 2 * (len(valid) - 1)
+    if len(valid) == 1:
+        # 单条保持旧语义：原文直出（不加角色标签），仅按预算硬截断
+        t = _text(valid[0].get("content"))
+        orig = len(t)                         # 单条 orig 同样按原文计
+        if len(t) > budget:
+            _run_log("[proxy:tabbit] 单条消息超预算硬截断：%d → %d 字符"
+                     % (len(t), budget))
+            t = (t[:budget] + "\n[内容过长已截断：原 %d 字符，仅保留前 %d 字符]"
+                 % (len(t), budget))
+        return t, {"dropped": 0, "orig": orig, "final": len(t)}
+    blocks, used, dropped = [], 0, 0
+    for m in reversed(valid):                   # 从最新往最旧装配
+        b = _block(m)
+        cost = len(b) + (2 if blocks else 0)    # "\n\n" 分隔符
+        if not blocks:                          # 最后一条（当前提问）：必保
+            if len(b) > budget:                 # 单独超预算：硬截断保留头部
+                head = b[:budget]
+                b = head + "\n[内容过长已截断：原 %d 字符，仅保留前 %d 字符]" % (len(b), budget)
+                _run_log("[proxy:tabbit] 末条消息超预算硬截断：%d → %d 字符"
+                         % (len(_block(m)), budget))
+            blocks.append(b)
+            used = len(b)
+            continue
+        if used + cost <= budget:
+            blocks.append(b)
+            used += cost
+        else:
+            dropped += 1
+    content = "\n\n".join(reversed(blocks))
+    if dropped:
+        content = ("[上下文截断：Tabbit 免费档单条内容上限约 2 万字符，"
+                   "本轮已省略较早的 %d 条消息，仅保留较近的对话与当前问题]\n\n%s"
+                   % (dropped, content))
+    return content, {"dropped": dropped, "orig": orig, "final": len(content)}
 
 
 def _tabbit_body(session_id, model, content):
@@ -516,7 +579,16 @@ def _map_upstream_error(status, text):
         return 503, ("Tabbit 登录态已失效（HTTP %s）。请打开 Tabbit 浏览器确认已登录，"
                      "然后在看板「从本地客户端导入」或粘贴新 Cookie" % status)
     if status == 492 or "premium" in t.lower():
-        return 403, ("该模型需要 Pro 会员：在 Tabbit 浏览器设置里「设为默认浏览器」可免费解锁，"
+        # 2026-10-21 实测：492 的原文是推广语「欢迎使用 Tabbit 浏览器……可免费
+        # 使用最全最先进的模型」，真实原因是**免费档单条 content ~2 万字符上限**
+        # （同账号同模型在浏览器里正常，与会员无关）。正常情况已被预算装配 +
+        # 减半重试吸收；走到这里说明连 CONTENT_MIN 都超限，或旗舰模型真需会员。
+        if "欢迎使用" in t or "免费使用" in t:
+            return 403, ("Tabbit 免费档单条内容上限（约 2 万字符）已超出，自动截断"
+                         "重试后仍超限：请新建任务、或把输入拆短后重试。若使用的是"
+                         "旗舰模型，也可能需要 Pro 会员（Tabbit 设置里「设为默认"
+                         "浏览器」可免费解锁 Standard 档）")
+        return 403, ("该模型可能需要 Pro 会员：在 Tabbit 浏览器设置里「设为默认浏览器」可免费解锁，"
                      "或改用免费计量模型（Default / DeepSeek / Kimi / GLM 等）")
     if status == 493:
         act = "set_default_browser" if "set_default_browser" in t else (
@@ -595,6 +667,9 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
     错误处理：HTTP/SSE error 事件 → 错误原因写入**正文**（⚠️ 前缀）+ 正常 stop
           收尾，不发流中 error 帧——客户端见 error 帧就撤销气泡显示「用户
           已取消」（2026-10-21 15:29 实证）。cookie 失效类错误在消息里给可操作指引。
+    体量上限：免费档单条 content ~2 万字符，超出返回 492 + 推广语（2026-10-21
+          实测）→ 首次即按 CONTENT_MAX 预算装配；流内再遇 492 且预算仍大于
+          CONTENT_MIN 时减半重建 content、换新会话重试（当前提问永远完整保留）。
     """
     cookie = _cookie_of(ent)
     if not cookie:
@@ -603,7 +678,13 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
         raise UpstreamError(503, "Tabbit 登录态已过期（JWT exp 已过），请重新导入或粘贴新 Cookie")
 
     model = str(openai_body.get("model") or "").strip() or "Default"
-    content = messages_to_content(openai_body.get("messages"))
+    msgs = openai_body.get("messages")
+    budget = CONTENT_MAX
+    content, cstats = messages_to_content(msgs, budget)
+    if cstats["dropped"] or cstats["orig"] > cstats["final"]:
+        _run_log("[proxy:tabbit] %s content 预算装配：原约 %d 字符 → %d"
+                 "（省略较早 %d 条消息）" % (model, cstats["orig"],
+                                          cstats["final"], cstats["dropped"]))
     cid = "chatcmpl-" + uuid.uuid4().hex[:24]
     created = int(time.time())
 
@@ -830,6 +911,10 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
                 elif ev == "error":
                     code = str(j.get("code") or j.get("status") or "")
                     raw = str(j.get("message") or j.get("details") or "")
+                    # 落上游原始错误（code+原文）：映射表会改写文案，不留原文
+                    # 下次偶发门禁/风控就没有取证盲区（2026-10-21 15:52 教训）
+                    _run_log("[proxy:tabbit] %s 上游 error 事件 code=%s 原文=%s"
+                             % (model, code or "无", raw[:300]))
                     if code in ("401", "403", "492", "493"):
                         _invalidate_session(ent)
                     # 已知风控/权益码 → 用户可操作的中文提示；未知码保留上游原文
@@ -885,7 +970,9 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
     # 现与「会话未登记」同路径处理：换新会话重试；重试仍空则**显式报错**，
     # 不再静默把空流当正常回答（含首帧即 finish / 零文本 thinking 的情况）。
     session_id = _fresh_session(ent)
-    for attempt in (1, 2):
+    attempt = 0
+    while True:
+        attempt += 1
         r = _open(session_id)
         try:
             evgen = _iter_events(r)
@@ -903,6 +990,28 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
                 _run_log("[proxy:tabbit] %s 第 %d 次尝试无产出（%s；跳过帧 %s）"
                          "换新会话重试｜原始帧 %s"
                          % (model, attempt, why, _seen_str(skipped), _dump_str(dump)))
+                _invalidate_session(ent)
+                session_id = _fresh_session(ent)
+                continue
+            # 492 = 免费档单条 content 超 ~2 万字符（实测原文是推广语，与会员
+            # 无关）。首条预算没兜住 → 减半重建 content 重试；当前提问永远完整
+            # 保留，丢的只是较早历史。减到 CONTENT_MIN 仍 492 才放手报错。
+            # ⚠ content 已缩到 ≤CONTENT_MIN 还 492 → 不是体量问题（真·会员
+            # 门禁或模型权益），重试无意义，直接走 _convert 的中文化报错。
+            # （attempt 上限 6 是防御性硬闸：正常最多 1 次瞬时重试 + 3 次减半）
+            if (first and first[0] == "error"
+                    and _err_code(first[1]) == "492"
+                    and len(content) > CONTENT_MIN
+                    and budget > CONTENT_MIN and attempt < 6):
+                prev = budget
+                budget = max(budget // 2, CONTENT_MIN)
+                content, cstats = messages_to_content(msgs, budget)
+                _run_log("[proxy:tabbit] %s 上游 492（单条内容超限，原文=%s）："
+                         "预算 %d→%d 重建 content（原约 %d 字符→%d，省略较早 %d 条）"
+                         "换新会话重试"
+                         % (model, str(first[1].get("message") or "")[:60],
+                            prev, budget, cstats["orig"], cstats["final"],
+                            cstats["dropped"]))
                 _invalidate_session(ent)
                 session_id = _fresh_session(ent)
                 continue

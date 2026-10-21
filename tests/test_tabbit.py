@@ -398,7 +398,10 @@ class TestChatStream(unittest.TestCase):
         self.assertEqual(self._text(lines), TAG_OPEN + "想想" + TAG_CLOSE + "你好")
 
     def test_actionable_error_not_retried(self):
-        """带可操作码（492 需会员）的错误重试无意义：立即中文化返回，不浪费一轮。"""
+        """内容已无法再缩小的 492（本条仅 2 字符）→ 重试无意义：立即中文化返回。
+        （2026-10-21 起 492 有了新语义：大 content 的 492 是免费档 ~2 万字符
+        体量上限，会减半预算重试——见 tests/test_tabbit_content_budget.py；
+        但 content 已 ≤CONTENT_MIN 还 492 说明不是体量问题，不浪费轮次。）"""
         premium = ['data: {"type":"error","code":492,"message":"premium only"}',
                    'data: [DONE]']
         tbt.requests = _FakeRequests(_FakeResp(premium))
