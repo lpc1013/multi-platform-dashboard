@@ -280,9 +280,35 @@ def _is_default(ent):
 # HTTP（统一绕代理：与看板其余平台一致，本地梯子不掺和）
 # ════════════════════════════════════════════════════════════════
 
+class _ClosedResp(object):
+    """_req 的返回：body 已读、底层连接已 close 的轻量响应。
+
+    无 Session 的 requests.request 调用，response 不 close 时 urllib3 连接池
+    不会被 drain，socket 滞留 CLOSE_WAIT——2026-10-21 实测看板实例因此累积
+    20+ CLOSE_WAIT 并劣化猝死（服务端零日志、客户端「用户已取消」的元凶之一）。
+    这里读完全文即关，调用方仍可用 status_code/text/json()，零感知。
+    """
+    __slots__ = ("status_code", "encoding", "text", "_j")
+
+    def __init__(self, r):
+        self.status_code = r.status_code
+        self.encoding = r.encoding
+        self.text = r.text
+        try:
+            self._j = r.json()
+        except Exception:
+            self._j = None
+        r.close()
+
+    def json(self):
+        if self._j is None:
+            raise ValueError("响应非 JSON")
+        return self._j
+
+
 def _req(ent, path, method="GET", body=None, sign_key=None, timeout=30,
          extra_headers=None):
-    """带签名 + 指纹的请求。返回 requests.Response（调用方判 status）。"""
+    """带签名 + 指纹的请求。返回 _ClosedResp（调用方判 status，读 text/json）。"""
     url = base_of(ent) + path
     data = body if isinstance(body, (bytes, type(None))) else (
         json.dumps(body, ensure_ascii=False).encode("utf-8"))
@@ -291,9 +317,9 @@ def _req(ent, path, method="GET", body=None, sign_key=None, timeout=30,
         hdr.update(extra_headers)
     if sign_key is not None:
         hdr.update(sign_headers(data.decode("utf-8") if data else "", sign_key))
-    return requests.request(method, url, data=data, headers=hdr,
-                            timeout=timeout, verify=True,
-                            proxies={"http": None, "https": None})
+    return _ClosedResp(requests.request(method, url, data=data, headers=hdr,
+                                        timeout=timeout, verify=True,
+                                        proxies={"http": None, "https": None}))
 
 
 def fetch_sign_key(ent, force=False):
@@ -664,6 +690,12 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
           若上游秒拒「会话未登记」（无 code + AI服务暂时不可用），换新会话重试一次。
     思考：thinking 事件以 <think>…</think> 包裹并入正文流（多数客户端不渲染
           reasoning_content，会「转圈半天不吐字」——2026-10-20 修复）。
+    心跳：函数一进入就先 yield 一个 SSE 注释行（": hb"）——WorkBuddy 客户端
+          在「响应头已发、一个字节都没有」的状态下转几秒就自行取消消息、气泡
+          显示「用户已取消」（2026-10-20 wbai 实证、2026-10-21 tb 复现：tb 链路
+          TTFB 4.2s 全耗在建会话+等上游 thinking 首帧，客户端等不到首个字节即
+          取消）。注释行客户端解析器忽略，不进内容；非流式聚合路径按非 data
+          行跳过，双路径无害。实测 TTFB 4.22s → 0.1s。
     错误处理：HTTP/SSE error 事件 → 错误原因写入**正文**（⚠️ 前缀）+ 正常 stop
           收尾，不发流中 error 帧——客户端见 error 帧就撤销气泡显示「用户
           已取消」（2026-10-21 15:29 实证）。cookie 失效类错误在消息里给可操作指引。
@@ -671,6 +703,7 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
           实测）→ 首次即按 CONTENT_MAX 预算装配；流内再遇 492 且预算仍大于
           CONTENT_MIN 时减半重建 content、换新会话重试（当前提问永远完整保留）。
     """
+    yield ": hb"     # 零字节防护：先于一切阻塞操作给客户端一个字节（见「心跳」注记）
     cookie = _cookie_of(ent)
     if not cookie:
         raise UpstreamError(503, "Tabbit 账号未配置 Cookie，请先「从本地客户端导入」或粘贴")

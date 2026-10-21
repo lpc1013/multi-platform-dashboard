@@ -1026,6 +1026,49 @@ def _session_id(chat_id):
     return hashlib.sha256(("codearts-session:" + chat_id).encode()).hexdigest()[:32]
 
 
+def _sse_beat(lines, handler, slice_s=3.0):
+    """把阻塞的 SSE 帧源包装成「超过 slice_s 秒无产出就补发 SSE 注释」的迭代器。
+
+    WorkBuddy 官方客户端在「响应头已发、连续几秒收不到任何字节」时会自行取消
+    这条消息，气泡显示「用户已取消」——2026-10-20 wbai 限流等待期实证（对策是
+    每 3s 一个 SSE 注释心跳，见 _wb_beat）。tabbit 的 DeepSeek 系是思考模型：
+    从建会话到上游首个 thinking 帧实测 4.5s+，单发一个开头注释覆盖不到这段
+    空窗，必须持续心跳。注释行（": hb"）客户端解析器忽略、不进消息内容；
+    调用方透传/聚合对非 data 行原样写或跳过，均无害。
+
+    实现：后台线程泵 lines，主线程每 slice_s 秒无产出即写注释。异常经队列
+    原样抛回主线程（UpstreamError 等行为不变）；主线程写失败（客户端断开）
+    时 except 照常记录 aborted。泵线程 daemon，最坏随上游读超时自行退出。"""
+    import queue as _q
+    import threading as _th
+    q = _q.Queue()
+    _END = object()
+
+    def _pump():
+        try:
+            for x in lines:
+                q.put(x)
+        except BaseException as e:      # UpstreamError 等要原样带回主线程
+            q.put(e)
+        q.put(_END)
+
+    _th.Thread(target=_pump, daemon=True).start()
+    while True:
+        try:
+            item = q.get(timeout=slice_s)
+        except _q.Empty:
+            try:
+                handler._write_chunk(b": hb\n\n")
+            except Exception:
+                return                  # 写不出去＝客户端已断开，停发心跳
+            continue
+        if item is _END:
+            return
+        if isinstance(item, BaseException):
+            raise item
+        yield item
+
+
 def _chat_stream(ent, openai_body):
     """调上游 v2 聊天，返回 SSE 行迭代器。"""
     chat_id = uuid.uuid4().hex
@@ -1195,6 +1238,10 @@ def relay(handler, openai_body):
                 name, lines = _open_pool("officeace", openai_body)
             elif provider == "tabbit":
                 name, lines = _open_pool("tabbit", openai_body)
+                if want_stream:
+                    # tb 是思考模型：等上游首帧 4.5s+，包持续 SSE 注释心跳，
+                    # 防客户端「几秒无字节即自动取消」（2026-10-21 复现）
+                    lines = _sse_beat(lines, handler)
             else:
                 name, lines = _open_pool("codearts", openai_body)
             break

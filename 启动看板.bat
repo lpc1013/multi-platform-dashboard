@@ -30,7 +30,12 @@ if errorlevel 1 goto :freshstart
 rem ---- 端口已被监听 ----
 if "%RESTART%"=="1" goto :dorestart
 curl -s -m 3 http://127.0.0.1:%PORT%/api/ping 2>nul | findstr /c:"ok" >nul 2>&1
-if errorlevel 1 goto :portbusy
+if errorlevel 1 rem ---- ping 不通 = 实例半死（端口在但无响应）：自动杀掉 LISTENING 者再起 ----
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /c:":%PORT% " ^| findstr /i "LISTENING"') do taskkill /f /pid %%P >nul 2>&1
+%SystemRoot%\System32\timeout.exe /t 2 /nobreak >nul 2>&1
+netstat -ano | findstr /c:":%PORT% " | findstr /i "LISTENING" >nul 2>&1
+if errorlevel 1 goto :freshstart
+goto :portbusy
 echo [提示] 看板服务已经在运行，直接打开页面：
 echo        http://127.0.0.1:%PORT%
 echo        [注意] 改完代码双击不会生效！重启请运行：启动看板.bat /restart
@@ -65,6 +70,7 @@ echo.
 rem ================= 2) 查找一个带 requests 的 Python =================
 set "PY="
 
+call :try "%LOCALAPPDATA%\Python\pythoncore-3.14-64\python.exe"
 call :try python
 if not errorlevel 1 ( set PY="python" & goto :found )
 
