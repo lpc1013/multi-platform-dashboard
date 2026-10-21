@@ -251,10 +251,13 @@ class TestChatStream(unittest.TestCase):
         tbt.requests = _FakeRequests(_FakeResp(up))
         lines = list(tbt.chat_stream(self.ent, dict(self.body)))
         chs = self._chunks(lines)
-        err = [c for c in chs if c.get("error_code")]
-        self.assertTrue(err)
-        self.assertIn("Pro", err[0]["error_msg"])         # 中文化可操作提示
-        self.assertEqual(err[0]["error_code"], "492")
+        # 2026-10-21：错误原因进正文（⚠️ 前缀）且流以 stop 正常收尾，
+        # 不发流中 error 帧（客户端见 error 帧即撤销气泡 = 「用户已取消」）。
+        text = "".join(c["choices"][0]["delta"].get("content", "") for c in chs)
+        self.assertIn("Pro", text)                    # 中文化可操作提示
+        self.assertFalse([c for c in chs if c.get("error_code") or "error" in c])
+        self.assertTrue(any(c["choices"][0].get("finish_reason") == "stop"
+                            for c in chs))
 
     def test_499_refreshes_sign_key_and_retries(self):
         class _Flaky(_FakeRequests):
@@ -401,9 +404,15 @@ class TestChatStream(unittest.TestCase):
         tbt.requests = _FakeRequests(_FakeResp(premium))
         lines = list(tbt.chat_stream(self.ent, dict(self.body)))
         self.assertEqual(len(tbt.requests.calls), 1)           # 未重试
-        err = [c for c in self._chunks(lines) if c.get("error_code")]
-        self.assertTrue(err)
-        self.assertIn("Pro", err[0]["error_msg"])
+        chs = self._chunks(lines)
+        # 2026-10-21：错误走正文 + stop，**不发流中 error 帧**——客户端收到
+        # error 帧会撤销气泡显示「用户已取消」（15:29 实证）。
+        self.assertFalse([c for c in chs if c.get("error_code")])
+        self.assertFalse([c for c in chs if "error" in c])
+        self.assertIn("Pro", self._text(lines))                 # 原因在正文里
+        stops = [c for c in chs if c["choices"][0].get("finish_reason")]
+        self.assertEqual(stops[-1]["choices"][0]["finish_reason"], "stop")
+        self.assertTrue(lines[-1].strip().endswith("[DONE]"))
 
     # ── 零文本帧空流（2026-10-20 二次实证：`stream 1.4s lines=3` 仍空）──
     # 首帧事件名是产出型（thinking/message_chunk）但**帧内文本为空**时，

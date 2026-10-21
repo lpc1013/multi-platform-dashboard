@@ -1252,6 +1252,7 @@ def relay(handler, openai_body):
         if not wb_stream_open[0]:
             handler._begin_stream()
         usage, n_lines = None, 0
+        tail, aborted = [], None          # tail=最近 6 行原文；aborted=写失败的异常名
         try:
             for line in lines:
                 n_lines += 1
@@ -1268,13 +1269,27 @@ def relay(handler, openai_body):
                             usage = u
                     except Exception:
                         pass
+                tail.append(line[:240])
+                if len(tail) > 6:
+                    tail.pop(0)
                 handler._write_chunk((line + "\n").encode("utf-8"))
-        except Exception:
-            pass                      # 客户端断开等 IO 错误，直接收尾
+        except Exception as e:
+            # 客户端断开（用户点了停止 / 客户端超时 / 浏览器关页）与上游异常
+            # 在客户端侧观感完全不同：前者就是「用户已取消」。必须留痕，
+            # 否则只能看到 lines=3 这种既没内容也没原因的结果（2026-10-21）。
+            aborted = type(e).__name__
         finally:
             _ca_release()
-            srv.log("[proxy:%s] %s acct=%s stream %.1fs lines=%d%s"
-                    % (provider, model, name, time.time() - t0, n_lines, _usage_str(usage)))
+            if n_lines <= 6:
+                # 短响应（含空流收尾）必留原文：客户端看到的「用户已取消」只有
+                # 这几行能解释是上游空流、错误帧，还是写到一半被客户端掐断。
+                # 放在主审计行之前，保证主行始终是本请求最后一条日志。
+                srv.log("[proxy:%s] %s ↑短响应原文(%d 行)：%s"
+                        % (provider, model, n_lines, " ｜ ".join(tail) or "（无）"))
+            srv.log("[proxy:%s] %s acct=%s stream %.1fs lines=%d%s%s"
+                    % (provider, model, name, time.time() - t0, n_lines,
+                       _usage_str(usage),
+                       (" 客户端断开(%s)" % aborted) if aborted else ""))
             _record_usage(model, usage, provider=provider, acct=name)
         return
 
@@ -1340,6 +1355,18 @@ def relay(handler, openai_body):
         srv.log("[proxy:%s] %s acct=%s 异常 %s"
                 % (provider, model, name, str(e)[:80]))
         handler._send(502, {"error": {"message": str(e)[:200],
+                                      "type": "upstream_error"}})
+        return
+
+    # Tabbit 流式路径已不发 error 帧（客户端见 error 帧就撤销气泡显示「用户
+    # 已取消」），错误改为正文 + stop。非流式这里靠正文前缀识别，保持 502 语义。
+    joined = "".join(content)
+    if provider == "tabbit" and joined.lstrip().startswith("⚠️ Tabbit 上游"):
+        reason = joined.lstrip()[len("⚠️ Tabbit 上游错误："):] or joined.lstrip()
+        _ca_release()
+        srv.log("[proxy:%s] %s acct=%s HTTP502 %s"
+                % (provider, model, name, reason[:80]))
+        handler._send(502, {"error": {"message": reason[:300],
                                       "type": "upstream_error"}})
         return
 

@@ -237,6 +237,36 @@ class TestRelayAggregate(unittest.TestCase):
         logged = " ".join(c[0][0] for c in mlog.call_args_list)
         self.assertIn("InferHub.001001009.400", logged)   # 审计不能静默
 
+    def test_tabbit_error_text_non_stream_becomes_502(self):
+        """Tabbit 流式路径已不发 error 帧（客户端见 error 帧即撤销气泡显示
+        「用户已取消」），错误改为正文 + stop。非流式聚合必须靠正文前缀
+        识别并回 502，否则错误会被当成正常回答 200 返回。"""
+        h = _FakeHandler()
+        lines = [
+            "data:" + json.dumps({
+                "id": "r", "created": 1, "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {"role": "assistant"},
+                             "finish_reason": None}]}),
+            "data:" + json.dumps({
+                "id": "r", "created": 1, "object": "chat.completion.chunk",
+                "choices": [{"index": 0,
+                             "delta": {"content": "⚠️ Tabbit 上游错误：该模型需要 Pro 会员"},
+                             "finish_reason": None}]}),
+            "data:" + json.dumps({
+                "id": "r", "created": 1, "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+            "data:[DONE]",
+        ]
+        with mock.patch.object(ox, "_open_pool",
+                               return_value=("acct", iter(lines))), \
+             mock.patch("server.log") as mlog:
+            ox.relay(h, {"model": "tb:DeepSeek-V4.1-Flash", "stream": False,
+                         "messages": [{"role": "user", "content": "hi"}]})
+        self.assertEqual(h.sent[0][0], 502)
+        self.assertIn("Pro 会员", h.sent[0][1]["error"]["message"])
+        logged = " ".join(c[0][0] for c in mlog.call_args_list)
+        self.assertIn("HTTP502", logged)                 # 审计不能静默
+
     def test_load_ent_error_no_network(self):
         h = _FakeHandler()
         # 2026-10-19 起 codearts 走统一账号池：凭据过期报错来自 _pool_ents（非 _load_ent）

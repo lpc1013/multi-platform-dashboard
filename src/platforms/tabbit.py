@@ -499,11 +499,12 @@ def _openai_chunk(cid, created, model, delta, finish=None, usage=None):
 
 
 def _err_chunk(cid, created, model, msg, code=""):
+    """⚠ 已从流式路径停用（2026-10-21）：客户端收到流中 error 帧会撤销气泡
+    显示「用户已取消」，错误改走正文 + stop。保留定义仅供测试引用。"""
     return "data: " + json.dumps({
         "id": cid, "object": "chat.completion.chunk", "created": created,
         "model": model, "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
         "error": {"message": msg, "type": "upstream_error", "code": code},
-        # error_code 让 openai_proxy 非流式聚合路径能识别并抛错（流式路径直接透传）
         "error_code": code or "tabbit_error", "error_msg": msg,
     }, ensure_ascii=False)
 
@@ -591,8 +592,9 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
           若上游秒拒「会话未登记」（无 code + AI服务暂时不可用），换新会话重试一次。
     思考：thinking 事件以 <think>…</think> 包裹并入正文流（多数客户端不渲染
           reasoning_content，会「转圈半天不吐字」——2026-10-20 修复）。
-    错误处理：HTTP/SSE error 事件 → 产出 OpenAI error chunk（含 error_code），
-    调用方流式透传 / 非流式抛错。cookie 失效类错误在消息里给可操作指引。
+    错误处理：HTTP/SSE error 事件 → 错误原因写入**正文**（⚠️ 前缀）+ 正常 stop
+          收尾，不发流中 error 帧——客户端见 error 帧就撤销气泡显示「用户
+          已取消」（2026-10-21 15:29 实证）。cookie 失效类错误在消息里给可操作指引。
     """
     cookie = _cookie_of(ent)
     if not cookie:
@@ -772,8 +774,10 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
         至少立刻见字，不再白屏等待。
 
         pending：_first_output 预读时跳过的元信息帧（usage），先回放再续读。
-        兜底：全程零文本产出时发 error chunk 而非静默 stop——「空回复」在
-        客户端表现为「用户已取消」，必须让失败可见（2026-10-20 实测）。
+        兜底：全程零文本产出时把原因写成正文 + stop，绝不静默 stop——「空回复」
+        在客户端表现为「用户已取消」，必须让失败可见（2026-10-20/21 实测）。
+        ⚠ 错误全程走正文，不发流中 error 帧：2026-10-21 15:29 实证 WorkBuddy
+        收到带 error 字段的 chunk 即判定请求失败、撤销气泡显示取消。
         """
         usage, done = None, False
         emitted = 0              # 已发出的正文/思考帧计数（零 = 空响应）
@@ -837,7 +841,14 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
                         yield _openai_chunk(cid, created, model,
                                             {"content": "\n</think>\n\n"})
                         think_pending = False
-                    yield _err_chunk(cid, created, model, msg, code)
+                    # 「空气泡 + 藏在 error 字段里的原因」在客户端 = 「用户已取消」：
+                    # 2026-10-21 15:29 实证，WorkBuddy 收到流中带 error 字段的 chunk
+                    # 就判定请求失败、撤销气泡显示取消。错误必须走**正文** + 正常
+                    # stop 收尾，任何客户端都能看见原因且流是正常结束的。
+                    if msg:
+                        yield _openai_chunk(cid, created, model,
+                                            {"content": "\n⚠️ Tabbit 上游错误：%s" % msg})
+                    yield _openai_chunk(cid, created, model, {}, "stop", usage)
                     done = True
                 elif ev in ("close", "cancel"):
                     break
@@ -853,12 +864,15 @@ def chat_stream(ent, openai_body, timeout=CHAT_TIMEOUT):
             if emitted:
                 yield _openai_chunk(cid, created, model, {}, "stop", usage)
             else:
-                # 全程零文本：绝不能发 stop 当正常结束（客户端=「用户已取消」）。
+                # 全程零文本：绝不能静默 stop（客户端=「用户已取消」）。
+                # 错误原因写成正文 + 正常 stop，与 error 事件同一路径（见上），
+                # 不发流中 error 帧——客户端见 error 帧就撤销气泡（2026-10-21 实证）。
                 _run_log("[proxy:tabbit] %s 流结束但零内容产出，已报错" % model)
-                yield _err_chunk(cid, created, model,
-                                 "Tabbit 上游返回了空响应（无任何文本内容）。"
-                                 "请重试；若持续出现，可在 Tabbit 浏览器发一条消息后"
-                                 "于看板「从本地客户端导入」刷新 Cookie。", "")
+                yield _openai_chunk(cid, created, model, {"content":
+                    "⚠️ Tabbit 上游返回了空响应（无任何文本内容）。请重试；"
+                    "若持续出现，可在 Tabbit 浏览器发一条消息后于看板"
+                    "「从本地客户端导入」刷新 Cookie。"})
+                yield _openai_chunk(cid, created, model, {}, "stop", usage)
         yield "data: [DONE]"
 
     # 每次聊天都现场建新空会话（POST /panel/session）：无状态、不串上下文。
