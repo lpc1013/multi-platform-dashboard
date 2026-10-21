@@ -479,7 +479,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 row["extra"] = {k: _ex.get(k) for k in
                                 ("token_expire", "token_remain_days", "plan",
                                  "streak_days", "total_signed_days",
-                                 "free_token_error", "credits_error")
+                                 "free_token_error", "free_token_na", "credits_error")
                                 if _ex.get(k) is not None}
                 cr = r.get("credits") or {}
                 tot = float(cr.get("total") or 0)
