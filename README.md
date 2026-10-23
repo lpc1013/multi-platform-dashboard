@@ -177,11 +177,16 @@ python backup_creds.py load <文件>.creds # 恢复（默认不覆盖已有文�
 
 ---
 
-## OpenAI 兼容反代（5 上游统一账号池）
+## OpenAI 兼容反代（5 上游统一账号池 + DS-Flash 聚合）
 
 后端内置 OpenAI 兼容端点，把 **CodeArts / OfficeACE / TeleAgent / Tabbit / WorkBuddy 国际版**
 五个上游的模型额度统一暴露为本机 API。任何支持自定义 `base_url` 的客户端
 （Cherry Studio、ChatBox、openai sdk 等）都可直接接入。
+
+此外还提供一个**虚拟模型 `ds-flash`**：把散落在多个平台、多个账号上的所有
+**DeepSeek-V4.1-Flash**（含 WB 国际版免费行与付费行）聚合成**一个接口**，
+请求进来自动负载均衡 + 故障转移，专门解决「多子代理并发打爆单账号 / 流量不均」的问题。
+详见下方「DS-Flash 统一池」一节。
 
 ### 端点
 
@@ -204,16 +209,22 @@ POST http://127.0.0.1:8799/v1/chat/completions  # 流式透传 / 非流式聚合
 
 | model 形态 | 上游 | 说明 |
 |---|---|---|
+| `ds-flash` / `deepseek-v4.1-flash` / `ds4.1-flash` | **DS-Flash 统一池** | 多平台 DeepSeek-V4.1-Flash 聚合：负载均衡 + 故障转移（见下节） |
 | `wb:xxx` | WorkBuddy 国际版 | 如 `wb:auto`、`wb:gpt-6-astra`、`wb:glm-5.3` |
 | `tb:xxx` | Tabbit | 如 `tb:默认`、`tb:Kimi-K3`、`tb:GLM-5.3` |
 | 命中 TeleAgent 目录 | TeleAgent | 如 `chat-*` |
-| 其余 / 空 | CodeArts | 默认上游 |
+| 其余 / 空（除 ds-flash 系列） | CodeArts | 默认上游 |
+
+> 注意：`deepseek-v4.1-flash` 现在**直接路由到 DS-Flash 统一池**（不再单独走 CodeArts），
+> 由统一池在 CodeArts / WB国际版 / Tabbit / 果办 之间分发；这样不论哪个客户端写 `deepseek-v4.1-flash`
+> 还是 `ds-flash`，都能享受多账号聚合与故障转移。`wb:deepseek-v4.1-flash` 仍走国际版单上游。
 
 **CodeArts ↔ OfficeACE 交集名归 CodeArts**（福利免费额度优先）；仅当模型存在于 OfficeACE
 目录且不在 CodeArts 目录时，才改走果办网关。
 
-### 模型清单（实测 66 个）
+### 模型清单（实测 66 个，另含虚拟模型 `ds-flash`）
 
+- **虚拟聚合模型 `ds-flash`**：见下节；别名 `deepseek-v4.1-flash` / `ds4.1-flash`
 - **CodeArts 福利模型（每日免费额度，自动带 `maas_type: benefit`）**：
   `deepseek-v4.1-flash`、`deepseek-v4-flash-0731`、`deepseek-v4-pro-0813`、`glm-5.3-flash`
 - **CodeArts 内置模型（消耗积分）**：`GLM-5.2`、`glm-5.3`、`glm-5.2-sft-harmony`、
@@ -223,6 +234,49 @@ POST http://127.0.0.1:8799/v1/chat/completions  # 流式透传 / 非流式聚合
   `wb:kimi-*`、`wb:gemini-*`、`wb:grok-4.7` 等
 - **Tabbit（`tb:` 前缀，24 个）**：含 `tb:默认`、`tb:Kimi-K3`、`tb:GLM-5.3`、
   `tb:DeepSeek-V4.1-Flash`、`tb:Qwen3.8-Max`、`tb:Doubao-Seed-2.1-*` 等
+
+### DS-Flash 统一池（多平台 DeepSeek-V4.1-Flash 聚合入口）
+
+**为什么**：高并发下（一个任务开多个子代理并发打 API），单账号很快被限流/打爆。
+把各平台所有可用的 DS4.1-Flash 账号聚合成**一个虚拟模型 `ds-flash`**，请求进来自动
+均匀分发、命中故障通道自动换下一个——既扛住并发，流量消耗也均匀。用户策略：
+「免不免费问题不大，只要是 DS 积分就扛得住」，所以**国际版付费行也纳入池内**。
+
+**工程经验**（GitHub one-api / new-api / TokenPAPA / llm-one-api 等多通道聚合网关共识）：
+通道注册表 + 负载均衡 + 被动健康短冷却故障转移 + 错误分级，而非简单轮询。
+
+**实现要点**（`src/openai_proxy.py` 的 DS-Flash 一节，复用既有 `_pool_*` 体系，零侵入）：
+
+- **通道注册表**：虚拟模型 → N 个通道 `(平台, 模型行)`，每个账号一行都是一个独立通道。
+  默认注册 5 类通道：WB国际版 `deepseek-v4.1-flash`（免费行）、WB国际版 `deepseek-v4.1-flash-sg`
+  （付费行，消耗积分）、Tabbit `DeepSeek-V4.1-Flash`（思考模型）、CodeArts `deepseek-v4.1-flash`
+  （福利免费额度）、果办 OfficeACE `deepseek-v4.1-flash`（网关额度独立）。
+  实测 2 个 WB 号×2 行 + 1 个 Tabbit + 2 个 CodeArts + 2 个果办 = **9 通道**。
+- **负载均衡**（环境变量 `DSFLASH_STRATEGY` 切换）：
+  - `round_robin`（默认）：轮询，**绝对均匀**，每通道命中次数一致；
+  - `least_conn`：挑**在途最少**的通道，天然适配并发突发；
+  - `weighted`：按权重展开轮询。
+  - 另加**每通道并发上限**约束（CodeArts=3，果办=16，其余=64）：超过上限的通道直接跳过，避免把单通道打爆。
+- **被动健康 + 短冷却故障转移**：首帧只要带任何错误标记（error_code / error 对象 / 网关原生
+  `code` / 解析失败）→ 冷却该通道并自动换下一个；客户端完全无感（换通道发生在首个字节之前）。
+  - 账号级硬限（401/403/额度耗尽）→ 长冷却（复用 `_pool_cool`，默认 30 分钟）；
+  - 国际版模型行限流（6004/429）→ 按重置时刻精确冷却（复用 `_wbai_ml_hit`）；
+  - 其余瞬时态（5xx/空流/超时）→ 短冷却 **60s**，不永久拉黑。
+- **思考模型观感**：命中 Tabbit 通道时自动包 SSE 心跳，防客户端「几秒无字节即取消」。
+- **可观测**：`/v1/models` 列出 `ds-flash`；`/api/proxy_info` 返回 `dsflash` 段（虚拟模型 / 策略 /
+  各通道在途数 / 并发上限 / 冷却状态）；前端「反代」面板有独立的 **DS-Flash 统一池**卡片实时展示。
+
+```python
+# 客户端把 model 写成 ds-flash（或别名 deepseek-v4.1-flash），其余 OpenAI 参数不变
+from openai import OpenAI
+c = OpenAI(base_url="http://127.0.0.1:8799/v1", api_key="sk-local")
+print(c.chat.completions.create(
+    model="ds-flash",                          # 或 "deepseek-v4.1-flash"
+    messages=[{"role": "user", "content": "你好"}]).choices[0].message.content)
+```
+
+> 想纳入更多 DS 通道（例如再补一个上游的 DS 模型），在 `_DSFLASH_CHANNELS` 加一行
+> `("平台", "模型id", 权重)` 即可，无需改分发逻辑。
 
 ### `wb:auto` 优先级链
 
@@ -272,19 +326,19 @@ WorkBuddy 网关**按「模型行」限流，不是账号级**。错误 chunk �
 - **审计**：每次调用落一条 `[proxy:<上游>] <model> acct=<账号> ...` 日志（流式记耗时/行数/token，
   非流式同样记账），看板日志区可见；按日/按模型聚合写入 `proxy_usage.json`，
   并记录 `provider / acct` 维度供额度面板反查
-- **思考模型**：`deepseek-v4.1-flash` 等思考模型的 `thinking` 内容会包进
-  `<think>…</think>` 并入 `content` 流（多数客户端不渲染 `reasoning_content`），
+- **思考模型**：`deepseek-v4.1-flash` / `ds-flash`（命中 Tabbit 通道时）等思考模型的 `thinking`
+  内容会包进 `<think>…</think>` 并入 `content` 流（多数客户端不渲染 `reasoning_content`），
   出错/中断/只有思考三条路径都会闭合标签
 - **续期边界**：代理**不触发**浏览器静默续登（避免客户端启动拉模型列表时随机弹窗）；
   凭据过期返回 503 并提示到看板续期，签到/续期按钮会自动续
 - **上游限制**：`tool_choice` 对象形态上游报参数错；超限返回 429 原样透传；每日额度按账号计
 
 ```python
-# Python 验证
+# Python 验证（ds-flash 走统一池；deepseek-v4.1-flash 是等价别名）
 from openai import OpenAI
 c = OpenAI(base_url="http://127.0.0.1:8799/v1", api_key="sk-local")
 print(c.chat.completions.create(
-    model="deepseek-v4.1-flash",
+    model="ds-flash",
     messages=[{"role": "user", "content": "你好"}]).choices[0].message.content)
 ```
 

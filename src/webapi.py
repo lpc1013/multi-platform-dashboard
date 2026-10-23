@@ -18,7 +18,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import data_dir
-from errors import DashboardError
+from errors import DashboardError, sanitize_client_message
 from registry import PORT, LOCAL_IMPORT_PLATFORMS
 from logstore import log, LOG
 import cred_store
@@ -171,14 +171,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except DashboardError as e:
             self._send(e.http_status, e.to_dict())
         except Exception as e:
-            self._send(500, {"error": str(e)[:200]})
+            self._send(500, {"error": errors.sanitize_client_message(500, str(e))})
 
     def _r_index(self):
         fp = os.path.join(HERE, "index.html")
         try:
             self._send(200, open(fp, "rb").read(), "text/html; charset=utf-8")
         except Exception as e:
-            self._send(500, {"error": str(e)})
+            self._send(500, {"error": errors.sanitize_client_message(500, str(e))})
 
     # ── Token 消耗面板（复用 wb-usage-tracker 的 Node 采集内核 + 官方渲染模板）──
     def _r_tokens(self):
@@ -187,7 +187,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             token_panel.ensure_started()
             self._send(200, token_panel.render_html(), "text/html; charset=utf-8")
         except Exception as e:
-            self._send(500, {"error": str(e)[:300]})
+            self._send(500, {"error": errors.sanitize_client_message(500, str(e))})
 
     def _r_api_tokens(self):
         try:
@@ -196,7 +196,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             data = token_panel.collect()
             self._send(200, data or {})
         except Exception as e:
-            self._send(500, {"error": str(e)[:300]})
+            self._send(500, {"error": errors.sanitize_client_message(500, str(e))})
 
     def _r_api_stream(self):
         """Token 面板 SSE 实时推送：连接即下发当前快照，之后后台线程每 TTL 刷出
@@ -206,7 +206,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             import token_panel
             token_panel.ensure_started()
         except Exception as e:
-            self._send(500, {"error": str(e)[:200]})
+            self._send(500, {"error": errors.sanitize_client_message(500, str(e))})
             return
         import time
         self._begin_stream()                       # 复用 openai_proxy 的 SSE 头
@@ -243,10 +243,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except DashboardError as e:
             self._send(e.http_status, e.to_dict())
         except Exception as e:
-            self._send(500, {"error": str(e)[:200]})
+            self._send(500, {"error": errors.sanitize_client_message(500, str(e))})
 
     def _r_v1_models(self):
-        # OpenAI 兼容：CodeArts 模型目录（内置 + 福利免费额度）+ TeleAgent（星辰）
+        # OpenAI 兼容：CodeArts 模型目录（内置 + 网关）+ OfficeACE + WB国际版 + DS-Flash 池
         # import 在 try 外：若放 try 内，import 失败时 except ox.UpstreamError
         # 会因 ox 未定义抛 NameError，把真实错误搅成 500 迷雾
         import openai_proxy as ox
@@ -261,16 +261,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                       "owned_by": "codearts-benefit" if i in benefit else "codearts"}
                      for i in ids]
         except ox.UpstreamError:
-            pass          # CodeArts 不可用不阻塞 TeleAgent 模型列出
+            pass          # CodeArts 不可用不阻塞其余模型列出
         except Exception as e:
-            self._send(502, {"error": {"message": str(e)[:200]}})
+            self._send(502, {"error": {"message": errors.sanitize_client_message(502, str(e))}})
             return
-        try:
-            ox._ta_ent()
-            data += [{"id": m, "object": "model", "owned_by": "teleagent"}
-                     for m in ox.tat.CHAT_MODELS]
-        except Exception:
-            pass
         try:
             ox._oa_ent()
             have = {d["id"] for d in data}   # 交集名已在 CodeArts 段：去重（路由固定走 CodeArts）
@@ -292,12 +286,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception:
             pass    # 国际版不可用不阻塞其余模型列出
         try:
-            # Tabbit：tb: 前缀命名空间（web.tabbit.com / web.tabbit.ai）
-            name, tent = ox._tb_ent()
-            data += [{"id": "tb:" + m, "object": "model", "owned_by": "tabbit"}
-                     for m in ox.tbt.models(tent)]
+            # DS-Flash 统一池：把多平台 DeepSeek-V4.1-Flash 聚合成一个接口（负载均衡 + 故障转移）
+            data += [{"id": "ds-flash", "object": "model",
+                      "owned_by": "dsflash-pool", "aliases": ["ds4.1-flash"]}]
         except Exception:
-            pass    # Tabbit 不可用不阻塞其余模型列出
+            pass
         self._send(200, {"object": "list", "data": data})
 
     def _r_api_proxy_usage(self):
@@ -322,8 +315,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                "rate_limit": {"per_min": int(ox.RATE_PER_MIN), "burst": int(ox.BURST)},
                "default_model": "deepseek-v4.1-flash"}
 
-        # 上游一：CodeArts（福利免费额度 + 内置计积分）
-        ca = {"id": "codearts", "label": "CodeArts（华为免费额度）",
+        # 上游一：CodeArts（2026-10-22 起积分制；免费 token 福利已撤）
+        ca = {"id": "codearts", "label": "CodeArts（华为云 · 积分制）",
               "default_model": "deepseek-v4.1-flash",
               "benefit": sorted(ox._SEED_BENEFIT), "builtin": [],
               "account": None, "error": ""}
@@ -341,26 +334,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             ca["error"] = str(e)[:200]
         ca["models"] = list(dict.fromkeys(ca["builtin"] + ca["benefit"]))
 
-        # 上游二：TeleAgent（星辰，模型名决定路由）
-        ta = {"id": "teleagent", "label": "TeleAgent（星辰）",
-              "default_model": "chat-max", "models": list(ox.tat.CHAT_MODELS),
-              "account": None, "error": ""}
-        try:
-            tn, _ = ox._ta_ent()
-            ta["account"] = tn
-        except Exception as e:
-            ta["error"] = getattr(e, "message", None) or str(e)[:160]
-
-        # 上游三：OfficeACE（华为云果办，模型网关 Basic 对）
+        # 上游二：OfficeACE（华为云果办，模型网关 Basic 对）
         oa = {"id": "officeace", "label": "OfficeACE（华为云果办）",
               "default_model": "", "models": [], "account": None, "error": ""}
         try:
             on, _ = ox._oa_ent()
             oa["account"] = on
             oa_ids = sorted(ox.oa_model_ids())
-            # 去重：交集名（deepseek-v4.1-flash 等 5 个）路由固定走 CodeArts（福利额度优先，
-            # 见 openai_proxy.relay 的判定），下拉/目录如实反映——本组只列 OA 真正独有的模型，
-            # 避免「两处可选、实则一路」的误导。
+            # 去重：交集名（deepseek-v4.1-flash 等 5 个）路由固定走 CodeArts
+            # （见 openai_proxy.relay 的判定），下拉/目录如实反映——本组只列 OA 真正
+            # 独有的模型，避免「两处可选、实则一路」的误导。
             ca_ids = set(ca["models"])
             oa["models"] = [m for m in oa_ids if m not in ca_ids]
             exclusive = oa["models"]
@@ -374,7 +357,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             oa["error"] = getattr(e, "message", None) or str(e)[:160]
 
-        # 上游四：WorkBuddy 国际版（workbuddy.ai，wb: 前缀路由）
+        # 上游三：WorkBuddy 国际版（workbuddy.ai，wb: 前缀路由）
         wb = {"id": "workbuddy_intl", "label": "WorkBuddy 国际版（wb: 前缀）",
               "default_model": "wb:auto", "models": [], "account": None, "error": ""}
         try:
@@ -388,16 +371,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             wb["error"] = getattr(e, "message", None) or str(e)[:160]
 
-        # 上游五：Tabbit（web.tabbit.com / web.tabbit.ai，tb: 前缀路由）
-        tb = {"id": "tabbit", "label": "Tabbit（tb: 前缀）",
-              "default_model": "tb:Default", "models": [], "account": None, "error": ""}
-        try:
-            tbn, tent = ox._tb_ent()
-            tb["account"] = tbn
-            tb["models"] = ["tb:" + m for m in ox.tbt.models(tent)]
-        except Exception as e:
-            tb["error"] = getattr(e, "message", None) or str(e)[:160]
-
         out["benefit_models"] = ca["benefit"]     # 旧字段保留（向后兼容）
         out["builtin_models"] = ca["builtin"]
         out["models"] = ca["models"]
@@ -406,7 +379,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         # 统一账号池概况：每个上游的账号数/冷却中（2026-10-19 池化后前端要能看见）
         _POOL_ID = {"workbuddy_intl": "wbai"}     # providers id → 池键
-        for p in (ca, ta, oa, wb, tb):
+        for p in (ca, oa, wb):
             try:
                 st = ox._pool_status(_POOL_ID.get(p["id"], p["id"]))
                 p["pool"] = {"n": st["n"], "names": st["names"], "cool": st["cool"]}
@@ -422,7 +395,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception:
             pass
 
-        out["providers"] = [ca, ta, oa, wb, tb]
+        out["providers"] = [ca, oa, wb]
+        # DS-Flash 统一池概况（多平台 DS4.1-Flash 聚合：通道/在途/冷却/策略）
+        try:
+            out["dsflash"] = ox.dsflash_status()
+        except Exception:
+            pass
         self._send(200, out)
 
     # 每上游每账号额度：60s 模块级缓存（read_account 会打上游，防前端狂点狂打）
@@ -440,7 +418,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # provider 会**兜底返回 wbai 账号**，而下面 `mod` 映射取不到就是 None →
         # 每个号都返回 `ok:false, "无额度查询能力"` 且 HTTP 200，调用方拿到的是
         # 「有账号但全都查不了额度」的误导性结果，而不是「provider 名写错了」。
-        _VALID_POOL = ("codearts", "teleagent", "officeace", "tabbit", "wbai")
+        _VALID_POOL = ("codearts", "officeace", "wbai")
         if key not in _VALID_POOL:
             self._send(400, {"provider": pid, "accounts": [], "error":
                              "未知上游 provider=%r（可选：%s；国际版别名 workbuddy_intl）"
@@ -454,8 +432,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             import openai_proxy as ox
             load = ox._pool_spec(key)[0]
-            mod = {"codearts": ox.cap, "teleagent": ox.tat, "officeace": ox.oac,
-                   "tabbit": ox.tbt, "wbai": ox.wai}.get(key)
+            mod = {"codearts": ox.cap, "officeace": ox.oac,
+                   "wbai": ox.wai}.get(key)
             accs = load() or {}
         except Exception as e:
             self._send(200, {"provider": pid, "accounts": [],
@@ -479,7 +457,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 row["extra"] = {k: _ex.get(k) for k in
                                 ("token_expire", "token_remain_days", "plan",
                                  "streak_days", "total_signed_days",
-                                 "free_token_error", "free_token_na", "credits_error")
+                                 "credits_error")
                                 if _ex.get(k) is not None}
                 cr = r.get("credits") or {}
                 tot = float(cr.get("total") or 0)
@@ -487,8 +465,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 row["total"], row["remain"] = tot, rem
                 row["pct"] = round(rem * 100.0 / tot) if tot > 0 else None
                 row["packages"] = r.get("packages") or []
-                # 2026-10-20 拆分口径：CodeArts/OfficeAce 每日免费 vs 长期积分；
-                # wbai 每号免费模型（限免目录 + 自记账用量）
+                # 2026-10-20 拆分口径：OfficeAce 每日签到积分 vs 长期积分；
+                # wbai 每号免费模型（限免目录 + 自记账用量）。
+                # 2026-10-22：CodeArts 每日免费 token 福利已撤（改积分制），
+                # 其 daily_free/free_token_* 字段前后端均已移除。
                 for k in ("daily_free", "long_term"):
                     if r.get(k) is not None:
                         row[k] = r[k]
@@ -604,7 +584,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except DashboardError as e:
             self._send(e.http_status, e.to_dict())
         except Exception as e:
-            self._send(500, {"error": str(e)[:200]})
+            self._send(500, {"error": errors.sanitize_client_message(500, str(e))})
 
     def _r_v1_chat_completions(self, body):
         # OpenAI 兼容反代：CodeArts 免费额度模型（详见 openai_proxy.py）
@@ -614,9 +594,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             ox.relay(self, body)
         except ox.UpstreamError as e:
-            self._send(e.status, {"error": {"message": e.message}})
+            # 防御性兜底：relay 内部已自行处理并净化，此处仅在异常冒泡时
+            # 确保仍不把原始上游 JSON/额度码透传给客户端
+            self._send(e.status, {"error": {"message": ox._client_err_msg(e.status, e.message)}})
         except Exception as e:
-            self._send(502, {"error": {"message": str(e)[:200]}})
+            self._send(502, {"error": {"message": ox._client_err_msg(502, str(e))[:200]}})
 
     def _r_api_run(self, body):
         platform = body.get("platform")
@@ -649,7 +631,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     ok, msg = wblogin.send_sms(phone)
                     self._send(200, {"ok": ok, "msg": msg})
                 except Exception as e:
-                    self._send(200, {"ok": False, "msg": str(e)[:120]})
+                    self._send(200, {"ok": False, "msg": errors.sanitize_client_message(400, str(e))[:120]})
 
     def _r_api_account_wb_login(self, body):
         if not wblogin:
@@ -825,6 +807,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     use = _save_cred("tabbit", rec, name)
                     _invalidate_state()
                     self._send(200, {"ok": True, "msg": "已保存 %s" % use, "name": use})
+        elif platform == "doubao":
+            cookie = (body.get("cookie") or "").strip()
+            if not cookie:
+                self._send(200, {"ok": False, "msg": "豆包 Cookie 不能为空"})
+            else:
+                from platforms import doubao as dbt
+                if not dbt.has_login(cookie):
+                    self._send(200, {"ok": False,
+                                     "msg": "Cookie 中未找到 sessionid 登录态，"
+                                           "请粘贴豆包网页版（www.doubao.com）登录后的完整 Cookie"})
+                else:
+                    rec = {"cookie": cookie,
+                           "campaign_group_code": (body.get("campaign_group_code") or "").strip()}
+                    # 稳定身份回填：uid_tt/odin_tt 进 user_id，否则身份退化为整串
+                    # cookie，换登录态再粘一次就重复建卡
+                    ensure_identity("doubao", rec)
+                    use = _save_cred("doubao", rec, name)
+                    _invalidate_state()
+                    self._send(200, {"ok": True, "msg": "已保存 %s" % use, "name": use})
         else:
             self._send(200, {"ok": False, "msg": "不支持的平台 %s" % platform})
 
@@ -992,7 +993,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"ok": False, "msg": msg})
             except Exception as e:
-                self._send(200, {"ok": False, "msg": "本地导入异常：" + str(e)[:150]})
+                self._send(200, {"ok": False, "msg": "本地导入异常：" + errors.sanitize_client_message(500, str(e))[:150]})
 
 
     # ── 手机号登录（OAuth 设备码）：弹网页 → 手机号+验证码 → 自动回填 ──
@@ -1144,7 +1145,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, {"ok": False, "msg": "后端未加载 oauth 模块"})
         else:
             try:
-                ok, base, note = _officeace_autostart(wait=25)
+                ok, base, note = _officeace_autostart(wait=45, need_gui=True)
             except Exception as e:
                 ok, base, note = False, "", "启动失败：%s" % str(e)[:150]
             self._send(200, {"ok": bool(ok),
@@ -1170,7 +1171,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _r_api_account_browser_login(self, body):
         platform = body.get("platform")
         name = (body.get("name") or "").strip()
-        if platform not in ("lingxi", "workbuddy_ai"):
+        if platform not in ("lingxi", "workbuddy_ai", "doubao"):
             self._send(200, {"ok": False, "msg": "该平台暂不支持浏览器登录"})
         elif not _has_playwright():
             self._send(200, {"ok": False, "msg": "缺少依赖 playwright，浏览器登录不可用。"

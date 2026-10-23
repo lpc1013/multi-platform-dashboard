@@ -64,7 +64,42 @@ def _cookie_named(context, name):
     return None
 
 
+def _build_cookie_string(cookies, domains):
+    """从 cookie 列表里挑出属于指定域的，拼成 'a=b; c=d' 串（去重保序）。
+
+    纯函数（不依赖 playwright），便于单测。domains 按 endswith 匹配，
+    故 ".doubao.com" 能同时命中 ".doubao.com" 与 "www.doubao.com"。
+    """
+    out = []
+    seen = set()
+    for c in cookies:
+        dom = (c.get("domain") or "").lower()
+        if not any(dom == d or dom.endswith(d) for d in domains):
+            continue
+        if not c.get("value"):
+            continue
+        kv = "%s=%s" % (c["name"], c["value"])
+        if kv not in seen:
+            seen.add(kv)
+            out.append(kv)
+    return "; ".join(out)
+
+
+def _cookie_string_for_domains(context, domains):
+    """包一层 context.cookies() 的安全调用（供浏览器登录主循环使用）。"""
+    try:
+        return _build_cookie_string(context.cookies(), domains)
+    except Exception:
+        return ""
+
+
 # 各平台浏览器登录配置：新增平台只需加一项，不必再写一份几乎相同的函数
+#   capture:
+#     "single" —— 抓单个命名 cookie（如 wps_sid），记为该字段值
+#     "full"   —— 抓整条 Cookie 串（如豆包 sessionid 体系），登录标志 cookie
+#                 落地后才算数，取指定域下全部 cookie 拼成 'a=b; c=d'
+#   login_cookie: 登录成功的标志 cookie 名（"full" 模式用；兼容其 _ss 变体）
+#   domains: "full" 模式取哪些域的 cookie（按 endswith 匹配）
 _BROWSER_LOGIN_CFG = {
     "lingxi": {
         "url": "https://account.wps.cn/",
@@ -74,7 +109,164 @@ _BROWSER_LOGIN_CFG = {
         "cookie_name": "wps_sid",
         "ok_msg": "已抓取并保存 WPS 灵犀登录态（wps_sid）",
     },
+    # 豆包：弹可见浏览器 → 用户在真实登录页手动登录（看板**不代点**任何按钮）
+    #   → 检测 sessionid / sessionid_ss 落地 → 抓整条 Cookie 串落盘。
+    #   与普通「粘贴 Cookie」等价，但省去用户 F12 复制；全程手动，规避滑块风控。
+    "doubao": {
+        "url": "https://www.doubao.com/chat/",
+        "tip": "豆包（手机号 + 验证码 / 扫码，全程你手动操作）",
+        "capture": "full",           # 抓整条 Cookie 串
+        "locale": "zh-CN",
+        "login_cookie": "sessionid", # 落地即视为已登录（兼容 sessionid_ss）
+        "domains": [".doubao.com", "doubao.com", "www.doubao.com"],
+        "deadline": 360,             # 手动登录给足时间
+        "ok_msg": "已抓取并保存豆包登录态（Cookie）",
+    },
 }
+
+
+# ── 浏览器签到兜底（2026-10-22 增补）──────────────────────────────────────
+# 背景：豆包 REST API 在 shark_admin 反爬下对自动化请求返回 710022002 / 滑块
+# 验证码（DoubaoCLI、doubao2api 均有记载），纯 HTTP 签到不稳。但「在已登录的
+# 浏览器会话里访问签到页」却能稳定领奖（doubao-manager 的 checkinType:'visit'
+# 即「访问即得」）。故签到采用「API 主 + 浏览器兜底」：平台适配器先试 HTTP
+# API，失败再降级到这里——注入已保存的登录 Cookie 打开签到页，检测到成功文案
+# 即算领到（必要时按用户授权自动点「签到」按钮）。
+_BROWSER_CHECKIN_CFG = {
+    "doubao": {
+        "url": "https://www.doubao.com/pc/agent-explore",
+        "domains": [".doubao.com", "doubao.com", "www.doubao.com"],
+        "locale": "zh-CN",
+        # 成功判定：页面 DOM 出现以下任一文案（截图已确认「签到成功，获得 200 额度」）
+        "success_texts": ["签到成功", "已签到", "领取成功", "200 额度", "今日已签"],
+        # 若页面有「签到」按钮且尚未自动发奖，则自动点（用户已授权自动点）
+        "click_texts": ["签到", "立即签到", "去签到", "马上签到", "点击签到"],
+        "deadline": 120,
+        "ok_msg": "浏览器访问豆包 agent-explore 已完成签到（200 额度）",
+    },
+}
+
+
+def _parse_cookie_pairs(cookie_str):
+    """'a=b; c=d' → [('a','b'),('c','d')]。纯函数，便于单测。"""
+    out = []
+    for part in (cookie_str or "").split(";"):
+        part = part.strip()
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        out.append((k.strip(), v.strip()))
+    return out
+
+
+def _build_checkin_cookies(pairs, domains):
+    """把 cookie 键值对展开成 playwright add_cookies 所需的 dict 列表
+    （每个域一份）。纯函数。"""
+    cookies = []
+    for k, v in pairs:
+        if not k:
+            continue
+        for d in (domains or []):
+            cookies.append({"name": k, "value": v, "domain": d, "path": "/"})
+    return cookies
+
+
+def _contains_any(text, subs):
+    """纯函数：text 是否包含 subs 中任一子串。"""
+    t = text or ""
+    return any(s and s in t for s in subs)
+
+
+def browser_checkin(platform, cookie, progress=None):
+    """注入已保存的登录 Cookie 打开签到页，检测成功文案（必要时自动点「签到」）。
+
+    progress(status, text)：可选进度回传，status ∈ {opening,clicking,capturing,error}
+    返回 (ok:bool, msg:str, cred:str|None)
+    """
+    cfg = _BROWSER_CHECKIN_CFG.get(platform)
+    if not cfg:
+        return False, "该平台暂不支持浏览器签到（仅 %s）" % "、".join(_BROWSER_CHECKIN_CFG), None
+    pairs = _parse_cookie_pairs(cookie)
+    if not pairs:
+        return False, "未配置 Cookie，无法注入登录态", None
+    ck = _build_checkin_cookies(pairs, cfg.get("domains"))
+    if not ck:
+        return False, "Cookie 解析为空，无法注入登录态", None
+
+    try:
+        from playwright.sync_api import sync_playwright  # noqa
+    except Exception:
+        return False, _install_hint(), None
+
+    if progress:
+        progress("opening", "已打开浏览器，正在注入登录态并访问签到页…")
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=False,
+                args=["--disable-blink-features=AutomationControlled"])
+            ctx = browser.new_context(**({"locale": cfg["locale"]} if cfg.get("locale") else {}))
+            try:
+                ctx.add_cookies(ck)
+            except Exception as e:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+                return False, "注入 Cookie 失败：" + str(e)[:120], None
+            page = ctx.new_page()
+            try:
+                page.goto(cfg["url"], wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                pass  # 页面可能重定向/有壳，继续轮询
+
+            deadline = time.time() + (cfg.get("deadline") or 120)
+            clicked = False
+            ok = False
+            while time.time() < deadline:
+                html = _safe_html(page)
+                if _contains_any(html, cfg["success_texts"]):
+                    ok = True
+                    break
+                if not clicked and not _contains_any(html, ["签到成功", "已签到"]):
+                    if _click_signin_btn(page, cfg["click_texts"]):
+                        clicked = True
+                        if progress:
+                            progress("clicking", "已点击签到按钮，等待领取…")
+                time.sleep(2)
+
+            try:
+                browser.close()
+            except Exception:
+                pass
+            if ok:
+                if progress:
+                    progress("capturing", "检测到签到成功")
+                return True, cfg["ok_msg"], None
+            return False, "浏览器访问签到页超时，未检测到签到成功文案（请手动确认）", None
+    except Exception as e:
+        return False, "浏览器签到异常：" + str(e)[:160], None
+
+
+def _safe_html(page):
+    try:
+        return page.content() or ""
+    except Exception:
+        return ""
+
+
+def _click_signin_btn(page, texts):
+    """在页面里找一个含签到文案的可点击元素并点。返回是否点到。"""
+    for t in (texts or []):
+        try:
+            loc = page.locator(
+                "button, [role='button'], a, .sign-btn, .checkin-btn").filter(has_text=t)
+            if loc.count() > 0:
+                loc.first.click(timeout=4000, force=False)
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _wbai_profile_dir():
@@ -228,10 +420,17 @@ def browser_login(platform, progress):
             page = ctx.new_page()
             page.goto(cfg["url"], wait_until="domcontentloaded", timeout=30000)
 
-            deadline = time.time() + 180
+            deadline = time.time() + (cfg.get("deadline") or 180)
+            login_name = cfg.get("login_cookie", "")
             cred = None
             while time.time() < deadline:
-                cred = _cookie_named(ctx, cfg.get("cookie_name", ""))
+                if cfg.get("capture") == "full":
+                    # 抓整条 Cookie：登录标志 cookie（及其 _ss 变体）落地后才算捕获成功
+                    ok_login = (_cookie_named(ctx, login_name) or
+                                _cookie_named(ctx, login_name + "_ss")) if login_name else True
+                    cred = _cookie_string_for_domains(ctx, cfg.get("domains") or []) if ok_login else None
+                else:
+                    cred = _cookie_named(ctx, cfg.get("cookie_name", ""))
                 if cred:
                     break
                 time.sleep(2)
@@ -242,7 +441,8 @@ def browser_login(platform, progress):
                 pass
 
             if not cred:
-                return False, "等待登录超时（180 秒）。请在弹出的浏览器完成登录后重试。", None
+                return False, "等待登录超时（%d 秒）。请在弹出的浏览器完成登录后重试。" \
+                              % (cfg.get("deadline") or 180), None
             progress("capturing", "检测到登录成功，正在保存…")
             return True, cfg["ok_msg"], cred
     except Exception as e:

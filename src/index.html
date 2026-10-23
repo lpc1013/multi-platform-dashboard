@@ -19,7 +19,8 @@
      正文 13.5 ｜ 辅助 12.5 ｜ 标注 11.5 ｜ 微徽章 10.5
      图标字符（.ava/.x/.rico 等装饰字形）不进字阶，保留字面值 */
   --font-ui:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
-  --font-mono:ui-monospace,SFMono-Regular,Consolas,Menlo,monospace;
+  /* mono 栈必须带中文回退：Windows 上 Consolas 不渲染汉字，不回退会落宋体（小字号发虚） */
+  --font-mono:ui-monospace,SFMono-Regular,Consolas,Menlo,"PingFang SC","Microsoft YaHei",monospace;
   --fs-display:27px;    --fs-display-sm:22px;
   --fs-t1:20px;         --fs-t2:18px;         --fs-t3:16.5px;
   --fs-body:15px;       --fs-aux:13px;        --fs-cap:11.5px;   --fs-micro:10.5px;
@@ -27,6 +28,10 @@
 *{box-sizing:border-box;margin:0;padding:0}
 ::selection{background:#e4e1ff;color:#1a1440}
 button,input,textarea,select{font-family:inherit}
+/* 全局 <code> 默认样式：不设的话浏览器默认 monospace（Windows 落 Courier New/宋体），
+   与 .modal code/.banner code 的既有风格割裂——反代卡片里的 <code>ds-flash</code> 等曾因此发丑 */
+code{font-family:var(--font-mono);font-size:.92em;background:#f1f4f8;color:#4b41d6;
+  padding:1px 5px;border-radius:5px;overflow-wrap:anywhere}
 /* ── 细节统一：细滚动条 + 键盘焦点环 + 动效偏好 ── */
 *{scrollbar-width:thin;scrollbar-color:#c9d2e0 transparent}
 *::-webkit-scrollbar{width:9px;height:9px}
@@ -181,6 +186,7 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .ava.g11{background:linear-gradient(135deg,#be185d,#f472b6);box-shadow:0 3px 9px rgba(190,24,93,.24)}
 .ava.g12{background:linear-gradient(135deg,#4f46e5,#818cf8);box-shadow:0 3px 9px rgba(79,70,229,.24)}
 .ava.g13{background:linear-gradient(135deg,#f59e0b,#fbbf24);box-shadow:0 3px 9px rgba(245,158,11,.24)}
+.ava.g14{background:linear-gradient(135deg,#06b6d4,#22d3ee);box-shadow:0 3px 9px rgba(6,182,212,.24)}
 
 /* 弹窗内的分组标签行 */
 .tabs .tabsep{display:flex;align-items:center;gap:8px;width:100%;font-size:var(--fs-cap);
@@ -416,6 +422,18 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
 .upcard .ast.bad{background:var(--red-soft);color:var(--red)}
 .upcard .ast.cool{background:var(--orange-soft);color:var(--orange)}
 .upcard .ast.pending{background:#eef2f6;color:var(--muted)}
+/* DS-Flash 明细弹窗：通道行复用 .acctrow/.ast，但 .upcard 作用域在弹窗内不生效，这里补一份 */
+.prov-accts .acctlist{display:flex;flex-direction:column}
+.prov-accts .acctrow{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:var(--fs-cap);color:var(--ink2)}
+.prov-accts .acctrow + .acctrow{border-top:1px dashed #eef1f5}
+.prov-accts .acctrow .anm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.prov-accts .ast{flex:none;font-size:var(--fs-micro);font-weight:700;padding:1px 7px;border-radius:99px;
+  background:#eef2f6;color:var(--muted);white-space:nowrap}
+.prov-accts .ast.ok{background:var(--green-soft);color:var(--green)}
+.prov-accts .ast.bad{background:var(--red-soft);color:var(--red)}
+.prov-accts .ast.cool{background:var(--orange-soft);color:var(--orange)}
+.prov-accts .ast.pending{background:#eef2f6;color:var(--muted)}
+.prov-accts .pr-group{margin-top:12px}
 /* 账号池大字摘要（N 号可用）， important 信息上移 */
 .upcard .poolsum{font-size:var(--fs-t2);font-weight:700;color:var(--ink);line-height:1.3;padding:2px 0 8px}
 .upcard .poolsum small{font-size:var(--fs-cap);font-weight:600;color:var(--muted);margin-left:7px}
@@ -912,6 +930,7 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
       <button class="tab" data-tab="minimax">MiniMax（Token）</button>
       <button class="tab" data-tab="baidu_dumate">DuMate（Cookie）</button>
       <button class="tab" data-tab="tabbit">Tabbit（Cookie）</button>
+      <button class="tab" data-tab="doubao">豆包（Cookie）</button>
       <div class="tabsep">🛠 编程 / 开发</div>
       <button class="tab" data-tab="trae">Trae（积分）</button>
       <button class="tab" data-tab="qoder">Qoder CN（Credits）</button>
@@ -1250,9 +1269,11 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
       <div class="hint-sm">驱动 <b>OfficeACE 桌面端自己的登录通道</b>（本地 API，
         端口从客户端 <code>runtime-state.json</code> 实时读取，默认 <code>3004</code>）：
         华为云统一登录后 App 自动保存全新凭据，看板顺手重新导入。<br>
-        <b>前提：OfficeACE 桌面端正在运行</b> —— 点「📩 发送验证码」时看板会<b>自动尝试拉起客户端</b>；
-        若超时，可点上方「🚀 启动 OfficeACE 客户端」或手动双击
-        <code>OfficeAce.exe</code>（托盘里在跑即可）。</div>
+        <b>点「📩 发送验证码」时会自动拉起 OfficeACE 客户端</b>（窗口会弹出来，属正常现象；
+        登录回调必须由客户端接收）。若 45 秒内客户端没起来，可点上方
+        「🚀 启动 OfficeACE 客户端」或手动双击 <code>OfficeAce.exe</code> 后重试。<br>
+        <b>只刷当前账号：</b>客户端只会自动续期<b>当前登录</b>的那个号；别的号过期后，
+        用它的手机号再走一次本登录（或在客户端里切过去）即可续上。</div>
 
       <hr style="border:0;border-top:1px dashed var(--line);margin:16px 0">
       <button class="btn-main sm" id="oaImport"
@@ -1328,8 +1349,36 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
       <button class="btn-main sm" id="tbSave"
         style="background:linear-gradient(135deg,#d97706,#f59e0b);box-shadow:0 4px 14px rgba(217,119,6,.25)">
         💾 保存 Cookie</button>
-      <div class="hint-sm">保存后即可在反代里调用：模型名加 <code>tb:</code> 前缀
-        （如 <code>tb:Default</code>，模型目录见「🔌 API 接入」弹窗）；每日签到在账号卡片上一键完成。</div>
+      <div class="hint-sm">保存后用于账号额度查询与每日签到；该平台反代调用已下架（2026-10-22），
+        不再提供模型接口，签到在账号卡片上一键完成。</div>
+    </div>
+
+    <!-- 豆包：网页版 Cookie 登录态（本地浏览器库被进程独占，暂只支持手动粘贴） -->
+    <div class="tabpane" data-pane="doubao" style="display:none">
+      <div class="field">
+        <label>备注名（可选，留空自动命名）</label>
+        <input id="dbName" autocomplete="off" placeholder="如 豆包·主号">
+      </div>
+      <div class="field">
+        <label>Cookie（浏览器 F12 → 应用/存储 → Cookie → www.doubao.com，整条复制）</label>
+        <textarea id="dbCookie" rows="4" placeholder="name=value; name2=value2; …（须含 sessionid 登录态）"></textarea>
+      </div>
+      <div class="field">
+        <label>签到活动码（可选，留空自动获取）</label>
+        <input id="dbCode" autocomplete="off" placeholder="campaign_group_code，一般不用填">
+      </div>
+      <button class="btn-main sm" id="dbSave"
+        style="background:linear-gradient(135deg,#06b6d4,#22d3ee);box-shadow:0 4px 14px rgba(6,182,212,.28)">
+        💾 保存 Cookie</button>
+      <button class="btn-main sm" id="dbWebLogin"
+        style="background:linear-gradient(135deg,#0891b2,#06b6d4);box-shadow:0 4px 14px rgba(8,145,178,.28);margin-top:8px">
+        🌐 网页登录（弹浏览器，你手动登录）</button>
+      <div id="dbWebTxt" style="display:none;margin-top:8px;font-size:var(--fs-aux);color:var(--ink2);line-height:1.6"></div>
+      <div class="hint-sm">嫌 F12 复制 Cookie 麻烦？点上方「🌐 网页登录」让看板弹出一个真实浏览器，
+        你在窗口里手动登录豆包（手机号/扫码均可，<b>看板不代点任何按钮</b>），
+        登录成功后看板自动抓取 Cookie 并保存。<br>
+        手动粘贴方式仍可用：保存后用于豆包每日签到（PC 端签到活动：200 额度 + 每日任务）；
+        豆包无对外开放的余额接口，签到额度以活动页文案展示，看板不做数字估算。</div>
     </div>
 
     <!-- WorkBuddy AI（国际版）：网页 OAuth 登录（Google / GitHub / X） -->
@@ -1375,7 +1424,6 @@ body:has(#view-tokens.on) .maincol{padding-bottom:24px}
     <div class="modal-body" style="padding:0 24px 8px;overflow-y:auto">
 
       <div class="apierr" id="apiErr"></div>
-      <div class="hint-sm" id="apiNote" style="display:none;margin:0 0 10px"></div>
 
       <div class="field" style="margin-bottom:6px">
         <label>任意 OpenAI 客户端的三件套</label>
@@ -1450,24 +1498,35 @@ const TASK_META = {
 const PLAT_CLR = { workbuddy:"#635bff", minimax:"#0ea5e9", baidu_dumate:"#0d9f6e",
                    lingxi:"#e8574a", trae:"#3355e8", qoder:"#7c3aed",
                    zcode:"#0f766e", officeace:"#c2410c", codearts:"#0369a1",
-                   teleagent:"#be185d", workbuddy_ai:"#4f46e5", tabbit:"#f59e0b" };
+                   teleagent:"#be185d", workbuddy_ai:"#4f46e5", tabbit:"#f59e0b",
+                   doubao:"#06b6d4" };
 const PLAT_GRAD = { workbuddy:"", minimax:"g2", baidu_dumate:"g3", lingxi:"g5",
                     trae:"g6", qoder:"g7", zcode:"g8", officeace:"g9", codearts:"g10",
-                    teleagent:"g11", workbuddy_ai:"g12", tabbit:"g13" };
+                    teleagent:"g11", workbuddy_ai:"g12", tabbit:"g13", doubao:"g14" };
 /* 反代模型下拉的条目底色（PLAT_CLR 的浅色版，只用于背景标记） */
 const PLAT_TINT = { codearts:"#d9ecf9", teleagent:"#f9dfea", officeace:"#fbe6d8",
-                    workbuddy_intl:"#e0e7ff", tabbit:"#fef3c7" };
+                    workbuddy_intl:"#e0e7ff", tabbit:"#fef3c7", doubao:"#cffafe" };
+/* DS-Flash 统一池（虚拟模型，跨平台聚合）专用配色 */
+const DSFLASH_CLR = "#8b5cf6";
+const DSFLASH_TINT = "#ede4fb";
+/* 通道模型行短标注：WB国际同账号有免费/付费(-sg)两条模型行；CodeArts/果办
+   2026-10-22 起全计积分，无免费行概念，统一标 DS4.1-Flash */
+const DSFLASH_MODEL_TAG = {"deepseek-v4.1-flash-sg":"付费行"};
+function _dsflashTag(model){
+  return DSFLASH_MODEL_TAG[String(model || "").toLowerCase()] || "DS4.1-Flash";
+}
 /* 「从本地客户端导入」失败提示里用到的桌面端名称 */
 const PLAT_LOCAL_NAME = { workbuddy:"WorkBuddy", minimax:"MiniMax Code", baidu_dumate:"百度搭子 DuMate",
                           lingxi:"WPS 灵犀", trae:"Trae / TRAE SOLO CN", qoder:"Qoder CN",
                           zcode:"ZCode（z.ai）", officeace:"OfficeACE", codearts:"CodeArts Agent",
                           teleagent:"电信 TeleAgent", workbuddy_ai:"WorkBuddy AI（国际版）",
-                          tabbit:"Tabbit 浏览器" };
+                          tabbit:"Tabbit 浏览器", doubao:"豆包网页版" };
 
 /* ── 平台展示顺序：原「编程/开发 · AI 助手 · 办公」分类已去掉（平铺不分区），
    只保留稳定排序；未登记的新平台自动排在最后 ── */
 const PLATFORM_ORDER = ["trae","qoder","zcode","codearts","teleagent",
-                        "workbuddy","minimax","baidu_dumate","lingxi","officeace","tabbit"];
+                        "workbuddy","minimax","baidu_dumate","lingxi","officeace",
+                        "tabbit","doubao"];
 function orderedPids(plats){
   const ids = Object.keys(plats).filter(pid=>plats[pid].accounts && plats[pid].accounts.length);
   const head = PLATFORM_ORDER.filter(pid=>ids.includes(pid));
@@ -1892,6 +1951,11 @@ function platTags(a, pid){
     if(ex.total_signed_days!=null) t.push(`<span class="tag t-gray">📅 累计 ${esc(ex.total_signed_days)} 天</span>`);
     const d=ex.token_remain_days;
     if(d!=null) t.push(`<span class="tag ${d<2?'t-red':'t-gray'}">⏳ 登录态剩 ${esc(d)} 天</span>`);
+  } else if(pid==="doubao"){
+    const ex=a.extra||{};
+    if(ex.phone) t.push(`<span class="tag t-gray">📱 ${esc(ex.phone)}</span>`);
+    if(ex.today_reward!=null) t.push(`<span class="tag t-green">+${esc(ex.today_reward)} 额度</span>`);
+    if(ex.checkin_title) t.push(`<span class="tag t-gray">🎁 ${esc(ex.checkin_title)}</span>`);
   }
   return t;
 }
@@ -2121,7 +2185,15 @@ function detailHTML(a, pid){
     if(ex.streak_days!=null) kv.push(`<div class="kv"><span>连续签到</span><b>${esc(ex.streak_days)} 天</b></div>`);
     if(ex.total_signed_days!=null) kv.push(`<div class="kv"><span>累计签到</span><b>${esc(ex.total_signed_days)} 天</b></div>`);
     if(ex.token_expire) kv.push(`<div class="kv"><span>登录态到期</span><b style="color:${(ex.token_remain_days!=null&&ex.token_remain_days<2)?'var(--red)':'var(--ink)'}">${esc(ex.token_expire)}${ex.token_remain_days!=null?"（剩 "+esc(ex.token_remain_days)+" 天）":""}</b></div>`);
-    kv.push(`<div class="kv"><span>反代调用</span><b>模型名加 <code>tb:</code> 前缀</b></div>`);
+    if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
+  } else if(pid==="doubao"){
+    const ex=a.extra||{};
+    kv.push(`<div class="kv"><span>账号类型</span><b>豆包网页版（www.doubao.com）</b></div>`);
+    kv.push(`<div class="kv"><span>今日签到</span><b style="color:${a.signed_today?"var(--green)":"var(--orange)"}">${a.signed_today?"已完成":"未完成"}</b></div>`);
+    if(ex.today_reward!=null) kv.push(`<div class="kv"><span>签到奖励</span><b>+${esc(ex.today_reward)} 额度</b></div>`);
+    if(ex.checkin_title) kv.push(`<div class="kv"><span>活动标题</span><b>${esc(ex.checkin_title)}</b></div>`);
+    if(ex.checkin_content) kv.push(`<div class="kv"><span>活动说明</span><b>${esc(ex.checkin_content)}</b></div>`);
+    kv.push(`<div class="kv"><span>余额查询</span><b style="color:var(--ink2)">豆包无公开余额接口，签到额度以活动页为准</b></div>`);
     if(a.error) kv.push(`<div class="kv"><span>异常</span><b style="color:var(--red)">${esc(a.error)}</b></div>`);
   }
 
@@ -2221,7 +2293,7 @@ async function loadProxyUsage(){
 /* ── QQ 式三栏：图标栏视图切换（hash 路由）+ 中栏密集列表 ── */
 const VIEWS = ["home", "proxy", "tokens"];
 const CUR = () => (location.hash||"#home").replace("#","") || "home";
-let API_MODELS = null;     // 四上游模型目录（refreshProxyStatus / openApi 填充）
+let API_MODELS = null;     // 上游模型目录（refreshProxyStatus / openApi 填充）
 let API_MODELS_ERR = false;
 /* Token 消耗面板：懒加载（首次进入页签才拉取），加载完成隐藏占位 */
 let _tokReady = false;        // iframe 是否已真正 load 完成
@@ -2332,15 +2404,17 @@ function buildRailTree(){
       : `<div class="rsempty">暂无平台</div>`;
     _setSub(home, "home", h);
   }
-  /* 反代面板 → 四上游 */
+  /* 反代面板 → 各上游 + DS-Flash 统一池 */
   const px = $("#sub-proxy");
   if(px){
     const ps = (API_MODELS && API_MODELS.providers) || [];
-    const h = ps.length
+    let h = ps.length
       ? ps.map(p=>
           _rsitem("", esc(p.label||p.id), "", ` data-jump="proxy" data-pid="${p.id}"`)
         ).join("")
       : `<div class="rsempty">进入反代后加载</div>`;
+    const ds = (API_MODELS && API_MODELS.dsflash);
+    if(ds) h += _rsitem("", "DS-Flash 统一池", (ds.n||0)+" 通道", ` data-jump="proxy" data-pid="dsflash"`);
     _setSub(px, "proxy", h);
   }
   /* Token 消耗 → 六个分区（静态，只建一次） */
@@ -2383,6 +2457,7 @@ function homeGoto(pid){
 }
 function proxyGoto(pid){
   showView("proxy");
+  if(pid === "dsflash"){ setTimeout(()=>openDsflashDetail(), 90); return; }   // 大池子直接开通道明细
   setTimeout(()=>{
     const el = document.querySelector('#proxyStatus .upcard[data-pid="'+pid+'"]');
     if(el){ el.scrollIntoView({behavior:"smooth", block:"center"}); flashEl(el); }
@@ -2514,7 +2589,7 @@ function _acctMetrics(a){
   a = a || {};
   const out = [], df = a.daily_free || null, lt = a.long_term || null, cr = a.credits || {};
   if(df && (df.remain != null || +df.total > 0)){
-    out.push({key:"daily", label:"每日免费额度", short:"每日免费", remain:+df.remain||0, total:+df.total||0,
+    out.push({key:"daily", label:"每日免费积分", short:"每日免费", remain:+df.remain||0, total:+df.total||0,
       pct:_pctOf(df.remain, df.total), used:+df.used||0,
       dailyUsed:+df.daily_used||0, dailyLimit:+df.daily_limit||0,
       sub:"每日重置"});
@@ -2564,9 +2639,6 @@ function _ring(pct, cls, size, stroke, center, sub){
     `<circle class="rf" cx="21" cy="21" r="18" pathLength="100" stroke-dasharray="${known ? p : 0} 100"/></svg>` +
     `<span class="rc"><b>${esc(center == null ? "—" : center)}</b>${sub ? `<small>${esc(sub)}</small>` : ""}</span></span>`;
 }
-function _dailyMissing(a){
-  return !_acctMetrics(a).some(m=>m.key === "daily") && !!(a.extra && a.extra.free_token_error);
-}
 function _quotaCardHtml(m){
   const low = m.pct != null && m.pct < 20;
   const foot = m.key === "daily"
@@ -2578,16 +2650,6 @@ function _quotaCardHtml(m){
     <div class="qcard-b">${_ring(m.pct, m.key, 86, 8, m.pct == null ? "—" : m.pct + "%")}` +
     `<div class="qcard-info"><div class="qcard-v">${_fmtShort(m.remain)}<small> / ${_fmtShort(m.total)}</small></div>` +
     `<div class="qcard-f">${esc(foot)}</div></div></div></div>`;
-}
-function _missingDailyHtml(err, na){
-  const noBenefit = na === true || /benefit not found/i.test(err || "");
-  return `<div class="qcard daily missing">
-    <div class="qcard-h"><span class="qcard-k">每日免费额度</span><span class="qcard-tag">未开通</span></div>
-    <div class="qcard-b">${_ring(null, "daily", 86, 8, "—")}` +
-    `<div class="qcard-info"><div class="qcard-v muted">${noBenefit ? "无此权益" : "未开通"}</div>` +
-    `<div class="qcard-s">${noBenefit ? "该账号按积分计量" : "每日免费额度读取失败"}</div>` +
-    `<div class="qcard-f" title="${esc(err || "")}">${noBenefit ? "上游无免费 token 包 · 积分不受影响" : "稍后刷新重试"}</div>` +
-    `</div></div></div>`;
 }
 function _sectionHtml(title, count, body, sub){
   return `<div class="sec"><div class="sec-h"><span class="sec-t">${esc(title)}</span>` +
@@ -2673,13 +2735,12 @@ function _acctTabsHtml(accts, coolMap){
     accts.map(a=>{
       const tone = _acctTone(a, coolMap[a.name], !!a._pending);
       const m = _acctMetrics(a)[0];
-      const missing = _dailyMissing(a);
-      const badge = missing ? "未开通" : (m && m.pct != null ? m.pct + "%" : tone.text);
+      const badge = (m && m.pct != null) ? m.pct + "%" : tone.text;
       return `<button type="button" class="atab${a.name === PROV_ACCT ? " on" : ""}"` +
         ` data-acct="${esc(a.name)}" title="${esc(a.name)}">` +
         `<span class="atab-dot ${tone.cls}"></span>` +
         `<span class="atab-name">${esc(a.name || "—")}</span>` +
-        `<span class="atab-badge${missing ? " warn" : ""}">${esc(badge)}</span></button>`;
+        `<span class="atab-badge">${esc(badge)}</span></button>`;
     }).join("") + `</div></div>`;
 }
 function _acctBlock(a, cooling, p){
@@ -2687,7 +2748,6 @@ function _acctBlock(a, cooling, p){
   const tone = _acctTone(a, cooling, pending);
   const ex = a.extra || {};
   const metrics = _acctMetrics(a);
-  const missing = _dailyMissing(a);
   const tags = [
     `<span class="pchip ${tone.cls === "cool" ? "cool" : tone.cls}">${esc(tone.text)}</span>`
   ];
@@ -2702,10 +2762,10 @@ function _acctBlock(a, cooling, p){
   if(pending && !a.error){
     body += `<div class="prov-loading"><span class="tk-spin"></span><span>正在读取该账号额度…</span></div>`;
   } else {
-    if(metrics.length || missing){
+    if(metrics.length){
       body += _sectionHtml("额度", null,
-        `<div class="qgrid">${missing ? _missingDailyHtml(ex.free_token_error, ex.free_token_na) : ""}${metrics.map(_quotaCardHtml).join("")}</div>`,
-        "每日免费额度与积分分池计算");
+        `<div class="qgrid">${metrics.map(_quotaCardHtml).join("")}</div>`,
+        metrics.some(m=>m.key === "daily") ? "每日签到积分与长期积分分池计算" : "积分计量");
     } else if(!a.error){
       body += _sectionHtml("账号状态", null, _statusGridHtml(a, ex), "该上游没有数值额度接口");
     }
@@ -2757,7 +2817,7 @@ function _heroHtml(accts, coolMap){
 }
 function _routeHtml(p){
   const clr = PLAT_CLR[p.id] || "#5f5e5a";
-  const prefix = p.id === "workbuddy_intl" ? "wb:" : p.id === "tabbit" ? "tb:" : "";
+  const prefix = p.id === "workbuddy_intl" ? "wb:" : "";
   const nodeStyle = `color:${clr};border-color:${clr}44;background:${clr}12`;
   const flow = `<div class="pr-flow">
     <span class="pr-node" style="${nodeStyle}"><i></i>${prefix ? esc(prefix) + "*" : "模型名匹配"}</span>
@@ -2765,8 +2825,10 @@ function _routeHtml(p){
     <span class="pr-node" style="${nodeStyle}"><i></i>${esc(p.label || p.id)}</span></div>`;
   const groups = [];
   if(p.id === "codearts"){
-    if((p.benefit || []).length) groups.push({label:"福利模型 · 吃每日免费额度", models:p.benefit, cls:"free"});
-    if((p.builtin || []).length) groups.push({label:"内置模型 · 计积分", models:p.builtin, cls:"cost"});
+    /* 2026-10-22 起 CodeArts 撤每日免费 token 福利、全模型计积分；
+       builtin / benefit 两个目录列表合并展示（归属判定在后端，与计费解耦） */
+    const all = (p.builtin || []).concat(p.benefit || []);
+    if(all.length) groups.push({label:"模型目录 · 计积分", models:all, cls:"cost"});
   } else if(p.id === "workbuddy_intl"){
     const chain = p.auto_chain || [];
     if(chain.length) groups.push({label:"auto 链 · 按顺序尝试", chain});
@@ -2774,8 +2836,7 @@ function _routeHtml(p){
     if(rest.length) groups.push({label:"指定模型 · wb: 前缀", models:rest, cls:"", cap:10});
   } else {
     const ms = p.models || [];
-    if(ms.length) groups.push({label:p.id === "tabbit" ? "tb: 前缀模型" : p.id === "teleagent" ? "模型名直接匹配" : "模型名匹配",
-      models:ms, cls:"", cap:12});
+    if(ms.length) groups.push({label:"模型名匹配", models:ms, cls:"", cap:12});
   }
   const groupsHtml = groups.map(g=>{
     if(g.chain){
@@ -2824,8 +2885,8 @@ function renderProvDetail(){
   const byName = {}; rows.forEach(a=>byName[a.name] = a);
   const pool = p.pool || {}, coolMap = pool.cool || {};
   const names = (pool.names && pool.names.length) ? pool.names : (p.account ? [p.account] : rows.map(a=>a.name));
-  /* /api/pool_quota 的 extra 只带白名单字段；老后端未透传 free_token_error 时，
-     用 /api/state 同账号的完整 extra 兜底（同一份 read_account 结果） */
+  /* /api/pool_quota 的 extra 只带白名单字段（credits_error 等）；用 /api/state
+     同账号的完整 extra 兜底（同一份 read_account 结果） */
   const stAccts = (STATE && STATE.platforms && STATE.platforms[pid] && STATE.platforms[pid].accounts) || [];
   const stExtra = {}; stAccts.forEach(a=>{ if(a && a.name && a.extra) stExtra[a.name] = a.extra; });
   const accts = names.map(nm=>{
@@ -2845,7 +2906,7 @@ function renderProvDetail(){
   if(sel){
     body = _acctBlock(sel, coolMap[sel.name], p);
   }else{
-    body = `<div class="prov-loading"><span>${p.id === "teleagent" && !p.account ? "未配置账号 · 可在「添加账号 → TeleAgent」接入" : "暂无可查询账号"}</span></div>`;
+    body = `<div class="prov-loading"><span>暂无可查询账号</span></div>`;
   }
   if(q && q.error) body = `<div class="perr" style="padding:0 2px 10px">⚠ ${esc(q.error)}</div>` + body;
   if(PROV_LOADED && !q) body = `<div class="perr" style="padding:0 2px 10px">⚠ 暂时读不到额度（上游未响应或网络异常）</div>` + body;
@@ -2854,6 +2915,144 @@ function renderProvDetail(){
   $("#provUpdated").textContent = q
     ? "数据时间 " + new Date().toLocaleTimeString("zh-CN",{hour12:false})
     : (PROV_LOADED ? "额度读取失败" : "正在读取额度…");
+}
+/* ── DS-Flash 统一池卡片（来自 /api/proxy_info 的 I.dsflash）── */
+function _dsflashSelect(){
+  const sel = $("#apiModelSel");
+  const trySet = ()=>{
+    if(sel && [...sel.options].some(o=>o.value==="ds-flash")){
+      sel.value = "ds-flash"; _apiMetaRefresh(); return true;
+    }
+    return false;
+  };
+  if(!trySet()) setTimeout(trySet, 220);   // 首开弹窗时目录异步加载，等一下再定位
+}
+function _dsflashCardHtml(D){
+  const clr = DSFLASH_CLR;
+  const chs = D.channels || [];
+  const okN = chs.filter(c=>!c.cooling).length;
+  const coolN = chs.length - okN;
+  const PROV_CN = {wbai:"WB国际", codearts:"CodeArts", officeace:"果办"};
+  let chHtml = "";
+  if(chs.length){
+    // 同账号可能有免费/付费两条模型行：行尾标注模型行，显示名剥掉与平台重复的前缀
+    //（凭据键名自带「WB国际·」之类，前面再拼平台名会变成「WB国际·WB国际·xxx」）
+    chHtml = `<div class="acctlist">` + chs.map(c=>{
+      const prov = PROV_CN[c.prov] || c.prov;
+      const nm = String(c.name||"");
+      const disp = nm.startsWith(prov) ? nm.slice(prov.length).replace(/^[·:：\\s-]+/, "") : nm;
+      const tag = _dsflashTag(c.model);
+      const sat = c.in_flight >= c.max_conn;
+      // 冷却（临时禁用）展示「禁用至 HH:MM:SS · 到点自动放出」：禁用时记录了到期时刻，
+      // 期间跳过该通道、到期即自动放出（DS-Flash 池的 quarantine 机制）。
+      let tone = "ok", toneTxt = "可用";
+      if(c.cooling){
+        tone = "cool";
+        let until = "";
+        if(c.cool_until){ const d = new Date(c.cool_until*1000); until = ` ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}:${String(d.getSeconds()).padStart(2,"0")} 放出`; }
+        toneTxt = "禁用" + until;
+      } else if(sat){ tone = "pending"; toneTxt = "饱和"; }
+      return `<div class="acctrow" title="${esc(c.prov)} / ${esc(c.name)} / ${esc(c.model)}">` +
+        `<span class="anm">${esc(prov)} · ${esc(disp)}<small style="opacity:.65"> ${esc(tag)}</small></span>` +
+        `<span class="ast ${tone}">${esc(toneTxt)} · ${c.in_flight}/${c.max_conn}</span></div>`;
+    }).join("") + `</div>`;
+  }
+  const STRAT = {round_robin:"轮询（均匀）", least_conn:"最少连接", weighted:"按权重"};
+  const stratTxt = STRAT[D.strategy] || D.strategy;
+  const aliasTxt = (D.aliases||[]).filter(a=>a!=="ds-flash").map(a=>`<code>${esc(a)}</code>`).join(" / ");
+  return `<div class="upcard clickable" data-pid="dsflash" style="border-top:3px solid ${clr}">
+    <div class="uhead"><span class="dot2" style="background:${clr}"></span>DS-Flash 统一池<span class="st ok">聚合</span></div>
+    <div class="poolsum">${okN}<small>/ ${chs.length} 通道可用</small>` +
+      (coolN ? `<small style="color:var(--red)">${coolN} 冷却</small>` : "") + `</div>
+    <div class="uidle" style="margin:0 0 8px">虚拟模型 <code>ds-flash</code> · 策略：${esc(stratTxt)}` +
+      (aliasTxt ? `<br>兼容别名（同一接口）：${aliasTxt}` : "") + `<br>多平台 DeepSeek-V4.1-Flash 聚合 · 负载均衡 + 故障转移</div>
+    ${chHtml}
+    <div class="ucue"><span>通道明细</span><span class="arr">›</span></div>
+  </div>`;
+}
+/* ── DS-Flash 统一池明细弹窗：点大池子卡片打开（通道级实时态 + 路由）── */
+function openDsflashDetail(){
+  PROV_PID = "dsflash"; PROV_LOADED = true; PROV_ACCT = null;
+  $("#provMask").style.display = "flex";
+  renderDsflashDetail();
+}
+function _dsflashChannelRows(chs){
+  /* 按平台分组，组内按账号名 → 模型行排序，保证刷新不跳行 */
+  const byProv = {};
+  chs.forEach(c=>{ (byProv[c.prov] = byProv[c.prov] || []).push(c); });
+  const PROV_CN = {wbai:"WB国际", codearts:"CodeArts", officeace:"果办"};
+  return Object.keys(byProv).sort().map(prov=>{
+    const rows = byProv[prov].slice().sort((a,b)=>
+      String(a.name||"").localeCompare(String(b.name||"")) ||
+      String(a.model||"").localeCompare(String(b.model||"")));
+    const okN = rows.filter(c=>!c.cooling).length;
+    const inflight = rows.reduce((s,c)=>s+(+c.in_flight||0), 0);
+    const cap = rows.reduce((s,c)=>s+(+c.max_conn||0), 0);
+    const pcn = PROV_CN[prov] || prov;
+    const head = `<div class="pr-group"><div class="pr-glabel">${esc(pcn)} · ${rows.length} 通道 · ` +
+      `并发上限 ${cap}（可用 ${okN} · 在途 ${inflight}）</div><div class="acctlist">`;
+    const body = rows.map(c=>{
+      const tag = _dsflashTag(c.model);
+      const sat = +c.in_flight >= +c.max_conn;
+      // 冷却（临时禁用）展示「禁用至 HH:MM:SS · 到点自动放出」
+      let tone = "ok", toneTxt = "可用";
+      if(c.cooling){
+        tone = "cool";
+        let until = "";
+        if(c.cool_until){ const d = new Date(c.cool_until*1000);
+          until = ` ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}:${String(d.getSeconds()).padStart(2,"0")} 放出`; }
+        toneTxt = "禁用" + until;
+      } else if(sat){ tone = "pending"; toneTxt = "饱和"; }
+      return `<div class="acctrow" title="${esc(c.prov)} / ${esc(c.name)} / ${esc(c.model)}">` +
+        `<span class="anm">${esc(c.name || "—")}<small style="opacity:.65"> ${esc(tag)}</small></span>` +
+        `<span class="ast ${tone}">${esc(toneTxt)} · ${c.in_flight}/${c.max_conn}</span></div>`;
+    }).join("");
+    return head + body + `</div></div>`;
+  }).join("");
+}
+function renderDsflashDetail(){
+  const I = API_MODELS || API_INFO || {};
+  const D = I.dsflash || {};
+  const chs = D.channels || [];
+  const okN = chs.filter(c=>!c.cooling).length;
+  const inflight = chs.reduce((s,c)=>s+(+c.in_flight||0), 0);
+  const cap = chs.reduce((s,c)=>s+(+c.max_conn||0), 0);
+  const provN = new Set(chs.map(c=>c.prov)).size;
+  const STRAT = {round_robin:"轮询（均匀）", least_conn:"最少连接", weighted:"按权重"};
+  const nodeStyle = `color:${DSFLASH_CLR};border-color:${DSFLASH_CLR}44;background:${DSFLASH_CLR}12`;
+  $("#provTitle").textContent = "DS-Flash 统一池 · 通道明细";
+  $("#provHero").innerHTML = [
+    {k:"通道可用", pct: chs.length ? Math.round(okN*100/chs.length) : null,
+     center:`${okN}/${chs.length}`, v:`${okN} <small>/ ${chs.length}</small>`,
+     sub: chs.length ? (okN === chs.length ? "全部在线" : `${chs.length - okN} 个禁用中`) : "暂无通道"},
+    {k:"并发在途", pct: cap ? Math.round(inflight*100/cap) : null,
+     center:`${inflight}/${cap}`, v:`${inflight} <small>/ ${cap}</small>`,
+     sub:"在途请求 / 各通道并发上限之和"},
+    {k:"接入平台", pct:null, center:`${provN}`, v:`${provN} <small>个平台</small>`,
+     sub:"账号通道聚合来源"},
+  ].map(c=>`<div class="ovt">${_ring(c.pct, "dsflash", 56, 6, c.center)}` +
+    `<div class="ovt-main"><div class="ovt-k">${esc(c.k)}</div><div class="ovt-v">${c.v}</div>` +
+    `<div class="ovt-s">${esc(c.sub)}</div></div></div>`).join("");
+  $("#provAcctTabs").innerHTML = "";
+  $("#provAccounts").innerHTML = chs.length
+    ? _dsflashChannelRows(chs)
+    : `<div class="prov-loading"><span>暂无可用通道（各平台均无 DS4.1-Flash 账号）</span></div>`;
+  const aliasTxt = (D.aliases||[]).filter(a=>a !== (D.virtual_model || "ds-flash"))
+    .map(a=>`<code>${esc(a)}</code>`).join(" / ");
+  $("#provRoutes").innerHTML =
+    `<div class="pr-head"><span class="pr-t">路由</span><span class="pr-s">虚拟模型 → 统一池</span></div>` +
+    `<div class="pr-flow">` +
+      `<span class="pr-node" style="${nodeStyle}"><i></i>${esc(D.virtual_model || "ds-flash")}</span>` +
+      `<span class="pr-arrow">→</span>` +
+      `<span class="pr-node" style="${nodeStyle}"><i></i>DS-Flash 统一池</span></div>` +
+    (aliasTxt ? `<div class="pr-group"><div class="pr-glabel">兼容别名（同一接口）</div>` +
+      `<div class="pr-chips">${aliasTxt}</div></div>` : "") +
+    `<div class="pr-group"><div class="pr-glabel">调度策略 · ${esc(STRAT[D.strategy] || D.strategy || "轮询（均匀）")}</div>` +
+    `<div class="rchain"><span class="rchip">跳过饱和通道</span><span class="pr-arrow">›</span>` +
+    `<span class="rchip">跳过禁用通道</span><span class="pr-arrow">›</span>` +
+    `<span class="rchip">预读首帧遇错自动切换</span><span class="pr-arrow">›</span>` +
+    `<span class="rchip">故障转移下一通道</span></div></div>`;
+  $("#provUpdated").textContent = "实时态 · " + new Date().toLocaleTimeString("zh-CN",{hour12:false});
 }
 function renderProxyStatus(I){
   const box = $("#proxyStatus");
@@ -2865,11 +3064,8 @@ function renderProxyStatus(I){
   }
   box.innerHTML = ps.map(p=>{
     const clr = PLAT_CLR[p.id] || "#5f5e5a";
-    // TeleAgent 为「有意保留的可配置上游」：无账号时显中性「未配置」，不报红色异常
-    const idle = (p.id === "teleagent" && !p.account);
     let stCls = "ok", stTxt = "可用";
-    if(idle){ stCls = "idle"; stTxt = "未配置"; }
-    else if(p.error){ stCls = "bad"; stTxt = "异常"; }
+    if(p.error){ stCls = "bad"; stTxt = "异常"; }
     /* 卡片只做概览：两条额度条 + 每号状态；点整卡看账号明细与路由 */
     const pool = p.pool || null;
     const coolMap = (pool && pool.cool) || {};
@@ -2898,7 +3094,7 @@ function renderProxyStatus(I){
           `${_bar(Math.round(sn * 100 / sk.length), "signin")}` +
           `<span class="qv">${sn}/${sk.length}</span></div></div>`;
       } else {
-        bars = `<div class="qnote">${idle ? "接入后显示额度" : (names.length ? "该上游暂无额度接口" : "未配置账号")}</div>`;
+        bars = `<div class="qnote">${names.length ? "该上游暂无额度接口" : "未配置账号"}</div>`;
       }
     }
     const okN = names.filter(nm=>!coolMap[nm]).length;
@@ -2914,18 +3110,20 @@ function renderProxyStatus(I){
           `限流 ${lm.length} 模型 · ${_fmtHM(lm[0].until)} 恢复</span>` : "") +
         `<span class="ast ${tone.cls}">${esc(tone.text)}</span></div>`;
     }).join("")}</div>` : "";
-    const note = idle
-      ? `<div class="uidle">未配置账号 · 点击卡片查看接入方式</div>`
-      : (p.error ? `<div class="uerr" title="${esc(p.error)}">⚠ ${esc(p.error)}</div>`
-        : (q && q.error ? `<div class="uerr" title="${esc(q.error)}">⚠ ${esc(q.error)}</div>` : ""));
+    const note = (p.error ? `<div class="uerr" title="${esc(p.error)}">⚠ ${esc(p.error)}</div>`
+      : (q && q.error ? `<div class="uerr" title="${esc(q.error)}">⚠ ${esc(q.error)}</div>` : ""));
     return `<div class="upcard clickable" data-pid="${p.id}" style="border-top:3px solid ${clr}">
       <div class="uhead"><span class="dot2" style="background:${clr}"></span>${esc(p.label || p.id)}<span class="st ${stCls}">${stTxt}</span></div>
       ${sum}${_limChipHtml(lim)}${bars}${acctHtml}${note}
       <div class="ucue"><span>额度 · 路由</span><span class="arr">›</span></div>
     </div>`;
-  }).join("");
+  }).join("") + (I.dsflash ? _dsflashCardHtml(I.dsflash) : "");
   box.querySelectorAll('.upcard[data-pid]').forEach(c=>{
-    c.addEventListener('click', ()=> openProvDetail(c.dataset.pid));
+    if(c.dataset.pid === "dsflash"){
+      c.addEventListener('click', ()=> openDsflashDetail());
+    }else{
+      c.addEventListener('click', ()=> openProvDetail(c.dataset.pid));
+    }
   });
   // 异步填充每号额度（有池且未拉过才拉；齐了整卡重绘一次）
   ps.forEach(p=>{
@@ -2941,10 +3139,7 @@ function renderProxyStatus(I){
   const cnt = $("#proxyRefreshBtn");
   if(cnt){
     const okN = ps.filter(p=>!p.error).length;
-    const idleN = ps.filter(p=>p.id==="teleagent" && !p.account).length;
-    let tip = `${ps.length} 个上游 · ${okN} 可用`;
-    if(idleN) tip += ` · ${idleN} 未配置`;
-    cnt.title = tip;
+    cnt.title = `${ps.length} 个上游 · ${okN} 可用`;
   }
 }
 async function refreshProxyStatus(){
@@ -2963,13 +3158,13 @@ async function refreshProxyStatus(){
     ((I || {}).providers || []).forEach(p=>{
       if(p.pool && p.pool.n) fetchPoolQuota(p.id, true).then(d=>{ if(d) renderProxyStatus(API_MODELS); });
     });
-    buildRailTree();                 // 同步刷新左栏「反代面板」子类（四上游）
+    buildRailTree();                 // 同步刷新左栏「反代面板」子类（上游卡片）
     renderListColIfProxy();           // 模型目录就绪 → 中栏从「加载中」变实列表
   }catch(e){
     API_MODELS = null;
     API_MODELS_ERR = true;
     renderListColIfProxy();
-    box.innerHTML = `<div class="upcard ph"><div class="pht">后端未连接</div>无法读取四上游状态，请确认看板服务在运行</div>`;
+    box.innerHTML = `<div class="upcard ph"><div class="pht">后端未连接</div>无法读取上游状态，请确认看板服务在运行</div>`;
   }
 }
 
@@ -2989,6 +3184,8 @@ function _copyFallback(txt, done){
   document.body.removeChild(ta);
 }
 function _apiProviderOf(model){
+  const ds = (API_INFO && API_INFO.dsflash);
+  if(ds && [ds.virtual_model].concat(ds.aliases||[]).includes(model)) return "dsflash";
   const ps = (API_INFO && API_INFO.providers) || [];
   const hit = ps.find(p => (p.models||[]).includes(model));
   return hit ? hit.id : "codearts";
@@ -3016,6 +3213,17 @@ function _fillModelSelect(keep){
       `</optgroup>`;
     n += ms.length;
   }
+  /* DS-Flash 统一池：虚拟模型（跨平台聚合），不在任何上游 models 里，单独成组。
+     只展示一个入口 ds-flash；deepseek-v4.1-flash 等别名后端同样路由到统一池，
+     但 UI 上不重复列出，避免「四个接口」的误解 —— 聚合只有一个接口。 */
+  const ds = (API_INFO && API_INFO.dsflash);
+  if(ds && ds.virtual_model){
+    if(!firstAvail) firstAvail = ds.virtual_model;
+    html += `<optgroup label="DS-Flash 统一池（多平台聚合，仅此一个接口）" style="color:${DSFLASH_CLR}">` +
+      `<option value="${ds.virtual_model}" style="background:${DSFLASH_TINT}">${ds.virtual_model}</option>` +
+      `</optgroup>`;
+    n += 1;
+  }
   sel.innerHTML = html || `<option value="">${kw ? "（无匹配模型）" : "（加载中…）"}</option>`;
   if(prev && [...sel.options].some(o=>o.value===prev)) sel.value = prev;
   else if(firstAvail) sel.value = firstAvail;
@@ -3027,8 +3235,25 @@ function _apiMetaRefresh(filtered){
   const pid = _apiProviderOf(m);
   const p = ((I.providers||[]).find(x=>x.id===pid)) || {};
   const total = (I.providers||[]).reduce((s,x)=>s+(x.models?x.models.length:0), 0);
-  const clr = PLAT_CLR[pid] || "#5f5e5a";
-  const lbl = p.label || pid;
+  let clr = PLAT_CLR[pid] || "#5f5e5a";
+  let lbl = p.label || pid;
+  /* DS-Flash 统一池：虚拟模型，无对应 provider，单独展示聚合信息 */
+  if(pid === "dsflash"){
+    const ds = I.dsflash || {};
+    clr = DSFLASH_CLR;
+    lbl = "DS-Flash 统一池";
+    const STRAT = {round_robin:"轮询（均匀）", least_conn:"最少连接", weighted:"按权重"};
+    const pills = [];
+    const chs = ds.channels || [];
+    if(chs.length) pills.push(`<span class="rt-pill">${chs.length} 通道（${chs.filter(c=>!c.cooling).length} 可用）</span>`);
+    pills.push(`<span class="rt-pill">策略：${esc(STRAT[ds.strategy] || ds.strategy)}</span>`);
+    $("#apiMeta").innerHTML = m
+      ? `<div class="apiroute"><span class="rt-model">${esc(m)}</span><span class="rt-arrow">→</span>` +
+        `<span class="rt-prov" style="color:${clr};border-color:${clr}44;background:${clr}12"><i></i>${esc(lbl)}</span>` +
+        `${pills.join("")}</div>`
+      : "";
+    return;
+  }
   const pool = p.pool || null;
   const coolN = pool ? Object.keys(pool.cool || {}).length : 0;
   const pills = [];
@@ -3054,26 +3279,20 @@ async function openApi(prefillPid){
     const fill = I => {
     API_INFO = I;                     // 只在成功路径调用；失败不放占位进来
     $("#apiErr").textContent = "";
-    $("#apiNote").textContent = ""; $("#apiNote").style.display = "none";
     // 逐上游报错（哪个上游不可用就提示哪个，不整弹窗报错）
-    // TeleAgent 为「有意保留的可配置上游」：无账号时只给中性提示，不报红错
-    const errs = [], notes = [];
+    const errs = [];
     for(const p of (I.providers||[])){
-      if(!p.error) continue;
-      if(p.id === "teleagent" && !p.account){
-        notes.push(`ℹ ${p.label}：未配置账号，接入后可用`);
-      } else {
-        errs.push(`⚠ ${p.label}：${p.error}`);
-      }
+      if(p.error) errs.push(`⚠ ${p.label}：${p.error}`);
     }
     $("#apiErr").textContent = errs.join("\n");
-    if(notes.length){ $("#apiNote").textContent = notes.join("\n"); $("#apiNote").style.display = "block"; }
     $("#apiUrl").value = I.base_url || "";
     $("#apiKey").value = I.auth_required
       ? (I.api_key || "(后端设置了 Key 但未取到值)") : "（未设置，无需 API Key）";
     _fillModelSelect($("#apiModelSel").value);
     // 点击某上游卡进入：自动把模型下拉定位到该上游的默认模型
-    if(prefillPid){
+    if(prefillPid === "dsflash"){
+      _dsflashSelect();               // 大池子明细进来：定位虚拟模型 ds-flash
+    }else if(prefillPid){
       const pr = (I.providers||[]).find(x=>x.id===prefillPid);
       if(pr && pr.default_model){
         const sel = $("#apiModelSel");
@@ -3082,7 +3301,7 @@ async function openApi(prefillPid){
         }
       }
     }
-    renderProxyStatus(I);   // 反代面板的四上游状态卡顺手刷新
+    renderProxyStatus(I);   // 反代面板的上游状态卡顺手刷新
     renderListColIfProxy(); // 中栏模型列表顺手同步（可能刚在反代视图打开过弹窗）
   };
   const fail = () => {
@@ -3114,6 +3333,16 @@ $("#provAcctTabs").addEventListener("click", e=>{
 $("#provRefresh").addEventListener("click", ()=>{
   if(!PROV_PID) return;
   const pid = PROV_PID;
+  if(pid === "dsflash"){
+    // 统一池没有 pool_quota 接口：刷新 = 重拉 /api/proxy_info 的通道实时态
+    $("#provUpdated").textContent = "正在刷新通道状态…";
+    refreshProxyStatus().then(()=>{
+      if(PROV_PID !== "dsflash") return;
+      renderDsflashDetail();
+      toast("通道状态已刷新", "ok");
+    });
+    return;
+  }
   PROV_LOADED = false;
   $("#provUpdated").textContent = "正在刷新额度…";
   renderProvDetail();
@@ -3463,6 +3692,65 @@ $("#tbSave") && $("#tbSave").addEventListener("click", async ()=>{
   }else{
     addMsg("❌ "+j.msg, false);
   }
+});
+/* 豆包：手动粘贴 Cookie（本地浏览器 Cookie 库被客户端进程独占，暂只支持粘贴） */
+$("#dbSave") && $("#dbSave").addEventListener("click", async ()=>{
+  const cookie = $("#dbCookie").value.trim();
+  if(!cookie){ addMsg("请先粘贴豆包网页版（www.doubao.com）登录后的完整 Cookie", false); return; }
+  if(!BACKEND_OK){ addMsg("未连接本地后端，无法保存", false); return; }
+  addMsg("正在保存…", true);
+  let j;
+  try{
+    j = await apiPost("/api/account/add", {platform:"doubao", cookie,
+      campaign_group_code: $("#dbCode").value.trim(), name: $("#dbName").value.trim()});
+  }catch(e){ j = {ok:false, msg:"保存失败："+(e.message||e)}; }
+  if(j.ok){
+    addMsg("✅ "+j.msg, true);
+    setTimeout(closeAdd, 900); await load(true, "doubao");
+  }else{
+    addMsg("❌ "+j.msg, false);
+  }
+});
+/* 豆包：网页登录（弹可见浏览器，用户手动登录 → 抓整条 Cookie 落盘）
+   后端 browser_login('doubao') 打开 www.doubao.com/chat/，全程不代点，
+   检测到 sessionid / sessionid_ss 落地即抓整条 Cookie 保存 */
+$("#dbWebLogin") && $("#dbWebLogin").addEventListener("click", async ()=>{
+  if(!BACKEND_OK){ addMsg("未连接本地后端，无法发起网页登录", false); return; }
+  const btn = $("#dbWebLogin"), old = btn.textContent;
+  btn.disabled = true; btn.textContent = "🌐 正在打开登录窗口…";
+  addMsg("正在拉起浏览器，请在弹出的窗口里手动登录豆包（手机号/扫码均可，看板不代点）…", true);
+  let j;
+  try{
+    j = await apiPost("/api/account/browser_login",
+      {platform:"doubao", name: $("#dbName").value.trim()});
+  }catch(e){ j = {ok:false, msg:"发起失败："+(e.message||e)}; }
+  if(!j.ok){ btn.disabled=false; btn.textContent=old; addMsg("❌ "+j.msg, false); return; }
+  const txt = $("#dbWebTxt");
+  if(txt){ txt.style.display="block"; txt.textContent="等待你在浏览器里完成豆包登录…"; }
+  const t0 = Date.now(), limit = 360000;
+  while(Date.now() - t0 < limit){
+    await sleep(2000);
+    let s;
+    try{
+      s = await fetch("/api/account/browser_login_status?job="+encodeURIComponent(j.job),
+                      {cache:"no-store"}).then(r=>r.json());
+    }catch(e){ continue; }
+    if(txt && s && s.text) txt.textContent = s.text;
+    if(s && s.finished){
+      if(txt) txt.style.display = "none";
+      btn.disabled = false; btn.textContent = old;
+      if(s.ok){
+        addMsg("✅ "+(s.result||"已保存豆包账号"), true);
+        setTimeout(closeAdd, 900); await load(true, "doubao");
+      }else{
+        addMsg("❌ "+(s.result||"登录未完成"), false);
+      }
+      return;
+    }
+  }
+  if(txt) txt.style.display = "none";
+  btn.disabled = false; btn.textContent = old;
+  addMsg("⏰ 等待超时，请重新点一次网页登录", false);
 });
 /* WorkBuddy AI（国际版）：网页 OAuth 登录（Google / GitHub / X）
    后端弹可见 Chromium → 用户授权 → 拦截 /console/login/enterprise 的 accessToken 落盘 */

@@ -24,6 +24,7 @@ import cred_store
 from cred_store import save_cred as _save_cred
 from logstore import log, LOG
 from registry import PLATFORMS
+from errors import sanitize_client_message
 
 CACHE_TTL = 60
 _state_cache = {"at": 0, "data": None}
@@ -216,7 +217,7 @@ def run_tasks(platform, names=None, tasks=("checkin",), chat_text=None, job=None
             try:
                 r = mod.run_task(name, ent, tk)
             except Exception as e:
-                r = {"ok": False, "msg": str(e)[:80]}
+                r = {"ok": False, "msg": sanitize_client_message(503, str(e))[:120]}
             st = {"task": tk, "ok": bool(r.get("ok")),
                   "msg": r.get("msg") or ("完成" if r.get("ok") else "失败")}
             item["steps"].append(st)
@@ -257,7 +258,7 @@ def run_job(jid, platform, names, tasks, chat_text):
         job["state"] = res.get("state")
         job["error"] = res.get("error")
     except Exception as e:
-        job["error"] = str(e)[:200]
+        job["error"] = sanitize_client_message(500, str(e))[:200]
         log("任务异常：%s" % str(e)[:120])
     finally:
         job["finished"] = True
@@ -335,6 +336,12 @@ def _run_blogin(jid, platform, name):
                 except Exception:
                     rec = {"token": cred, "via_browser": True}
                 rec.setdefault("via_browser", True)
+            elif platform == "doubao":
+                # 网页登录抓到的整条 Cookie 串：与「粘贴 Cookie」同构，
+                # 走 ensure_identity 回填稳定身份（uid_tt/odin_tt）避免重复建卡
+                rec = {"cookie": cred, "via_browser": True,
+                       "source": "网页登录（豆包网页版）"}
+                cred_store.ensure_identity("doubao", rec)
             else:
                 rec = {"access_token": cred, "via_browser": True}
             use = _save_cred(platform, rec, name)

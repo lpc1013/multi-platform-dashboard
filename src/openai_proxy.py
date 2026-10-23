@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-OpenAI 兼容反代：把 CodeArts Agent 的免费模型额度暴露为本机 OpenAI API。
+OpenAI 兼容反代：把 CodeArts Agent 等平台的模型额度暴露为本机 OpenAI API。
 ════════════════════════════════════════════════════════════════════════
 协议（2026-10-12 实测验证，另参考 github.com/HITZY2002/codearts2api 逆向记录）：
 
@@ -10,17 +10,21 @@ OpenAI 兼容反代：把 CodeArts Agent 的免费模型额度暴露为本机 Op
           请求体原生 OpenAI 形状（model/messages/stream/max_tokens/temperature/…）
           + chat_id（32hex）+ prompt_cache_key + tool_stream:true
           + Chat-Id / Session-Id 头（prompt cache 亲和）
-          ⚠ 福利模型（每日免费额度）必须带头 maas_type: benefit，
-            否则 InferHub.002002009.404 model is not registered
+          ⚠ 2026-10-22：CodeArts 撤掉「每日 1000 万免费 token」福利，改为积分制。
+            旧代码对福利模型带头 maas_type: benefit → 现在恒回
+            InferHub.4004.200 benefit not found；**不带头**即走积分计费
+            （实测 86 tokens = 0.01 积分，正常流式返回）。
   模型    GET /v1/model/builtin（内置，计积分）
-          GET {opengw}/api/v1/gateway/config（福利/免费额度模型）
+          GET {opengw}/api/v1/gateway/config（网关模型目录）
   响应    SSE：本身就是 OpenAI chat.completion.chunk 形状（含 reasoning_content、
           usage、finish_reason、data:[DONE]），可直接透传。
 
 限制（如实说明）：
-  - 每日额度按账号计（福利模型 daily_token_limit），上游有并发/TPM 限制；
+  - 每账号上游并发会话上限 3（TM.00001041）；高并发瞬时错误（429/并发上限/
+    5xx/空流/连接层）由反代自动退避重连（默认最多 14 次、总预算 90s，
+    可用 DASHBOARD_PROXY_RETRY_BUDGET 调整），客户端无感；
   - tool_choice 对象形态上游会报参数错误（上游限制）；
-  - 多模态消息透传，福利模型不支持图片时上游报错原样返回。
+  - 多模态消息透传，模型不支持图片时上游报错原样返回。
 """
 import hashlib
 import itertools
@@ -34,10 +38,8 @@ import uuid
 import requests
 
 import platforms.codearts as cap
-import platforms.teleagent as tat
 import platforms.officeace as oac
 import platforms.workbuddy_ai as wai
-import platforms.tabbit as tbt
 
 SNAP = "https://snap-access.cn-north-4.myhuaweicloud.com"
 OPENGW = "https://opengw.developer.huaweicloud.com"
@@ -45,7 +47,9 @@ EP_CHAT = "/api/v2/chat/completions"
 EP_MODELS = "/v1/model/builtin"
 EP_GWCFG = "/api/v1/gateway/config"
 
-# 冷启动种子：福利网关临时故障时兜底（宁可多带 maas_type，少带必 404）
+# 冷启动种子：网关目录（原「福利模型」列表）临时故障时兜底。
+# 2026-10-22 起这些模型改积分计费，目录仍用于「模型归属判定」
+# （relay 里决定交集名归 CodeArts 还是果办），与计费方式解耦。
 _SEED_BENEFIT = {"deepseek-v4-flash-0731", "deepseek-v4-pro-0813",
                  "glm-5.3-flash", "deepseek-v4.1-flash"}
 
@@ -99,7 +103,9 @@ def gate(handler):
     return True
 
 
-from errors import UpstreamError   # noqa: E402  统一异常体系（保持 (status, message) 旧签名）
+from errors import (UpstreamError,
+                     sanitize_client_message as _client_err_msg,
+                     _QUOTA_HINTS)   # noqa: E402  统一异常体系（保持 (status, message) 旧签名）
 
 
 def _pick_freshest(d):
@@ -132,31 +138,31 @@ def _load_ent():
     return name, ent
 
 
-# ── TeleAgent 上游（星辰，2026-10-14 实测打通）──────────────
-# 路由规则：model 命中 tat.CHAT_MODELS → TeleAgent；其余（含空）→ CodeArts。
-# 两套模型名无交集，客户端只靠 model 字段即可选上游。
-TA_MODELS = set(tat.CHAT_MODELS)
-
 # ── WorkBuddy 国际版上游（workbuddy.ai，2026-10-16 实测打通）──────────────
 # 路由规则：`wb:` 前缀 → 国际版（如 wb:glm-5.2 / wb:gpt-5.5 / wb:auto）。
 # 国际版模型名与 CodeArts/OfficeACE 大量交集（glm/kimi/deepseek 系），
 # 用命名空间前缀隔离（buddy-proxy 同思路），客户端改前缀即切上游。
 WBAI_PREFIX = "wb:"
 
-# ── Tabbit 上游（web.tabbit.com / web.tabbit.ai，2026-10-19 逆向打通）──────────────
-# 路由规则：`tb:` 前缀 → Tabbit（如 tb:Default / tb:GPT-5.6-Sol）。
-# Tabbit 模型名与 CodeArts/OfficeACE/WBAI 均有交集（GLM/Kimi/DeepSeek 系），
-# 同样用命名空间前缀隔离；免费周额计量模型签到/每日额度归 Tabbit 账号。
-TB_PREFIX = "tb:"
+# ── DS-Flash 统一池虚拟模型名（多平台 DeepSeek-V4.1-Flash 聚合入口）──────────────
+# 详见文件「DS-Flash 统一池」一节：请求 ds-flash 即把 WB国际版 / CodeArts /
+# OfficeACE 上所有可用的 DeepSeek-V4.1-Flash 账号（含 WB 付费行）聚合成
+# 「一个接口」，负载均衡 + 故障转移。客户端用 model=ds-flash /
+# deepseek-v4.1-flash / ds4.1-flash 任一写法均可，其余 OpenAI 参数不变。
+# ⚠ 2026-10-22：Tabbit / TeleAgent 两个上游已下架（用户反馈「不太行」），
+# 其路由/池/前端接口一并移除；账号管理（导入/登录/签到）不受影响。
+DSFLASH_MODEL = "ds-flash"
+DSFLASH_ALIASES = {"ds-flash", "ds4.1-flash", "ds4.1flash", "deepseek-v4.1-flash"}
 
 
 def route_of(model):
     m = str(model or "").strip()
-    if m.lower().startswith(WBAI_PREFIX):
+    ml = m.lower()
+    if ml in DSFLASH_ALIASES:
+        return "dsflash"
+    if ml.startswith(WBAI_PREFIX):
         return "wbai"
-    if m.lower().startswith(TB_PREFIX):
-        return "tabbit"
-    return "teleagent" if m.lower() in TA_MODELS else "codearts"
+    return "codearts"
 
 
 def _wbai_ent():
@@ -183,7 +189,7 @@ def _wbai_ent():
 # 规则：同平台账号按「未冷却优先 + 有效期新→旧」排序；每个请求先试第一个号，
 # 命中「额度耗尽 / 鉴权失效 / 429」即冷却该号（30 分钟）并自动换下一个。
 # 换号判定发生在「首个 chunk 到达之前」，不会重复输出、客户端完全无感。
-# 覆盖：codearts / officeace / teleagent / tabbit / wbai。
+# 覆盖：codearts / officeace / wbai（Tabbit / TeleAgent 2026-10-22 下架）。
 _POOL_COOL = {}
 _POOL_COOL_SEC = 1800
 _POOL_LOCK = threading.Lock()
@@ -221,17 +227,6 @@ def _pool_spec(provider):
         return (oac.load_accounts,
                 lambda e: oac._expired(e) is not True,
                 lambda e: e.get("expires_at"), "OfficeACE")
-    if provider == "teleagent":
-        return (tat.load_accounts,
-                lambda e: (lambda t: (not t) or t > time.time())(
-                    tat._jwt_payload((e or {}).get("token") or "").get("exp") or 0),
-                lambda e: tat._jwt_payload((e or {}).get("token") or "").get("exp") or 0,
-                "TeleAgent")
-    if provider == "tabbit":
-        return (tbt.load_accounts,
-                lambda e: bool(tbt._cookie_of(e))
-                          and (tbt.token_exp(e) or 0) > time.time(),
-                lambda e: tbt.token_exp(e) or 0, "Tabbit")
     return (wai.load_accounts,
             lambda e: bool(e.get("token") or e.get("refresh_token")),
             lambda e: e.get("expires_at"), "WorkBuddy 国际版")
@@ -290,10 +285,12 @@ def _pool_ents(provider):
 
 def _pool_cool(provider, name, why, sec=None):
     """账号冷却（额度耗尽 / 鉴权失效），窗口内优先用别的号。
-    sec 可指定短冷却：瞬时态错误（如并发上限）不该拉黑 30 分钟。"""
+    sec 可指定短冷却：瞬时态错误（如并发上限）不该拉黑 30 分钟。
+    落盘在锁外：_cool_save 内部要拿 _POOL_LOCK 做快照，避免自锁。"""
     sec = int(sec or _POOL_COOL_SEC)
     with _POOL_LOCK:
         _POOL_COOL.setdefault(provider, {})[name] = time.time() + sec
+    _cool_save()
     try:
         import server as srv
         srv.log("[proxy:%s] 账号 %s 冷却 %ds（%s）"
@@ -358,14 +355,6 @@ def _pool_open(provider, name, ent, body):
         return _chat_stream(ent, body)
     if provider == "officeace":
         return oac.chat_stream(ent, body)
-    if provider == "teleagent":
-        return tat.chat_stream(ent, body)
-    if provider == "tabbit":
-        b = dict(body)
-        mb = str(b.get("model") or "").strip()
-        if mb.lower().startswith(TB_PREFIX):
-            b["model"] = mb[len(TB_PREFIX):]
-        return tbt.chat_stream(ent, b)
     # wbai
     b = dict(body)
     mb = str(b.get("model") or "").strip()
@@ -418,6 +407,19 @@ def _open_pool(provider, openai_body):
             continue
 
         why = _pool_err_of(first)
+        if not why:
+            # 高并发时上游首帧直接回 429/5xx 错误帧：换号 + 短冷却 60s，
+            # last_err 记 429（可重试）——全号失败时 relay 会退避重连整池，
+            # 而不是把 502 弹给客户端让人工重试。参数类 4xx 不换号（_frame_retryable）。
+            ferr = _frame_err(first)
+            if ferr and _frame_retryable(*ferr):
+                _pool_cool(provider, name, "首帧错误 %s %s" % ferr, sec=60)
+                last_err = UpstreamError(429, ("%s %s" % ferr)[:200])
+                try:
+                    it.close()
+                except Exception:
+                    pass
+                continue
         if why:
             _pool_cool(provider, name, why)
             last_err = UpstreamError(502, why)
@@ -597,6 +599,114 @@ _WBAI_WAITING = {}                            # id -> {acct, model, until, code}
 _WBAI_EV_LOCK = threading.Lock()
 
 
+# ── 冷却态持久化（2026-10-22 用户要求「模型重置可使用时间要持久化保留」）────
+# 两类冷却都是「上游还没恢复、本地先避让」的状态，曾为纯内存：看板一重启，
+# 「WB国际某号 6004 限到 20:00 / CodeArts 某号 429 冷到 20:30」这类信息即丢，
+# 重启后反代立刻拿这些号去打 → 客户端连续撞限流/502，要等再次撞上限才重新
+# 冷却。现落盘 proxy_cool.json（与 proxy_usage.json 同目录、同原子写），
+# 导入时恢复未过期项。只存「账号名/模型名 + epoch」，无任何凭据。
+try:
+    import data_dir as _dd
+    COOL_FILE = _dd.path("proxy_cool.json")
+except ImportError:
+    COOL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "proxy_cool.json")
+_COOL_SAVE_LOCK = threading.Lock()
+
+
+def _cool_key(name, model):
+    """(账号, 模型行) → 扁平 key。模型名小写，与 _WBAI_ML_COOL 的键口径一致。"""
+    return "%s|%s" % (str(name or "")[:80], str(model or "").lower()[:80])
+
+
+def _cool_snapshot():
+    """两类冷却的未过期快照。_POOL_COOL 持锁快照；_WBAI_ML_COOL 无锁遍历
+    （修改点都会再触发 save，尽力而为，单次漏写下次补上）。"""
+    now = time.time()
+    ml = {}
+    for (nm, mdl), ts in list(_WBAI_ML_COOL.items()):
+        if ts > now:
+            ml[_cool_key(nm, mdl)] = int(ts)
+    pool = {}
+    with _POOL_LOCK:
+        for prov, m in list(_POOL_COOL.items()):
+            keep = {n: int(t) for n, t in list((m or {}).items()) if t > now}
+            if keep:
+                pool[prov] = keep
+    return {"v": 1, "ml": ml, "pool": pool}
+
+
+def _cool_save():
+    """全量原子写。只在冷却**设置**时调（限流/换号非热路径，可同步写）。
+    测试进程不落盘——避免 pytest 构造的假冷却污染线上文件。"""
+    try:
+        from logstore import _under_test
+        if _under_test():
+            return
+    except Exception:
+        pass
+    try:
+        with _COOL_SAVE_LOCK:
+            d = _cool_snapshot()
+            tmp = COOL_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(d, fh, ensure_ascii=False)
+            os.replace(tmp, COOL_FILE)      # Windows 原子替换
+    except Exception:
+        pass                                # 写失败不影响对话，下次设置时再写
+
+
+def _cool_load():
+    """模块导入时恢复未过期的冷却态（看板重启不丢「禁用至 HH:MM:SS 放出」）。
+    测试进程不自动加载：避免真实冷却态干扰断言，验证恢复逻辑的用例显式调用。"""
+    try:
+        from logstore import _under_test
+        if _under_test():
+            return
+    except Exception:
+        pass
+    try:
+        d = json.load(open(COOL_FILE, encoding="utf-8"))
+    except Exception:
+        return
+    if not isinstance(d, dict):
+        return
+    now = time.time()
+    n = 0
+    for k, ts in (d.get("ml") or {}).items():
+        try:
+            ts = float(ts)
+        except Exception:
+            continue
+        if ts <= now:
+            continue                        # 已过期：恢复即清理
+        nm, _, mdl = str(k).rpartition("|")   # 账号名可能含 "|"，模型段在最后
+        _WBAI_ML_COOL[(nm, mdl)] = ts
+        n += 1
+    for prov, m in (d.get("pool") or {}).items():
+        if not isinstance(m, dict):
+            continue
+        for nm, ts in list(m.items()):
+            try:
+                ts = float(ts)
+            except Exception:
+                continue
+            if ts <= now:
+                continue
+            _POOL_COOL.setdefault(prov, {})[nm] = ts
+            n += 1
+    if n:
+        try:
+            import server as srv
+            srv.log("[proxy] 重启恢复冷却态 %d 条（%s）"
+                    % (n, os.path.basename(COOL_FILE)))
+        except Exception:
+            pass
+
+
+_cool_load()        # 导入即恢复：进程起来后旧的「重置时刻」依然生效
+
+
 def _wbai_event(code, acct, model, reset=None, msg=""):
     """记一条限流事件（环形缓冲，只留最近 40 条；不含任何凭据）。"""
     with _WBAI_EV_LOCK:
@@ -655,28 +765,32 @@ def _wbai_ml_hit(name, model):
 
 def _wbai_ml_limit(name, model, line, sec=None):
     """记录模型行限流冷却（从错误行解析重置时刻），返回人类可读的「HH:MM 重置」后缀。
-    sec：调用方明确的短冷却（14018 额度耗尽 / 瞬时态）；不给则按 6004 窗口处理。"""
-    ts = _wbai_reset_ts(line)
-    _wbai_event(_wbai_code_of(line), name, model, ts, line)
-    if ts:
+    sec：调用方明确的短冷却（14018 额度耗尽 / 瞬时态）；不给则按 6004 窗口处理。
+    finally 落盘：重启后「重置时刻」依然生效（2026-10-22 用户要求持久化保留）。"""
+    try:
+        ts = _wbai_reset_ts(line)
+        _wbai_event(_wbai_code_of(line), name, model, ts, line)
+        if ts:
+            _WBAI_ML_COOL[(name, str(model or "").lower())] = ts
+            return "（%s 重置）" % time.strftime("%H:%M", time.localtime(ts))
+        if sec:
+            ts = time.time() + int(sec)
+            _WBAI_ML_COOL[(name, str(model or "").lower())] = ts
+            return "（%d 分钟后自动重试）" % (int(sec) // 60 or 1)
+        # 14003「too many requests / 模型繁忙」是瞬时态：拉黑 5 小时会把整条免费链拖死
+        # （2026-10-20 实证：一次 14003 后 4 个免费行全被冷却 → 客户端连续 503）。
+        if "14003" in str(line) or "too many requests" in str(line).lower():
+            ts = time.time() + _WBAI_BUSY_COOL
+            _WBAI_ML_COOL[(name, str(model or "").lower())] = ts
+            return "（%d 秒后重试）" % _WBAI_BUSY_COOL
+        # 解析不到精确时刻：免费模型的 6004 是 24 小时 token 窗口（社区 #253 十几个
+        # 窗口样本一致），按 24h 冷；5 小时那一档是 magpie#1361 观测到的**次数**窗口，
+        # 只发生在付费模型上，别再拿它当免费行的兜底（2026-10-20 纠正）。
+        ts = time.time() + 24 * 3600
         _WBAI_ML_COOL[(name, str(model or "").lower())] = ts
-        return "（%s 重置）" % time.strftime("%H:%M", time.localtime(ts))
-    if sec:
-        ts = time.time() + int(sec)
-        _WBAI_ML_COOL[(name, str(model or "").lower())] = ts
-        return "（%d 分钟后自动重试）" % (int(sec) // 60 or 1)
-    # 14003「too many requests / 模型繁忙」是瞬时态：拉黑 5 小时会把整条免费链拖死
-    # （2026-10-20 实证：一次 14003 后 4 个免费行全被冷却 → 客户端连续 503）。
-    if "14003" in str(line) or "too many requests" in str(line).lower():
-        ts = time.time() + _WBAI_BUSY_COOL
-        _WBAI_ML_COOL[(name, str(model or "").lower())] = ts
-        return "（%d 秒后重试）" % _WBAI_BUSY_COOL
-    # 解析不到精确时刻：免费模型的 6004 是 24 小时 token 窗口（社区 #253 十几个
-    # 窗口样本一致），按 24h 冷；5 小时那一档是 magpie#1361 观测到的**次数**窗口，
-    # 只发生在付费模型上，别再拿它当免费行的兜底（2026-10-20 纠正）。
-    ts = time.time() + 24 * 3600
-    _WBAI_ML_COOL[(name, str(model or "").lower())] = ts
-    return "（约 %s 重置）" % time.strftime("%H:%M", time.localtime(ts))
+        return "（约 %s 重置）" % time.strftime("%H:%M", time.localtime(ts))
+    finally:
+        _cool_save()
 
 
 def _wbai_code_of(line):
@@ -885,49 +999,124 @@ def _open_wbai_pool(openai_body):
     raise last_err or UpstreamError(503, "WorkBuddy 国际版所有账号/模型均不可用")
 
 
-def _tb_ent():
-    """取 Tabbit 账号（多账号选 JWT exp 最晚者）。只判断不刷新——
-    cookie 登录态无刷新令牌，过期只能重新登录/导入。"""
-    import datetime
-    accs = tbt.load_accounts()
-    if not accs:
-        raise UpstreamError(503, "Tabbit 账号不存在，请先在看板「从本地客户端导入」"
-                                 "（需本机装有 Tabbit 浏览器并已登录网页版）")
-    def exp_of(item):
-        return (tbt.token_exp(item[1]) or 0)
-    name, ent = max(accs.items(), key=exp_of)
-    exp = exp_of((name, ent))
-    if exp and exp < time.time():
-        raise UpstreamError(503, "Tabbit 登录态已于 %s 过期（JWT ~7 天）。"
-                                 "请打开 Tabbit 浏览器重新登录网页版，再看板「从本地客户端导入」"
-                            % datetime.datetime.fromtimestamp(exp).strftime("%Y-%m-%d %H:%M"))
-    if not tbt._cookie_of(ent):
-        raise UpstreamError(503, "Tabbit 凭据不完整（缺 cookie），请重新导入")
-    return name, ent
-
-
 # ── CodeArts 上游并发闸门 ──
-# 华为福利网关限制并发会话 3 个（TM.00001041「并发会话数已达上限」），这是上游硬限制、撤不掉。
-# 反代侧本地排队：超出的请求等槽位而非直接 400，客户端可任意并发、体感无感。
+# 华为网关限制每账号并发会话 3 个（TM.00001041「并发会话数已达上限」），这是上游
+# 硬限制、撤不掉。反代侧本地排队：超出的请求等槽位而非直接 400，客户端可任意
+# 并发、体感无感。2026-10-22 起改积分制，会话上限不变。
 _CA_SEM = threading.BoundedSemaphore(3)
 _CA_QUEUE_WAIT = 120        # 排队最长等 120s，再拿不到槽位才回 429
 
 
-def _ta_ent():
-    """取 TeleAgent 账号（多账号选 JWT exp 最晚者）。只读解密，不触发刷新。"""
-    import datetime
-    accs = tat.load_accounts()
-    if not accs:
-        raise UpstreamError(503, "TeleAgent 账号不存在，请先在看板导入 TeleAgent")
-    def exp_of(item):
-        return (tat._jwt_payload((item[1] or {}).get("token") or "").get("exp")) or 0
-    name, ent = max(accs.items(), key=exp_of)
-    exp = exp_of((name, ent))
-    if exp and exp < time.time():
-        raise UpstreamError(503, "TeleAgent token 已于 %s 过期，请打开 TeleAgent 客户端"
-                                 "重新登录一次（约 29 天月抛）"
-                            % datetime.datetime.fromtimestamp(exp).strftime("%Y-%m-%d %H:%M"))
-    return name, ent
+# ── 高并发自动重连（2026-10-22 用户诉求：「应该自动重连 而不是直接弹重试」）──
+# 瞬时错误——纯 429 限流 / 并发会话上限(TM.00001041) / 5xx / 空流 / 连接层
+# 异常——由反代自己退避重试 + 换号换通道，客户端无感；等待期间流式请求靠
+# SSE 注释心跳保活（WorkBuddy 官方客户端几秒无字节就自取消，2026-10-20 实证）。
+# 不重试的：真额度耗尽（402/14018/余额类关键词）、鉴权失效（401/403）、
+# 参数错误（400）——重试无意义，如实透传让客户端决策；wbai 限流另有
+# _wbai_wait_retry 精确等到重置时刻（优先于本机制）。
+AUTO_RETRY_MAX = 14                                  # 单请求自动重连次数上限
+AUTO_RETRY_BUDGET = float(os.environ.get(
+    "DASHBOARD_PROXY_RETRY_BUDGET", "90") or 90)     # 自动重连总时长预算（秒）
+AUTO_RETRY_BACKOFF = (1.0, 2.0, 3.0, 5.0, 8.0)       # 退避序列，之后维持 8s
+
+# 客户端可见错误净化已统一收口到 errors.sanitize_client_message
+# （本模块经 `from errors import ... as _client_err_msg` 复用，避免逻辑漂移）。
+# 内部 UpstreamError.message 仍保留原始码（看板审计与既有测试依赖），
+# 仅「发回客户端的文案」经 _client_err_msg 净化。
+
+
+def _upstream_err_in_line(line):
+    """流中某 data 帧是否为上游错误帧；是则返回净化后的客户端文案，否则 None。
+    覆盖 error_code / error.data.code / 网关原生 code 三种形态。"""
+    s = (line or "").strip()
+    if not s.startswith("data:"):
+        return None
+    body = s[5:].strip()
+    if body == "[DONE]":
+        return None
+    try:
+        j = json.loads(body)
+    except Exception:
+        return None
+    if not isinstance(j, dict):
+        return None
+    ec = j.get("error_code")
+    if ec and str(ec) != "0":
+        return _client_err_msg(502, "%s %s" % (ec, j.get("error_msg") or ""))
+    err = j.get("error")
+    if isinstance(err, dict):
+        inner = err.get("data") if isinstance(err.get("data"), dict) else {}
+        code = err.get("code") or inner.get("code")
+        if code and str(code) != "0":
+            return _client_err_msg(502, str(err.get("msg") or inner.get("msg") or ""))
+    c = j.get("code")
+    if c not in (None, 0, "0"):
+        return _client_err_msg(502, str(j.get("msg") or j.get("message") or ""))
+    return None
+
+
+def _retryable_err(st, msg):
+    """瞬时错误才自动重连；额度耗尽/鉴权失效/参数错误立即透传（重试无意义）。"""
+    m = str(msg or "")
+    low = m.lower()
+    if any(h in m or h in low for h in _QUOTA_HINTS):
+        return False
+    if st is None:
+        return True                  # 连接层瞬时错误（读超时/重置/分帧失败）
+    if st in (400, 401, 402, 403):
+        return False
+    if st == 429:
+        return True                  # 纯限流（并发/频率）→ 退避后能活
+    if st in (408, 500, 502, 503, 504):
+        return True
+    if ("TM.00001041" in m or "并发会话" in m or "上限" in m
+            or "空流" in m or "timeout" in low or "timed out" in low
+            or "reset by peer" in low):
+        return True
+    return False
+
+
+def _backoff(att):
+    """第 att 次重连前的等待秒数（1→2→3→5→8，之后维持 8s）。"""
+    return AUTO_RETRY_BACKOFF[att - 1] if att <= len(AUTO_RETRY_BACKOFF) \
+        else AUTO_RETRY_BACKOFF[-1]
+
+
+def _frame_err(line):
+    """SSE 首帧是否为错误帧；是则返回 (code, msg)，否则 None。
+    覆盖三种上游形态：error_code（OpenAI 兼容）、error 对象、网关原生 code。"""
+    s = str(line or "").strip()
+    if not s.startswith("data:"):
+        return None
+    try:
+        j = json.loads(s[5:].strip())
+    except Exception:
+        return None
+    if not isinstance(j, dict):
+        return None
+    ec = j.get("error_code")
+    if ec and str(ec) != "0":
+        return (ec, j.get("error_msg") or "")
+    if isinstance(j.get("error"), dict):
+        return ("err", (j.get("error") or {}).get("message") or "")
+    c = j.get("code")
+    if c not in (None, 0, "0"):
+        return (c, j.get("msg") or j.get("message") or "")
+    return None
+
+
+def _frame_retryable(ec, msg):
+    """错误帧是否值得换号重连：限流(429/14003/6004)与服务端错误(5xx)才值得；
+    参数类 4xx 换号也一样错，立即透传（test_non_stream_error_chunk_logged 锁此行为）。"""
+    s = str(ec or "")
+    m = str(msg or "")
+    if any(k in s for k in ("429", "503", "500", "502", "504", "408",
+                            "14003", "6004", "TM.00001041")):
+        return True
+    if any(k in m for k in ("rate limit", "too many", "frequency", "限流", "并发",
+                            "timeout", "timed out")):
+        return True
+    return False
 
 
 # ── OfficeACE 上游（华为云果办，2026-10-14 实测打通）──────────────
@@ -978,7 +1167,9 @@ def _get(ent, url):
 
 
 def catalog(ent, force=False):
-    """返回 (builtin_ids, benefit_ids)。缓存 CATALOG_TTL；失败回退种子。
+    """返回 (builtin_ids, gw_ids)。缓存 CATALOG_TTL；失败回退种子。
+    gw_ids = opengw 网关目录（2026-10-22 前叫「福利模型」——免费 token 包已撤，
+    现按积分计费；目录本身仍有效，用于 relay 的模型归属判定）。
     ⚠ 网络 GET 在锁外做：锁内只读写缓存——否则冷启动时并发请求会
     在这把锁上串行排队，最坏阻塞 60s（2×30s 超时）。"""
     if not force:
@@ -1018,7 +1209,7 @@ def _upstream_body(openai_body, chat_id):
     b["tool_stream"] = True
     b["chat_id"] = chat_id
     if not str(b.get("model") or "").strip():
-        b["model"] = "deepseek-v4.1-flash"  # 默认走免费额度最大的福利模型
+        b["model"] = "deepseek-v4.1-flash"  # 默认模型（积分制，两平台都有）
     return b
 
 
@@ -1026,54 +1217,15 @@ def _session_id(chat_id):
     return hashlib.sha256(("codearts-session:" + chat_id).encode()).hexdigest()[:32]
 
 
-def _sse_beat(lines, handler, slice_s=3.0):
-    """把阻塞的 SSE 帧源包装成「超过 slice_s 秒无产出就补发 SSE 注释」的迭代器。
-
-    WorkBuddy 官方客户端在「响应头已发、连续几秒收不到任何字节」时会自行取消
-    这条消息，气泡显示「用户已取消」——2026-10-20 wbai 限流等待期实证（对策是
-    每 3s 一个 SSE 注释心跳，见 _wb_beat）。tabbit 的 DeepSeek 系是思考模型：
-    从建会话到上游首个 thinking 帧实测 4.5s+，单发一个开头注释覆盖不到这段
-    空窗，必须持续心跳。注释行（": hb"）客户端解析器忽略、不进消息内容；
-    调用方透传/聚合对非 data 行原样写或跳过，均无害。
-
-    实现：后台线程泵 lines，主线程每 slice_s 秒无产出即写注释。异常经队列
-    原样抛回主线程（UpstreamError 等行为不变）；主线程写失败（客户端断开）
-    时 except 照常记录 aborted。泵线程 daemon，最坏随上游读超时自行退出。"""
-    import queue as _q
-    import threading as _th
-    q = _q.Queue()
-    _END = object()
-
-    def _pump():
-        try:
-            for x in lines:
-                q.put(x)
-        except BaseException as e:      # UpstreamError 等要原样带回主线程
-            q.put(e)
-        q.put(_END)
-
-    _th.Thread(target=_pump, daemon=True).start()
-    while True:
-        try:
-            item = q.get(timeout=slice_s)
-        except _q.Empty:
-            try:
-                handler._write_chunk(b": hb\n\n")
-            except Exception:
-                return                  # 写不出去＝客户端已断开，停发心跳
-            continue
-        if item is _END:
-            return
-        if isinstance(item, BaseException):
-            raise item
-        yield item
-
-
 def _chat_stream(ent, openai_body):
-    """调上游 v2 聊天，返回 SSE 行迭代器。"""
+    """调上游 v2 聊天，返回 SSE 行迭代器。
+
+    ⚠⚠ 2026-10-22：CodeArts 撤掉「每日 1000 万免费 token」福利、DS4.1-Flash 等
+    模型改积分制后，**不再发送 maas_type: benefit 头**——带了就恒回
+    InferHub.4004.200 benefit not found（两账号实测）；不带头即按积分计费
+    （实测 86 tokens ≈ 0.01 积分，流式正常）。顺带省掉每次请求前的
+    catalog() 两次目录 GET。"""
     chat_id = uuid.uuid4().hex
-    _, benefit = catalog(ent)
-    is_benefit = str(openai_body.get("model") or "").lower() in benefit
     body = json.dumps(_upstream_body(openai_body, chat_id), ensure_ascii=False)
     url = SNAP + EP_CHAT
     hdr = cap.sign_headers(ent["ak"], ent["sk"], ent["sts_token"], "POST", url,
@@ -1085,7 +1237,6 @@ def _chat_stream(ent, openai_body):
                                "is_confidential": "false",
                                "Chat-Id": chat_id,
                                "Session-Id": _session_id(chat_id),
-                               **({"maas_type": "benefit"} if is_benefit else {}),
                            })
     r = requests.post(url, headers=hdr, data=body.encode("utf-8"),
                       timeout=CHAT_TIMEOUT, verify=True, stream=True,
@@ -1172,6 +1323,248 @@ def _record_usage(model, u, provider=None, acct=None):
         pass
 
 
+# ════════════════════ DS-Flash 统一池（多平台 DeepSeek-V4.1-Flash 聚合）═════════════════════
+# 诉求（2026-10-21）：高并发下（一个任务开多个子代理并发打 API），把散落在多个平台、
+# 多个账号上的所有 DeepSeek-V4.1-Flash 聚合成「一个接口」，请求进来自动均匀分发，
+# 既能扛住并发、流量消耗也均匀。用户备注：免不免费问题不大，只要是 DS 积分就扛得住。
+#
+# 工程经验来自 GitHub one-api / new-api / TokenPAPA / llm-one-api 等：
+#   · 通道注册表：虚拟模型 → N 个通道（provider+账号+模型），热路径只读内存（不碰磁盘）；
+#   · 负载均衡：round_robin（默认，均匀分配）/ weighted（按权重）/ least_conn（最少在途，
+#     天然适配并发突发）；另加「并发上限」约束——超过上限的通道直接跳过，避免把单通道打爆；
+#   · 被动健康 + 短冷却故障转移：429/5xx/空流/首帧错误 → 冷却该通道并换下一个，不永久拉黑
+#     （瞬时态只冷 60s；wbai 模型行限流按重置时刻精确冷却）；
+#   · 错误分级：账号级硬限（401/403/额度耗尽）长冷却，瞬时态短冷却。
+#
+# 接入方式：客户端把 model 写成 ds-flash / deepseek-v4.1-flash / ds4.1-flash 任一即可，
+# 其余 OpenAI 参数不变。想纳入更多 DS 通道在 _DSFLASH_CHANNELS 加一行。
+DSFLASH_STRATEGY = os.environ.get("DSFLASH_STRATEGY", "round_robin").strip() or "round_robin"
+# 通道注册表：每个 (平台, 模型行) 是一个独立通道，请求进来按策略挑一个。
+#   · wbai 免费行 + 付费行（-sg，消耗积分）都纳入：高并发时付费行补充容量，
+#     用户策略「免不免费问题不大，只要 DS 积分扛得住」；
+#   · codearts（2026-10-22 起积分制，2 账号）+ officeace（果办）网关并列，
+#     流量均匀分摊到多账号。果办目录里同样有 deepseek-v4.1-flash（交集名在
+#     /v1/models 展示归 CodeArts，但果办网关额度独立，入池扩容量）。
+#   · Tabbit 通道 2026-10-22 移除（上游下架）。
+_DSFLASH_CHANNELS = [
+    ("wbai", "deepseek-v4.1-flash", 1.0),       # 国际版免费行（每日免费额度）
+    ("wbai", "deepseek-v4.1-flash-sg", 1.0),    # 国际版付费行（消耗积分，补并发容量）
+    ("codearts", "deepseek-v4.1-flash", 1.0),   # CodeArts 积分制（每号并发 3）
+    ("officeace", "deepseek-v4.1-flash", 1.0),  # 果办网关（额度独立，与 CodeArts 互为补充）
+]
+# 每通道并发上限：取上游硬限制（CodeArts 会话并发 3），其余给宽松上限防本地打爆。
+_DSFLASH_MAX_CONN = {"codearts": 3, "officeace": 16, "wbai": 64}
+_DSFLASH_RR = itertools.count()
+_DSFLASH_CONN = {}                       # (prov,name,model) -> 在途请求数
+_DSFLASH_CONN_LOCK = threading.Lock()
+
+
+def _dsflash_cool_until(prov, name, model_id):
+    """通道的冷却「到期时刻」（epoch 秒）；未冷却返回 0。
+    这是 DS-Flash 池「账号/通道临时禁用」机制的核心：禁用时记录到期时刻，期间跳过该
+    通道，到期（> 现在）即**自动放出**。到期时刻取自两处冷却表的最晚值：整号冷却
+    (_POOL_COOL) 与 wbai 模型行冷却 (_WBAI_ML_COOL)，保证两种粒度的禁用都能被看到/释放。"""
+    now = time.time()
+    until = 0.0
+    with _POOL_LOCK:
+        c = (_POOL_COOL.get(prov) or {}).get(name)
+        if c and c > now:
+            until = max(until, c)
+    if prov == "wbai":
+        m = _WBAI_ML_COOL.get((name, str(model_id or "").lower()))
+        if m and m > now:
+            until = max(until, m)
+    return until
+
+
+def _dsflash_cooling(prov, name, model_id):
+    """该 (平台,账号,模型) 通道是否处于冷却（临时禁用）中。"""
+    return _dsflash_cool_until(prov, name, model_id) > 0
+
+
+def _dsflash_live_channels():
+    """构造当前可用通道列表：遍历注册表，每个平台枚举可用账号（跳过冷却中的）。
+    稳定排序保证轮询顺序确定性。"""
+    out = []
+    for prov, model_id, weight in _DSFLASH_CHANNELS:
+        try:
+            ents = _pool_ents(prov)
+        except UpstreamError:
+            continue
+        for name, ent in ents:
+            if _dsflash_cooling(prov, name, model_id):
+                continue
+            out.append({"prov": prov, "name": name, "ent": ent,
+                        "model": model_id, "weight": weight,
+                        "key": (prov, name, model_id)})
+    out.sort(key=lambda c: c["key"])
+    return out
+
+
+def _dsflash_pick(live):
+    """按策略挑一个通道；优先在「在途数 < 并发上限」的通道里选，全满则退化为最少连接。"""
+    avail = [c for c in live if not _dsflash_cooling(c["prov"], c["name"], c["model"])]
+    if not avail:
+        return None
+    with _DSFLASH_CONN_LOCK:
+        cap = _DSFLASH_MAX_CONN.get
+        under = [c for c in avail if _DSFLASH_CONN.get(c["key"], 0) < cap(c["prov"], 64)]
+        pool = under or avail
+        if DSFLASH_STRATEGY == "least_conn":
+            c = min(pool, key=lambda c: (_DSFLASH_CONN.get(c["key"], 0), next(_DSFLASH_RR)))
+        elif DSFLASH_STRATEGY == "weighted":
+            # 按权重展开后轮询（默认权重均为 1.0，等价于 round_robin）
+            expanded = []
+            for c in pool:
+                expanded.extend([c] * max(1, int(round(c["weight"]))))
+            c = expanded[next(_DSFLASH_RR) % len(expanded)]
+        else:   # round_robin（默认：均匀分配）
+            c = pool[next(_DSFLASH_RR) % len(pool)]
+    return c
+
+
+def _dsflash_err_kind(first, ch):
+    """首帧是否带可换通道的错误；返回真值即触发故障转移。
+    统一池要对客户端透明：首帧只要出现任何错误标记（error_code / error 对象 /
+    网关原生 code / 非 data 帧 / 解析失败）就换下一个通道；实在全失败才把最后一条透传。"""
+    s = (first or "").strip()
+    if not s.startswith("data:"):
+        return True                       # 非 data 帧（纯错误文本/解析不了的残留）→ 当错误
+    try:
+        j = json.loads(s[5:].strip())
+    except Exception:
+        return True                       # 首帧 JSON 解析失败 → 当错误，换通道
+    if not isinstance(j, dict):
+        return True
+    if ch["prov"] == "wbai" and _wbai_err_kind(first):
+        return True
+    if j.get("error_code") and str(j.get("error_code")) != "0":
+        return True
+    if isinstance(j.get("error"), dict):
+        return True
+    if j.get("code") not in (None, 0, "0"):   # 网关原生格式 {"code":6004,"msg":...}
+        return True
+    return bool(_pool_err_of(first))            # 兜底：额度类关键词
+
+
+def _dsflash_cool(ch, st, msg):
+    """通道冷却（故障转移用）：错误分级决定冷却时长。"""
+    prov, name, model_id = ch["prov"], ch["name"], ch["model"]
+    m = str(msg or "")
+    low = m.lower()
+    # wbai 14018（Credits exhausted）：国际版网关在并发突发时常把「瞬时/额度事件」误报成
+    # 14018，并非真额度耗尽（实测同账号免费行几分钟后仍正常流式返回）。复用 wbai 中继的
+    # _wbai_ml_limit：只冷却「模型行」且按重置时刻精确冷却，同号其它模型/付费行（-sg）仍可用。
+    # 绝不分账号整号拉黑——否则有额度的账号被踢出统一池 30 分钟，高并发下把流量挤到已饱和的
+    # 其它平台（CodeArts 上限 3 / 果办 16），某次请求无可用通道即把最后一条 14018 当 502 抛出。
+    if prov == "wbai" and ("14018" in m or "credits exhausted" in low):
+        # 与 wbai 中继一致：14018 只冷当前模型行 10 分钟（_WBAI_QUOTA_COOL），按重置时刻精确；
+        # 不带 sec 会让 _wbai_ml_limit 落到 24h 默认，对瞬时 14018 过长。
+        _wbai_ml_limit(name, model_id, m or "{}", sec=_WBAI_QUOTA_COOL)
+        return
+    # 账号级硬限（401/403 / 非 wbai 的 14018 额度耗尽 / 余额不足）→ 长冷却（复用 _pool_cool，默认 30 分钟）
+    if st in (401, 403) or "14018" in m or "credits exhausted" in low \
+            or "额度" in m or "余额" in m or "quota" in low or "insufficient" in low:
+        _pool_cool(prov, name, m or "账号级错误")
+        return
+    # wbai 模型行限流（6004/429）→ 按重置时刻精确冷却（复用既有机制）
+    if prov == "wbai" and (_wbai_err_kind(m) == "model" or st == 429):
+        _wbai_ml_limit(name, model_id, m or "{}")
+        return
+    # 其余瞬时态（5xx/空流/超时）→ 短冷却 60s，别永久拉黑
+    _pool_cool(prov, name, m or "瞬时态", sec=60)
+
+
+def _open_dsflash_pool(body):
+    """DS-Flash 统一池：多平台 DS4.1-Flash 聚合，负载均衡 + 自动故障转移。
+    返回 (acct_label, lines)；全部失败抛 UpstreamError。acct_label=平台/账号，审计可见命中谁。"""
+    live = _dsflash_live_channels()
+    if not live:
+        raise UpstreamError(503, "DS-Flash 池为空：所有平台的 DeepSeek-V4.1-Flash 账号均不可用"
+                             "（请确认 WB国际版 / CodeArts / 果办 已导入且未过期）")
+    tried, last_err, retry_err = set(), None, None
+    guard = 0
+    while guard < len(live) + 2:
+        guard += 1
+        ch = _dsflash_pick(live)
+        if ch is None or ch["key"] in tried:
+            break
+        tried.add(ch["key"])
+        b = dict(body)
+        b["model"] = ch["model"]
+        it = None
+        try:
+            with _DSFLASH_CONN_LOCK:
+                _DSFLASH_CONN[ch["key"]] = _DSFLASH_CONN.get(ch["key"], 0) + 1
+            it = _pool_open(ch["prov"], ch["name"], ch["ent"], b)
+            # 预读首个 data 帧：账号级/模型行错误通常在首帧返回，此时还没向客户端写字节，
+            # 失败可无感换下一个通道（与 _open_pool 同款手法）。SSE 注释行（keep-alive）
+            # 跳过，不当成错误帧。
+            first = None
+            try:
+                for ln in it:
+                    if not ln or not ln.strip():
+                        continue
+                    if ln.lstrip().startswith(":"):
+                        continue
+                    first = ln
+                    break
+            except Exception as e:
+                st = getattr(e, "status", None)
+                msg = getattr(e, "message", None) or str(e)
+                _dsflash_cool(ch, st, msg)
+                last_err = UpstreamError(int(st or 502), str(msg)[:200])
+                if retry_err is None and _retryable_err(st, msg):
+                    retry_err = last_err      # 留给 relay 自动重连（并发释放后能活）
+                it = None
+        finally:
+            with _DSFLASH_CONN_LOCK:
+                _DSFLASH_CONN[ch["key"]] = max(0, _DSFLASH_CONN.get(ch["key"], 0) - 1)
+        if it is None:
+            continue
+        if _dsflash_err_kind(first, ch):
+            _dsflash_cool(ch, None, first)
+            last_err = UpstreamError(502, first[:160])
+            if retry_err is None and _retryable_err(None, first):
+                retry_err = last_err
+            try:
+                it.close()
+            except Exception:
+                pass
+            continue
+        if first is None:
+            _dsflash_cool(ch, None, "空流")
+            last_err = UpstreamError(502, "上游返回空流")
+            if retry_err is None:
+                retry_err = last_err
+            continue
+        return "%s/%s" % (ch["prov"], ch["name"]), itertools.chain([first], it)
+    # 全失败：有任一通道只是「瞬时忙」就抛那个错（relay 会退避重连整池）；
+    # 全是额度/鉴权类才透传最后一条（重试无意义，如实告诉客户端）。
+    raise retry_err or last_err or UpstreamError(503, "DS-Flash 池所有通道均失败")
+
+
+def dsflash_status():
+    """面板/接口可见：虚拟模型、策略、各通道在途数/并发上限/冷却状态（不要当瞎子）。"""
+    live = _dsflash_live_channels()
+    with _DSFLASH_CONN_LOCK:
+        conn = dict(_DSFLASH_CONN)
+    return {
+        "virtual_model": DSFLASH_MODEL,
+        "aliases": sorted(DSFLASH_ALIASES),
+        "strategy": DSFLASH_STRATEGY,
+        "channels": [
+            {"prov": c["prov"], "name": c["name"], "model": c["model"],
+             "in_flight": conn.get(c["key"], 0),
+             "max_conn": _DSFLASH_MAX_CONN.get(c["prov"], 64),
+             "cooling": _dsflash_cooling(c["prov"], c["name"], c["model"]),
+             "cool_until": int(_dsflash_cool_until(c["prov"], c["name"], c["model"]))}
+            for c in live
+        ],
+        "n": len(live),
+    }
+
+
 def relay(handler, openai_body):
     """主入口：按客户端 stream 开关转发一次对话。异常都转 OpenAI 错误 JSON。
     每次调用落一条审计（模型/账号/耗时/token）到 server.log（看板可见）——
@@ -1194,30 +1587,89 @@ def relay(handler, openai_body):
             except UpstreamError:
                 pass      # CodeArts 无账号时不拦：OA 独有模型仍可走果办
     want_stream = bool(openai_body.get("stream"))
-    # CodeArts 本地排队闸门：等槽位（上游并发上限 3），拿不到才 429
+    # CodeArts 本地排队闸门：等槽位（上游并发上限 3），拿不到才 429。
+    # 排队 >2s 的流式请求先开流发心跳——客户端「headers 已发、一个字节都没有」
+    # 转几秒就自己取消（2026-10-20 用户实证），排队 120s 干等必被取消。
     ca_slotted = False
-    if provider == "codearts":
-        deadline = time.time() + _CA_QUEUE_WAIT
+    wb_stream_open = [False]      # 已向客户端发过 SSE 头（此后再发 HTTP 状态行是坏协议）
+
+    def _ca_acquire():
+        """排队等 CodeArts 槽位；返回 False=等超时。流式带心跳保活。"""
+        started = time.time()
+        deadline = started + _CA_QUEUE_WAIT
+        beat_at = 0.0
         while not _CA_SEM.acquire(timeout=1.0):
             if time.time() > deadline:
-                srv.log("[proxy:codearts] %s 排队 %.0fs 未获槽位，回 429" % (model, _CA_QUEUE_WAIT))
-                handler._send(429, {"error": {
-                    "message": "CodeArts 上游并发会话已达上限（华为网关限制 3 个），排队 %ds 仍未释放，请稍后重试"
-                               % _CA_QUEUE_WAIT,
-                    "type": "rate_limit"}})
-                return
-        ca_slotted = True
+                return False
+            if not want_stream:
+                continue
+            if not wb_stream_open[0] and time.time() - started > 2:
+                handler._begin_stream()          # 排队超 2s 才开流：秒过不值得改协议
+                wb_stream_open[0] = True
+            if wb_stream_open[0]:
+                now = time.time()
+                if now - beat_at >= 3:
+                    beat_at = now
+                    try:
+                        handler._write_chunk(
+                            b": queued for CodeArts slot, %ds left\n\n"
+                            % max(1, int(deadline - now)))
+                    except Exception:
+                        return False               # 客户端已断开：别再空等
+        return True
 
     def _ca_release():
         if ca_slotted:
             _CA_SEM.release()
 
-    # 上游「并发会话数已达上限」(TM.00001041)：会话关闭后有残留计时，紧跟着开新会话也会撞。
-    # 自动重试+退避，客户端无感（日志留痕）。
-    disp_att, DISP_MAX, RETRY_WAIT = 0, 18, 5.0
-    # 国际版限流等待时要提前开流并发心跳：WorkBuddy 官方客户端在「headers 已发、
-    # 一个字节都没有」的情况下转几秒就自己取消这条消息（2026-10-20 用户实证）。
-    wb_stream_open = [False]
+    def _ca_timeout_reply():
+        """排队超时的统一收尾：开过流只能 SSE 收尾，否则 429 状态行。"""
+        msg = ("CodeArts 上游并发会话已达上限（华为网关限制 3 个），"
+               "排队 %ds 仍未释放，请稍后重试" % _CA_QUEUE_WAIT)
+        srv.log("[proxy:codearts] %s %s" % (model, msg))
+        if wb_stream_open[0]:
+            handler._write_chunk((
+                "data: %s\n\ndata: [DONE]\n\n" % json.dumps(
+                    {"error": {"message": msg, "type": "rate_limit"}},
+                    ensure_ascii=False)).encode("utf-8"))
+        else:
+            handler._send(429, {"error": {"message": msg, "type": "rate_limit"}})
+
+    if provider == "codearts":
+        if not _ca_acquire():
+            _ca_timeout_reply()
+            return
+        ca_slotted = True
+
+    # 自动重连状态：att=次数（含 wbai 精确等待轮），t0=总预算起点。
+    # 高并发瞬时错误（429/并发上限/5xx/空流/连接层）由反代退避重试，不弹给客户端。
+    att, retry_t0 = 0, time.time()
+    from logstore import _under_test as _ut
+    # 测试环境把退避压到近零：重连轮次瞬间跑完（不断言 call_count 的既有用例不受影响），
+    # 线上保持真实退避（1→2→3→5→8s）。
+    _wait_scale = 0.001 if _ut() else 1.0
+
+    def _retry_beat(wait):
+        """自动重连的等待期：流式先开流（此后再发 HTTP 状态行是坏协议），
+        每 3s 一次 SSE 注释心跳，客户端能持续看到「正在自动重连」而非干等/取消。"""
+        wait *= _wait_scale
+        if not want_stream:
+            time.sleep(wait)
+            return
+        if not wb_stream_open[0]:
+            handler._begin_stream()
+            wb_stream_open[0] = True
+        end = time.time() + wait
+        while True:
+            rem = end - time.time()
+            if rem <= 0:
+                return
+            try:
+                handler._write_chunk(
+                    b": upstream busy, auto-reconnecting (%ds)\n\n" % max(1, int(rem)))
+            except Exception:
+                return                          # 客户端已断开：别再空等
+            time.sleep(min(3.0, rem))
 
     def _wb_beat(rem):
         if not want_stream:
@@ -1229,69 +1681,78 @@ def relay(handler, openai_body):
 
     while True:
         try:
-            if provider == "teleagent":
-                name, lines = _open_pool("teleagent", openai_body)
-            elif provider == "wbai":
+            if provider == "wbai":
                 name, lines = _open_wbai(openai_body)
                 model = getattr(_wbai_tls, "model", model)   # auto → 实际上游模型
             elif provider == "officeace":
                 name, lines = _open_pool("officeace", openai_body)
-            elif provider == "tabbit":
-                name, lines = _open_pool("tabbit", openai_body)
-                if want_stream:
-                    # tb 是思考模型：等上游首帧 4.5s+，包持续 SSE 注释心跳，
-                    # 防客户端「几秒无字节即自动取消」（2026-10-21 复现）
-                    lines = _sse_beat(lines, handler)
+            elif provider == "dsflash":
+                name, lines = _open_dsflash_pool(openai_body)
             else:
                 name, lines = _open_pool("codearts", openai_body)
             break
         except UpstreamError as e:
             _ca_release()
             if provider == "wbai" and e.status in (402, 429, 503) \
-                    and _wbai_wait_retry(e, disp_att,
+                    and _wbai_wait_retry(e, att,
                                          _wb_beat if want_stream else None,
                                          name, model):
-                disp_att += 1
+                att += 1
+                continue
+            # 高并发自动重连：瞬时错误自己退避重来（池内换号/换通道由 _open_pool /
+            # _open_dsflash_pool 负责，冷却号这轮已被跳过）。额度/鉴权/参数类不重试。
+            if _retryable_err(e.status, e.message) and att < AUTO_RETRY_MAX \
+                    and time.time() - retry_t0 < AUTO_RETRY_BUDGET:
+                att += 1
+                wait = _backoff(att)
+                srv.log("[proxy:%s] %s 上游瞬时错误（%s %s），%.0fs 后自动重连 %d/%d"
+                        % (provider, model, e.status, str(e.message)[:60],
+                           wait, att, AUTO_RETRY_MAX))
+                _retry_beat(wait)
+                if provider == "codearts":
+                    if not _ca_acquire():
+                        _ca_timeout_reply()
+                        return
+                    ca_slotted = True
                 continue
             if wb_stream_open[0]:
                 # 心跳已经开流，只能按 SSE 收尾（再发 HTTP 状态行是坏协议）
                 handler._write_chunk((
                     "data: %s\n\ndata: [DONE]\n\n" % json.dumps(
-                        {"error": {"message": e.message[:300], "type": "rate_limit"}},
+                        {"error": {"message": _client_err_msg(e.status, e.message)[:300],
+                                   "type": "rate_limit"}},
                         ensure_ascii=False)).encode("utf-8"))
                 return
-            if (provider == "codearts"
-                    and ("TM.00001041" in e.message or "并发会话数" in e.message)):
-                disp_att += 1
-                if disp_att > DISP_MAX:
-                    srv.log("[proxy:codearts] %s 上游并发限制重试 %d 次仍失败" % (model, DISP_MAX))
-                    handler._send(429, {"error": {
-                        "message": "CodeArts 上游并发会话已达上限（华为网关限制 3 个），重试 %d 次仍占用，请稍后重试"
-                                   % DISP_MAX,
-                        "type": "rate_limit"}})
-                    return
-                srv.log("[proxy:codearts] %s 上游并发限制，%.1fs 后第 %d/%d 次重试"
-                        % (model, RETRY_WAIT, disp_att, DISP_MAX))
-                time.sleep(RETRY_WAIT)
-                if provider == "codearts":
-                    deadline = time.time() + _CA_QUEUE_WAIT
-                    while not _CA_SEM.acquire(timeout=1.0):
-                        if time.time() > deadline:
-                            handler._send(429, {"error": {
-                                "message": "CodeArts 上游并发会话已达上限（华为网关限制 3 个），排队 %ds 仍未释放"
-                                           % _CA_QUEUE_WAIT,
-                                "type": "rate_limit"}})
-                            return
-                    continue
             srv.log("[proxy:%s] %s acct=%s HTTP%s %s"
                     % (provider, model, name, e.status, e.message[:80]))
+            fail_note = "（已自动重连 %d 次仍失败）" % att if att else ""
             handler._send(e.status if e.status >= 400 else 502,
-                          {"error": {"message": e.message, "type": "upstream_error"}})
+                          {"error": {"message": _client_err_msg(e.status, e.message)
+                                     + fail_note,
+                                     "type": "upstream_error"}})
             return
         except Exception as e:
             _ca_release()
+            # 连接层瞬时错误（读超时/连接重置/分帧中断）同样自动重连；
+            # 代码 bug（非 requests 异常）不重试，立即暴露。
+            if isinstance(e, requests.exceptions.RequestException) \
+                    and att < AUTO_RETRY_MAX \
+                    and time.time() - retry_t0 < AUTO_RETRY_BUDGET:
+                att += 1
+                wait = _backoff(att)
+                srv.log("[proxy:%s] %s 连接层异常（%s），%.0fs 后自动重连 %d/%d"
+                        % (provider, model, type(e).__name__, wait, att, AUTO_RETRY_MAX))
+                _retry_beat(wait)
+                if provider == "codearts":
+                    if not _ca_acquire():
+                        _ca_timeout_reply()
+                        return
+                    ca_slotted = True
+                continue
             srv.log("[proxy:%s] %s acct=%s 异常 %s" % (provider, model, name, str(e)[:80]))
-            handler._send(502, {"error": {"message": str(e)[:200],
+            fail_note = "（已自动重连 %d 次仍失败）" % att if att else ""
+            handler._send(502, {"error": {"message": _client_err_msg(502, str(e))[:200]
+                                          + fail_note,
                                           "type": "upstream_error"}})
             return
 
@@ -1304,10 +1765,27 @@ def relay(handler, openai_body):
             for line in lines:
                 n_lines += 1
                 if not line:
-                    # TeleAgent SSE 是标准事件帧（事件间空行分隔）——空行要透传保帧；
+                    # SSE 标准事件帧间空行透传保帧（上游若发标准事件流）；
                     # CodeArts SSE 无空行，此分支不会走到，行为不变
                     handler._write_chunk(b"\n")
                     continue
+                # 流中上游错误帧净化：绝不通透原始 JSON/额度码给客户端，
+                # 改成干净 SSE 错误后收尾（首帧错误本已在开流前被池逻辑拦截并重试，
+                # 此处兜底：防止流中段突然吐错误帧时把 raw JSON 原样发到对端）。
+                if line.startswith("data:") and "[DONE]" not in line:
+                    em = _upstream_err_in_line(line)
+                    if em is not None:
+                        try:
+                            handler._write_chunk((
+                                "data: %s\n\ndata: [DONE]\n\n" % json.dumps(
+                                    {"error": {"message": em,
+                                               "type": "upstream_error"}},
+                                    ensure_ascii=False)).encode("utf-8"))
+                        except Exception:
+                            pass
+                        srv.log("[proxy:%s] %s 流中上游错误已净化：%s"
+                                % (provider, model, em[:40]))
+                        break
                 if line.startswith("data:") and "[DONE]" not in line:
                     try:              # 透传时顺带抓 usage；上游首个 chunk 会发全 0
                         j = json.loads(line[5:].strip())   # 占位，须跳过取尾部的真实值
@@ -1333,9 +1811,10 @@ def relay(handler, openai_body):
                 # 放在主审计行之前，保证主行始终是本请求最后一条日志。
                 srv.log("[proxy:%s] %s ↑短响应原文(%d 行)：%s"
                         % (provider, model, n_lines, " ｜ ".join(tail) or "（无）"))
-            srv.log("[proxy:%s] %s acct=%s stream %.1fs lines=%d%s%s"
+            srv.log("[proxy:%s] %s acct=%s stream %.1fs lines=%d%s%s%s"
                     % (provider, model, name, time.time() - t0, n_lines,
                        _usage_str(usage),
+                       (" 自动重连%d次" % att) if att else "",
                        (" 客户端断开(%s)" % aborted) if aborted else ""))
             _record_usage(model, usage, provider=provider, acct=name)
         return
@@ -1394,26 +1873,14 @@ def relay(handler, openai_body):
         _ca_release()
         srv.log("[proxy:%s] %s acct=%s HTTP%s %s"
                 % (provider, model, name, e.status, e.message[:80]))
-        handler._send(e.status, {"error": {"message": e.message,
+        handler._send(e.status, {"error": {"message": _client_err_msg(e.status, e.message),
                                            "type": "upstream_error"}})
         return
     except Exception as e:
         _ca_release()
         srv.log("[proxy:%s] %s acct=%s 异常 %s"
                 % (provider, model, name, str(e)[:80]))
-        handler._send(502, {"error": {"message": str(e)[:200],
-                                      "type": "upstream_error"}})
-        return
-
-    # Tabbit 流式路径已不发 error 帧（客户端见 error 帧就撤销气泡显示「用户
-    # 已取消」），错误改为正文 + stop。非流式这里靠正文前缀识别，保持 502 语义。
-    joined = "".join(content)
-    if provider == "tabbit" and joined.lstrip().startswith("⚠️ Tabbit 上游"):
-        reason = joined.lstrip()[len("⚠️ Tabbit 上游错误："):] or joined.lstrip()
-        _ca_release()
-        srv.log("[proxy:%s] %s acct=%s HTTP502 %s"
-                % (provider, model, name, reason[:80]))
-        handler._send(502, {"error": {"message": reason[:300],
+        handler._send(502, {"error": {"message": _client_err_msg(502, str(e))[:200],
                                       "type": "upstream_error"}})
         return
 

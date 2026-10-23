@@ -724,6 +724,9 @@ OFFICEACE_DATA_DIRS = [
     r"E:\OfficeAce",
     os.path.join(os.environ.get("PROGRAMFILES", r"C:\Program Files"), "OfficeAce"),
     os.path.expandvars(r"%LOCALAPPDATA%\Programs\OfficeAce"),
+    # 1.4.1 起 UserDataRoot 迁到 %USERPROFILE%\.office-claw（runtime-state.json 已迁，
+    # storage.sqlite 暂仍在安装目录；这里预置候选，防后续版本连库一起迁）
+    os.path.expanduser(r"~\.office-claw"),
 ]
 
 

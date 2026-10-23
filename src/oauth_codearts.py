@@ -627,7 +627,8 @@ def codearts_silent_renew(on_success, cookies=""):
     返回 (ok, msg)。on_success(grant) → (ok, msg)。"""
     if not cookies and (not os.path.isdir(_CODEARTS_PROFILE_DIR)
                         or not os.listdir(_CODEARTS_PROFILE_DIR)):
-        return False, "无浏览器会话存档，请先短信登录一次"
+        return False, ("无刷新令牌，且浏览器会话存档为空：请在看板删除该账号后，"
+                       "用手机号短信重新登录以获取可自动续期的 refresh_token")
     verifier, challenge = _codearts_pkce()
     dpop = _codearts_dpop_keypair()
     ticket_id = secrets.token_hex(16)

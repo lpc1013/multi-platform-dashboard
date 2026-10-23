@@ -60,16 +60,14 @@ DEFAULT_HOST = SNAP
 DELIVERY_PATH = "/v1/ops/delivery"
 CLAIM_PATH = "/v1/ops/claim"
 CONFIRM_PATH = "/v1/ops/confirm"
-# 真实余额接口（2026-10-09 逆向自客户端 vscode-codebot/out/extension.js 的
-# getTokensBalance，与客户端同口径；GET，同一套 SDK-HMAC-SHA256 签名，实测 200）：
-#   返回 result.{total_balance, total_quota, used_amount, daily_token_limit,
-#                daily_tokens_used, monthly_*, expire_time}
-# ⚠ 这是【每日免费 token 额度】，不是积分！积分（签到领的那种）在
+# 真实【积分】接口（客户端「总积分」同款，GET，同一套 SDK-HMAC-SHA256 签名）：
 #   GET /snap-manager/v1/statistics/plugin → metrics 里 name=usageTotalPackageCredit
 #   的 {package_credit_amount/used/remain, package_credit_expiring_amount}
 #   （2026-10-09 实测 remain=25000，与客户端显示一致）。
-OPENGW = "https://opengw.developer.huaweicloud.com"
-BALANCE_PATH = "/api/v1/user/tokens/balance"
+# ⚠⚠ 2026-10-22：CodeArts 撤掉「每日 1000 万免费 token」福利（两账号
+#   balance 接口恒回 4000 invalid channel / 聊天报 benefit not found），
+#   DS4.1-Flash 等模型改积分制——原 /api/v1/user/tokens/balance
+#   （每日免费 token 额度）接口连同 daily_free/free_token_* 字段已删除。
 STATS_PATH = "/snap-manager/v1/statistics/plugin"
 CHANNEL = "IDE"
 ALGO = "SDK-HMAC-SHA256"
@@ -495,16 +493,6 @@ def _items(j):
     return []
 
 
-def fetch_balance(ent):
-    """查【每日免费 token 额度】（客户端 getTokensBalance 同款，⚠ 不是积分）。
-    返回 (result_dict|None, err|None)。"""
-    st, j = _req(ent, BALANCE_PATH, base=OPENGW)
-    if st == 200 and isinstance(j, dict) and j.get("error_code") == "0000":
-        res = j.get("result")
-        return (res if isinstance(res, dict) else None), None
-    return None, "token额度查询失败（HTTP %s）：%s" % (st, str(j)[:120])
-
-
 def fetch_credits(ent):
     """查真实【积分】（客户端「总积分」同款：statistics/plugin →
     metrics[name=usageTotalPackageCredit].package_credit_*）。
@@ -547,11 +535,19 @@ def read_account(name, ent):
 
     exp = expired(ent)
     if not _refresh_if_needed(name, ent):
-        empty["error"] = ("CodeArts 凭证已于 %s 过期且自动续期失败。"
-                          "看板自建会话请重新短信登录；客户端会话请打开客户端续期。"
-                          % (ent.get("expires_at") or "")[:19])
+        if ent.get("refresh_token"):
+            empty["error"] = ("CodeArts 凭证已于 %s 过期且自动续期失败。"
+                              "请打开 CodeArts Agent 客户端续期，或在看板重新短信登录。"
+                              % (ent.get("expires_at") or "")[:19])
+        else:
+            empty["error"] = ("CodeArts 凭证已于 %s 过期，且本账号无刷新令牌"
+                              "（早期票据/客户端导入），无法静默续期。"
+                              "请删除该账号后在看板用手机号短信重新登录，"
+                              "以获取可自动续期的 refresh_token。"
+                              % (ent.get("expires_at") or "")[:19])
         empty["extra"] = {"phone": _phone, "expires_at": ent.get("expires_at"),
-                          "expired": True, "can_refresh": bool(ent.get("refresh_token"))}
+                          "expired": True, "can_refresh": bool(ent.get("refresh_token")),
+                          "needs_relink": not bool(ent.get("refresh_token"))}
         return empty
     exp = expired(ent)   # 续期后可能已更新
     st, j = _req(ent, DELIVERY_PATH, query=[("channel", CHANNEL)])
@@ -560,10 +556,17 @@ def read_account(name, ent):
         if ent.get("refresh_token") and try_refresh(name, ent)[0]:
             st, j = _req(ent, DELIVERY_PATH, query=[("channel", CHANNEL)])
         if st in (401, 403) or (isinstance(j, dict) and "APIG." in str(j.get("error_code", ""))):
-            empty["error"] = ("华为网关鉴权失败且续期无效。看板自建会话请重新短信登录；"
-                              "客户端会话请打开 CodeArts Agent 客户端续期。")
+            if ent.get("refresh_token"):
+                empty["error"] = ("华为网关鉴权失败且续期无效。请打开 CodeArts Agent 客户端"
+                                  "续期，或在看板重新短信登录。")
+            else:
+                empty["error"] = ("华为网关鉴权失败且续期无效：本账号无刷新令牌"
+                                  "（早期票据/客户端导入）。请删除后在看板用手机号短信"
+                                  "重新登录，以获取可自动续期的 refresh_token。")
             empty["extra"] = {"phone": _phone, "expires_at": ent.get("expires_at"),
-                              "expired": expired(ent)}
+                              "expired": expired(ent),
+                              "can_refresh": bool(ent.get("refresh_token")),
+                              "needs_relink": not bool(ent.get("refresh_token"))}
             return empty
     if st != 200:
         empty["error"] = "福利列表查询失败（HTTP %s）：%s" % (st, str(j)[:120])
@@ -630,43 +633,12 @@ def read_account(name, ent):
     else:
         extra["credits_ok"] = False
         extra["credits_error"] = cred_err
-    # 每日免费 token 额度（另一套体系，勿与积分混淆）→ 顶层 daily_free + extra
-    bal, bal_err = fetch_balance(ent)
-    daily_free = None
-    if bal:
-        def _num(k):
-            try:
-                return int(float(bal.get(k) or 0))
-            except (TypeError, ValueError):
-                return 0
-        daily_free = {"remain": _num("total_balance"), "total": _num("total_quota"),
-                      "used": _num("used_amount"),
-                      "daily_used": _num("daily_tokens_used"),
-                      "daily_limit": _num("daily_token_limit")}
-        extra.update({
-            "free_token_total": _num("total_quota"),
-            "free_token_remain": _num("total_balance"),
-            "free_token_used": _num("used_amount"),
-            "free_token_daily_limit": _num("daily_token_limit"),
-            "free_token_daily_used": _num("daily_tokens_used"),
-            "free_token_channel": bal.get("channel"),
-        })
-    else:
-        extra["free_token_error"] = bal_err
-        # 上游明确回「该凭据没有这个 channel group」= 这个号本来就没有每日免费
-        # token 权益（华为云商用版按积分计量），不是查询失败。2026-10-21 实测：
-        # opengw 的 balance 与 gateway/config 同报 4000 invalid channel, group
-        # not found（加不加 channel 参数一模一样），而该号 statistics 只有
-        # 500 基础 + 7000 奖励积分、没有 token 包 → 前端不该一直提示「稍后重试」。
-        if "group not found" in (bal_err or "") or "invalid channel" in (bal_err or ""):
-            extra["free_token_na"] = True
 
     return {
         "name": name, "ok": True, "error": None,
         "level": "CodeArts Agent · 华为云",
         "signed_today": not daily_claimable,
-        "credits": credits,          # 长期积分（另一套体系）
-        "daily_free": daily_free,    # 每日免费 token 额度（每日重置，与积分分开算）
+        "credits": credits,          # 积分（2026-10-22 起模型计费唯一口径）
         "packages": pkgs,
         "extra": extra,
     }

@@ -170,7 +170,10 @@ class TestRelayAggregate(unittest.TestCase):
 
     def test_non_stream_aggregates(self):
         h = _FakeHandler()
-        body = {"model": "deepseek-v4.1-flash", "stream": False,
+        # ⚠ model 不能用 deepseek-v4.1-flash：它是 DS-Flash 统一池别名，会路由进
+        # 池子（选中哪个平台由进程级轮转计数器决定，测试间会互相污染）。这里测的是
+        # 非流式聚合本身，用 CodeArts 直连模型（非池别名）。
+        body = {"model": "deepseek-v4-flash-0731", "stream": False,
                 "messages": [{"role": "user", "content": "hi"}]}
         with mock.patch.object(ox, "_load_ent", return_value=("acct", _ENT)), \
              mock.patch.object(ox, "_chat_stream", return_value=iter(_sse(
@@ -183,7 +186,7 @@ class TestRelayAggregate(unittest.TestCase):
         self.assertEqual(out["choices"][0]["message"]["content"], "你好")
         self.assertEqual(out["choices"][0]["finish_reason"], "stop")
         self.assertEqual(out["usage"]["total_tokens"], 10)
-        self.assertEqual(out["model"], "deepseek-v4.1-flash")
+        self.assertEqual(out["model"], "deepseek-v4-flash-0731")
         mlog.assert_called_once()                    # 记账必须落一条
         self.assertIn("tokens=7/3/10", mlog.call_args[0][0])
 
@@ -206,13 +209,63 @@ class TestRelayAggregate(unittest.TestCase):
         self.assertIn("tokens=7/3/10", mlog.call_args[0][0])   # 不能是 0/0/0
 
     def test_upstream_error_passthrough(self):
+        """上游额度类错误：relay 必须把原始文案净化成干净中文，绝不通透给客户端
+        （2026-10-22 用户诉求：原始上游 JSON/额度码不能弹到聊天框）。内部原始
+        码仍进日志（见 _client_err_msg 文档）。"""
         h = _FakeHandler()
         with mock.patch.object(ox, "_load_ent", return_value=("acct", _ENT)), \
              mock.patch.object(ox, "_chat_stream",
-                               side_effect=ox.UpstreamError(429, "额度用尽")):
+                               side_effect=ox.UpstreamError(429, "额度用尽")), \
+             mock.patch("server.log"):
             ox.relay(h, {"model": "x", "messages": []})
         self.assertEqual(h.sent[0][0], 429)
-        self.assertIn("额度用尽", h.sent[0][1]["error"]["message"])
+        msg = h.sent[0][1]["error"]["message"]
+        self.assertNotIn("额度用尽", msg)          # 原始文案不得透传
+        self.assertIn("额度", msg)                 # 仍是额度语义的干净提示
+        # 原始上游 JSON 形态同样必须被净化（14018 实测形态）
+        h2 = _FakeHandler()
+        raw = json.dumps({"error": {"data": {"code": 14018,
+                                             "msg": "Credits exhausted."}}})
+        with mock.patch.object(ox, "_load_ent", return_value=("acct", _ENT)), \
+             mock.patch.object(ox, "_chat_stream",
+                               side_effect=ox.UpstreamError(429, raw)), \
+             mock.patch("server.log"):
+            ox.relay(h2, {"model": "x", "messages": []})
+        m2 = h2.sent[0][1]["error"]["message"]
+        self.assertNotIn("14018", m2)
+        self.assertNotIn("Credits exhausted", m2)
+
+    def test_client_err_msg_sanitizes_raw_json(self):
+        """_client_err_msg 把各类原始上游错误转干净中文，内部码不外泄。"""
+        # 14018 额度码 → 干净额度提示
+        out = ox._client_err_msg(402, 'data: {"error":{"data":{"code":14018,'
+                                      '"msg":"Credits exhausted."}}}')
+        self.assertIn("额度", out)
+        self.assertNotIn("14018", out)
+        self.assertNotIn("Credits exhausted", out)
+        # 英文 credits exhausted 关键词
+        self.assertIn("额度", ox._client_err_msg(429, "credits exhausted, please retry"))
+        # 鉴权失效关键词
+        self.assertIn("登录态", ox._client_err_msg(401, "token 已过期且刷新失败"))
+        # 原始 JSON 形态（无额度/鉴权关键词时）走通用提示
+        self.assertIn("上游", ox._client_err_msg(502, '{"error":{"message":"boom"}}'))
+        # 已是干净中文文案（如并发上限提示）原样保留
+        clean = "CodeArts 上游并发会话已达上限（华为网关限制 3 个）"
+        self.assertEqual(ox._client_err_msg(429, clean), clean)
+
+    def test_upstream_err_in_line_detects_frames(self):
+        """流中错误帧识别：各种上游形态都该被净化，正常内容帧返回 None。"""
+        self.assertIsNotNone(ox._upstream_err_in_line(
+            'data: {"error_code":429,"error_msg":"rate limit"}'))
+        self.assertIsNotNone(ox._upstream_err_in_line(
+            'data: {"error":{"data":{"code":14018,"msg":"Credits exhausted."}}}'))
+        self.assertIsNotNone(ox._upstream_err_in_line(
+            'data: {"code":6004,"msg":"frequency limit"}'))
+        # 正常内容帧不得误判
+        self.assertIsNone(ox._upstream_err_in_line(
+            'data: {"choices":[{"delta":{"content":"hi"}}]}'))
+        self.assertIsNone(ox._upstream_err_in_line("data:[DONE]"))
+        self.assertIsNone(ox._upstream_err_in_line(""))
 
     def test_non_stream_error_chunk_logged(self):
         """非流式聚合吃到 error chunk（上游 SSE error 事件）→ 必须落审计日志。
@@ -236,36 +289,6 @@ class TestRelayAggregate(unittest.TestCase):
                       h.sent[0][1]["error"]["message"])
         logged = " ".join(c[0][0] for c in mlog.call_args_list)
         self.assertIn("InferHub.001001009.400", logged)   # 审计不能静默
-
-    def test_tabbit_error_text_non_stream_becomes_502(self):
-        """Tabbit 流式路径已不发 error 帧（客户端见 error 帧即撤销气泡显示
-        「用户已取消」），错误改为正文 + stop。非流式聚合必须靠正文前缀
-        识别并回 502，否则错误会被当成正常回答 200 返回。"""
-        h = _FakeHandler()
-        lines = [
-            "data:" + json.dumps({
-                "id": "r", "created": 1, "object": "chat.completion.chunk",
-                "choices": [{"index": 0, "delta": {"role": "assistant"},
-                             "finish_reason": None}]}),
-            "data:" + json.dumps({
-                "id": "r", "created": 1, "object": "chat.completion.chunk",
-                "choices": [{"index": 0,
-                             "delta": {"content": "⚠️ Tabbit 上游错误：该模型需要 Pro 会员"},
-                             "finish_reason": None}]}),
-            "data:" + json.dumps({
-                "id": "r", "created": 1, "object": "chat.completion.chunk",
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
-            "data:[DONE]",
-        ]
-        with mock.patch.object(ox, "_open_pool",
-                               return_value=("acct", iter(lines))), \
-             mock.patch("server.log") as mlog:
-            ox.relay(h, {"model": "tb:DeepSeek-V4.1-Flash", "stream": False,
-                         "messages": [{"role": "user", "content": "hi"}]})
-        self.assertEqual(h.sent[0][0], 502)
-        self.assertIn("Pro 会员", h.sent[0][1]["error"]["message"])
-        logged = " ".join(c[0][0] for c in mlog.call_args_list)
-        self.assertIn("HTTP502", logged)                 # 审计不能静默
 
     def test_load_ent_error_no_network(self):
         h = _FakeHandler()

@@ -143,5 +143,35 @@ class GateAuthTest(unittest.TestCase):
             self.assertEqual(h2.sent[0][1]["error"]["code"], "rate_limit_exceeded")
 
 
+class SanitizeClientMessageTest(unittest.TestCase):
+    """客户端可见错误净化：原始上游 JSON / 额度码（14018）绝不透传。"""
+
+    def test_quota_code_hidden(self):
+        raw = '{"error":{"data":{"code":14018,"msg":"Credits exhausted"}}}'
+        out = errors.sanitize_client_message(429, raw)
+        self.assertNotIn("14018", out)
+        self.assertNotIn("Credits exhausted", out)
+        self.assertIn("额度", out)
+
+    def test_raw_json_generic(self):
+        raw = '{"error": {"message": "internal boom"}}'
+        out = errors.sanitize_client_message(502, raw)
+        self.assertNotIn("internal boom", out)
+        self.assertNotIn('"error"', out)
+
+    def test_auth_keyword_hidden(self):
+        out = errors.sanitize_client_message(401, "token 已过期且刷新失败")
+        self.assertIn("登录态", out)
+        self.assertNotIn("token 已过期", out)
+
+    def test_clean_passthrough(self):
+        clean = "CodeArts 上游并发会话已达上限（3个），请稍后重试"
+        self.assertEqual(errors.sanitize_client_message(429, clean), clean)
+
+    def test_to_dict_sanitizes_upstream_raw(self):
+        e = UpstreamError(502, '{"error":{"code":14018,"msg":"x"}}')
+        self.assertNotIn("14018", e.to_dict()["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

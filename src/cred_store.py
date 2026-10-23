@@ -60,6 +60,7 @@ __all__ = [
     "ident_of", "wb_match", "dedupe_store", "name_tail",
     "alloc_account_name", "save_cred",
     "dumate_stable_uid", "lingxi_stable_uid", "tabbit_stable_uid",
+    "doubao_stable_uid",
     "officeace_stable_uid", "ensure_identity",
 ]
 # ════════════════════════════════════════════════════════════════════
@@ -78,6 +79,7 @@ CODEARTS_ACCOUNTS_FILE  = data_dir.path("codearts_accounts.json")
 TELEAGENT_ACCOUNTS_FILE = data_dir.path("teleagent_accounts.json")
 WORKBUDDY_AI_ACCOUNTS_FILE = data_dir.path("workbuddy_ai_accounts.json")
 TABBIT_ACCOUNTS_FILE = data_dir.path("tabbit_accounts.json")
+DOUBAO_ACCOUNTS_FILE = data_dir.path("doubao_accounts.json")
 
 # 各平台的凭据文件（供「添加 / 删除 / 本地导入」统一寻址）
 CRED_FILES = {
@@ -92,6 +94,7 @@ CRED_FILES = {
     "teleagent": TELEAGENT_ACCOUNTS_FILE,
     "workbuddy_ai": WORKBUDDY_AI_ACCOUNTS_FILE,
     "tabbit": TABBIT_ACCOUNTS_FILE,
+    "doubao": DOUBAO_ACCOUNTS_FILE,
 }
 
 # 各平台「身份指纹」字段（按优先级）：同一个指纹 = 同一个账号，只是显示名/令牌可能变了
@@ -127,6 +130,9 @@ IDENT_FIELDS = {
     # ⚠ user_id=JWT sub（Tabbit 账号主键，换 cookie 不变）——cookie 串本身
     #   每次登录都变，绝不能当指纹（重蹈 dumate/lingxi 覆辙）
     "tabbit": ("user_id", "phone", "cookie"),
+    # 豆包：user_id=uid_tt/odin_tt（ByteDance 系用户 id，跨登录会话稳定）；
+    #   取不到才退化为整串 cookie（同 codearts 降级路径）
+    "doubao": ("user_id", "phone", "cookie"),
 }
 
 # 「粘贴添加」时若用户没填备注名，用这个前缀 + 手机号/ID 尾号 自动起名，
@@ -135,7 +141,7 @@ DEFAULT_LABEL = {
     "minimax": "MiniMax", "baidu_dumate": "DuMate", "lingxi": "灵犀",
     "trae": "Trae", "qoder": "Qoder", "zcode": "ZCode",
     "officeace": "OfficeACE", "codearts": "CodeArts", "teleagent": "TeleAgent",
-    "workbuddy_ai": "WB国际版", "tabbit": "Tabbit",
+    "workbuddy_ai": "WB国际版", "tabbit": "Tabbit", "doubao": "豆包",
 }
 
 
@@ -387,6 +393,18 @@ def tabbit_stable_uid(cookie_str):
     return ""
 
 
+def doubao_stable_uid(cookie_str):
+    """豆包身份 = cookie 里的 uid_tt / odin_tt（字节用户主键，换登录不变）。
+
+    与 platforms/doubao.py::stable_uid 同算法；此处独立实现避免
+    cred_store → platforms 的循环依赖。
+    """
+    import re as _re
+    m = _re.search(r"(?:^|;\s*)(?:uid_tt|uid_tt_ss|odin_tt)\s*=\s*([^;\s]+)",
+                   str(cookie_str or ""))
+    return m.group(1).strip() if m else ""
+
+
 def ensure_identity(pid, rec):
     """把稳定身份回填进 rec（幂等，就地修改并返回）。
 
@@ -410,6 +428,11 @@ def ensure_identity(pid, rec):
     elif pid == "tabbit":
         if not str(rec.get("user_id") or "").strip():
             uid = tabbit_stable_uid(rec.get("cookie"))
+            if uid:
+                rec["user_id"] = uid
+    elif pid == "doubao":
+        if not str(rec.get("user_id") or "").strip():
+            uid = doubao_stable_uid(rec.get("cookie"))
             if uid:
                 rec["user_id"] = uid
     elif pid == "officeace":

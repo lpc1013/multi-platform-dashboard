@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Tabbit 平台适配器 + 反代路由单测（不发起任何真实网络请求）。
+"""Tabbit 平台适配器单测（不发起任何真实网络请求）。
 
 覆盖（2026-10-19 逆向协议，参考 goehou/tabbit-toy 505★ 逐行核对）：
   - 注册表 / cred_store 登记（CRED_FILES / IDENT_FIELDS / DEFAULT_LABEL）
   - JWT 解析与稳定身份（sub 优先，无 JWT 不误判过期）
   - save_cred 身份语义：同身份（换 cookie）沿用键名、不同身份开新卡
   - 签名头 / unique-uuid 指纹 / request_no 生成
-  - route_of：tb: 前缀 → tabbit，且不抢 wb:/chat-*/codearts 的路由
+  - route_of：2026-10-22 反代下架后 tb:/chat-* 前缀失效，一律归一 codearts
   - chat_stream：SSE（event:/data: 双形状）→ OpenAI chunk 转换、
     thinking→reasoning_content（含 reasoning_content 字段）、usage/finish、
     error chunk 中文化、499 自动刷新重试、会话失效换新会话重试
@@ -180,15 +180,31 @@ class TestSignAndFingerprint(unittest.TestCase):
 
 
 class TestRouteOf(unittest.TestCase):
-    def test_tb_prefix(self):
-        self.assertEqual(ox.route_of("tb:Default"), "tabbit")
-        self.assertEqual(ox.route_of("TB:glm"), "tabbit")
+    """2026-10-22 Tabbit / TeleAgent 反代下架后的路由回归。
+
+    账号管理（导入/登录/额度）保留，但反代路由已删：tb: 前缀与
+    chat-*（TeleAgent 专属模型）都不再有专属通道，route_of 一律
+    归一 codearts，客户端不会把请求误路由到已不存在的上游。
+    """
+
+    def test_tb_prefix_falls_back_to_codearts(self):
+        self.assertEqual(ox.route_of("tb:Default"), "codearts")
+        self.assertEqual(ox.route_of("TB:glm"), "codearts")
 
     def test_other_prefixes_unchanged(self):
         self.assertEqual(ox.route_of("wb:auto"), "wbai")
-        self.assertEqual(ox.route_of("chat-max"), "teleagent")
-        self.assertEqual(ox.route_of("deepseek-v4.1-flash"), "codearts")
+        self.assertEqual(ox.route_of("chat-max"), "codearts")
         self.assertEqual(ox.route_of(""), "codearts")
+
+    def test_dsflash_unified_pool(self):
+        # deepseek-v4.1-flash 现收口到 DS-Flash 统一池（不再单独走 codearts）
+        self.assertEqual(ox.route_of("ds-flash"), "dsflash")
+        self.assertEqual(ox.route_of("ds4.1-flash"), "dsflash")
+        self.assertEqual(ox.route_of("deepseek-v4.1-flash"), "dsflash")
+        # tb: 前缀已失效：连 DS 模型也不走 Tabbit（统一池按裸模型名匹配，
+        # 带前缀即视为普通模型名 → codearts）
+        self.assertEqual(ox.route_of("tb:DeepSeek-V4.1-Flash"), "codearts")
+        self.assertEqual(ox.route_of("tb:deepseek-v4.1-flash"), "codearts")
 
 
 class TestChatStream(unittest.TestCase):

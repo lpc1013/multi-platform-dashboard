@@ -58,7 +58,7 @@ class TestPoolQuotaProviderValidation(unittest.TestCase):
     def test_valid_names_pass_validation(self):
         """合法名不应被 400 拦掉（load 用 mock 返回空账号，不打上游）。"""
         from unittest import mock
-        for pid in ("codearts", "teleagent", "officeace", "tabbit", "wbai"):
+        for pid in ("codearts", "officeace", "wbai"):
             h = _FakeHandler("/api/pool_quota?provider=" + pid + "&force=1")
             with mock.patch("openai_proxy._pool_spec",
                             return_value=(lambda: {}, None, None, "X")):
@@ -66,6 +66,14 @@ class TestPoolQuotaProviderValidation(unittest.TestCase):
             code, body = h.sent
             self.assertEqual(code, 200, "%s 被误判为未知 provider" % pid)
             self.assertNotIn("未知上游", str(body.get("error") or ""))
+
+    def test_decommissioned_providers_rejected(self):
+        """2026-10-22 反代下架：teleagent / tabbit 不再有池，必须显式 400，
+        而不是悄悄回落成别的上游的账号列表。"""
+        for pid in ("teleagent", "tabbit"):
+            code, body = self._call("/api/pool_quota?provider=" + pid)
+            self.assertEqual(code, 400, "%s 应已下架" % pid)
+            self.assertIn("未知上游", body["error"])
 
 
 if __name__ == "__main__":

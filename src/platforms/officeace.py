@@ -221,12 +221,59 @@ _WV2_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""),
 _sid_cache = {"v": None, "t": 0.0}
 
 
+def _gui_running():
+    """GUI 壳（OfficeAce.exe）是否在跑：在跑说明服务归它所有，看板绝不能动。
+    注意 tasklist 输出是 GBK（中文 Windows），按字节匹配进程名（纯 ASCII）最稳。"""
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq OfficeAce.exe"],
+                             capture_output=True, timeout=10)
+        return b"OfficeAce.exe" in (out.stdout or b"")
+    except Exception:
+        return False
+
+
+def _service_state_paths():
+    """runtime-state.json 候选（安装形态 + 用户目录形态，与 App 的
+    runtimeStateCandidates 对齐）。"""
+    home = os.path.expanduser("~")
+    return [os.path.join(_SERVICE_ROOT, ".office-claw", "run", "windows",
+                         "runtime-state.json"),
+            os.path.join(home, ".office-claw", "run", "windows",
+                         "runtime-state.json")]
+
+
+def _service_api_port():
+    """本地 API 真实端口：runtime-state.json 的 ApiUrl/ApiPort 优先。
+    ⚠ 2026-10-22：GUI 形态下端口可能随机化（asar 内 UseRandomFrontendApiPorts），
+    旧代码写死 3004 → GUI 在跑时 _service_up() 误判「服务没起」→ 抢启裸 host →
+    与 GUI 租约互斥把客户端顶退（问题2 的一条暗线）。"""
+    for st in _service_state_paths():
+        try:
+            with open(st, encoding="utf-8") as f:
+                d = json.load(f)
+            url = str(d.get("ApiUrl") or "").strip()
+            if url:
+                try:
+                    from urllib.parse import urlparse
+                    p = urlparse(url).port
+                    if p:
+                        return p
+                except Exception:
+                    pass
+            port = d.get("ApiPort")
+            if isinstance(port, int) and port > 0:
+                return port
+        except Exception:
+            continue
+    return _SERVICE_PORT
+
+
 def _service_up():
     import socket
     s = socket.socket()
     s.settimeout(1.0)
     try:
-        s.connect(("127.0.0.1", _SERVICE_PORT))
+        s.connect(("127.0.0.1", _service_api_port()))
         return True
     except Exception:
         return False
@@ -234,8 +281,23 @@ def _service_up():
         s.close()
 
 
+def _pid_is_host(pid):
+    """校验 pid 现在确实是 OfficeAceServiceHost.exe（防 pid 复用误杀）。"""
+    try:
+        out = subprocess.run(["tasklist", "/FI", "PID eq %d" % int(pid)],
+                             capture_output=True, timeout=10)
+        return b"OfficeAceServiceHost.exe" in (out.stdout or b"")
+    except Exception:
+        return False
+
+
+# 本进程直启的 ServiceHost pid（回收时只杀它；2026-10-22 所有权硬化）
+_service_owned_pid = None
+
+
 def _service_start():
     """直启 ServiceHeadless（无 GUI）。ServiceHost 检测到 *PROXY* 环境变量会拒绝启动。"""
+    global _service_owned_pid
     if not os.path.isfile(_SERVICE_HOST_EXE):
         return False, "未找到 ServiceHost：%s" % _SERVICE_HOST_EXE
     env = dict(os.environ)
@@ -255,21 +317,30 @@ def _service_start():
         return False, "ServiceHost 启动失败：%s" % str(e)[:120]
     for _ in range(35):                    # ≤35s 等 api 就绪（实测 ~6s）
         if _service_up():
+            # 记住这个 host 的归属：state 里的 HostPid 就是我们刚拉起的这个
+            _service_owned_pid = _runtime_host_pid()
             return True, "ServiceHost 已就绪"
         time.sleep(1.0)
     return False, "ServiceHost 35s 内未就绪（查 .office-claw/run/windows/lifecycle.ndjson）"
 
 
 def _runtime_host_pid():
-    """读 runtime-state.json 的 HostPid（服务没在跑/读不到返回 None）。"""
-    st = os.path.join(_SERVICE_ROOT, ".office-claw", "run", "windows",
-                      "runtime-state.json")
-    try:
-        with open(st, encoding="utf-8") as f:
-            pid = int(json.load(f).get("HostPid") or 0)
-        return pid or None
-    except Exception:
-        return None
+    """读 runtime-state.json 的 HostPid（服务没在跑/读不到返回 None）。
+
+    ⚠ 2026-10-22（客户端 1.4.1）：状态文件从 <安装目录>\\.office-claw\\run\\windows\\
+    迁到了 %USERPROFILE%\\.office-claw\\run\\windows\\（SchemaVersion 3，
+    UserDataRoot 也变了）。旧实现只读安装目录 → 1.4.1 下永远返回 None →
+    _service_start 记不住归属 → _service_stop 永不回收（裸 host 残留顶死 GUI）。
+    现在遍历全部候选路径，并优先返回「pid 确实是活着的 ServiceHost」的那条。"""
+    for st in _service_state_paths():
+        try:
+            with open(st, encoding="utf-8") as f:
+                pid = int(json.load(f).get("HostPid") or 0)
+        except Exception:
+            continue
+        if pid and _pid_is_host(pid):
+            return pid
+    return None
 
 
 def _service_stop():
@@ -282,9 +353,22 @@ def _service_stop():
     ⚠ 2026-10-19 补充：杀掉进程还不够——runtime-state.json 里仍留着死 pid，
     官方客户端下次启动时新 host 写状态前先读到旧文件 → 直接抛
     「expected pid=A, actual pid=B」拒绝启动（实测 19:58/20:03 复现）。
-    因此回收后必须把指向该 pid 的状态文件一并清掉，让客户端重新生成。"""
-    pid = _runtime_host_pid()
+    因此回收后必须把指向该 pid 的状态文件一并清掉，让客户端重新生成。
+
+    ⚠⚠ 2026-10-22 所有权硬化（勿回退）：只杀 _service_start 直启的那个 pid。
+    旧实现「读当前 state 的 HostPid 就杀」有个致命 race：刷新起停 host 期间
+    用户发起短信登录 → autostart 清掉我们的 host、GUI 拉起新服务并改写 state →
+    刷新的 finally 再来 _service_stop，读到的已是 **GUI host 的 pid**，一刀
+    把用户的客户端服务杀掉（表现为 authorize HTTP 0 / 客户端抽搐）。
+    现在先校验 owned pid 仍是 ServiceHost 才动手，GUI 接管后自动跳过。"""
+    global _service_owned_pid
+    pid = _service_owned_pid
+    _service_owned_pid = None
     if not pid:
+        return False
+    if not _pid_is_host(pid):
+        # 我们的 host 已经没了（被 GUI 接管/已死）→ 只清可能残留的状态文件
+        _clear_stale_state(pid)
         return False
     try:
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -297,20 +381,23 @@ def _service_stop():
 
 
 def _clear_stale_state(pid):
-    """删除仍指向已退出 host 的 runtime-state.json（客户端启动时会重新生成）。"""
-    st = os.path.join(_SERVICE_ROOT, ".office-claw", "run", "windows",
-                      "runtime-state.json")
-    try:
-        with open(st, encoding="utf-8") as f:
-            if int(json.load(f).get("HostPid") or 0) != int(pid):
-                return False
-    except Exception:
-        return False
-    try:
-        os.remove(st)
-        return True
-    except Exception:
-        return False
+    """删除仍指向已退出 host 的 runtime-state.json（客户端启动时会重新生成）。
+
+    ⚠ 2026-10-22（1.4.1）：状态文件可能在新位置 %USERPROFILE%\\.office-claw\\...，
+    必须遍历全部候选路径，否则新位置留着死 pid，客户端抛 expected/actual 拒启。"""
+    for st in _service_state_paths():
+        try:
+            with open(st, encoding="utf-8") as f:
+                if int(json.load(f).get("HostPid") or 0) != int(pid):
+                    continue
+        except Exception:
+            continue
+        try:
+            os.remove(st)
+            return True
+        except Exception:
+            continue
+    return False
 
 
 def _oc_sid():
@@ -424,17 +511,79 @@ def pick_live_session(name, ent, accs):
     return None
 
 
+_refresh_fail = {}            # name -> (until_ts, msg) 刷新失败冷却（防每轮起停 host）
+_REFRESH_FAIL_COOLDOWN = 300  # 秒；STS 有效期 2h，刷不成功不必秒级重试
+
+
+def _current_session_uid():
+    """客户端 SQLite 里「当前登录账号」的 stable_uid（只读库，不需要服务在跑）。
+    判定：expires_at 最新的会话 —— 客户端只给当前登录号续 STS，它的 expires 一直最新。"""
+    try:
+        import local_import
+        _ok, _m, accs = local_import.read_officeace()
+        best, best_exp = None, ""
+        for v in (accs or {}).values():
+            e = str((v or {}).get("expires_at") or "")
+            if e > best_exp:
+                best_exp, best = e, v
+        return officeace_stable_uid((best or {}).get("user_id"))
+    except Exception:
+        return None
+
+
 def try_refresh(name, ent):
     """无人值守刷新。成功返回 (True, 提示) 并就地更新 ent + 持久化。
-    本函数直启的 ServiceHost 在结束时回收（见 _service_stop 的 NATIVE_SERVICE_STATE_INVALID 教训）。"""
+    本函数直启的 ServiceHost 在结束时回收（见 _service_stop 的 NATIVE_SERVICE_STATE_INVALID 教训）。
+
+    ⚠ 2026-10-22：GUI 在跑时绝不直启裸 host —— 客户端检测到另一个 native service
+    host 在跑就拒启（startup-failure.json 实证），用户会打不开客户端。GUI 在跑就
+    等它自己的 API（端口从 runtime-state.json 动态解析，随机端口也不会误判）。
+
+    ⚠⚠ 2026-10-22 二次根因修复（勿回退）—— 刷新周期曾是「客户端打不开 /
+    登录拿不到授权链接（HTTP 0）」的隐形杀手：
+    ① 登录互斥：短信登录独占 GUI（officeclaw:// 只能由 GUI 接收），
+       刷新起停裸 host 会把客户端顶退 → 登录进行中直接跳过；
+    ② 账号前置闸：客户端只刷新「当前登录账号」的 STS。本号不是当前号时
+       pick_live_session 必然落空，起裸 host 纯属白试，却每轮刷新都起停一次
+       host、把用户双击的客户端顶退（0623 实证：13:49 GUI 被
+       "Another OfficeAce native service host is already running" 挡死）；
+    ③ 失败冷却 5 分钟：刷不成功就别高频重试，把 host 起停频率压到有界。"""
+    try:
+        import officeace_guard
+        if officeace_guard.login_running():
+            return False, "果办登录流程进行中，已跳过本次自动续期"
+    except Exception:
+        pass
+    now = time.time()
+    until, msg = _refresh_fail.get(name, (0.0, ""))
+    if until > now:
+        left = int(until - now)
+        return False, (("%s（%d 秒后重试）" % (msg, left)) if msg
+                       else ("自动续期冷却中（%d 秒后重试）" % left))
+    cur = _current_session_uid()
+    my = officeace_stable_uid(ent.get("user_id"))
+    if cur and my and cur != my:
+        return False, ("客户端当前登录的是其他账号（客户端只刷新当前登录账号）；"
+                       "请打开客户端切换到本账号登录，或用本账号手机号看板短信登录")
     spawned = False
     try:
         if not _service_up():
-            ok, msg = _service_start()
-            if not ok:
-                return False, msg
-            spawned = True
-        return _try_refresh_inner(name, ent)
+            if _gui_running():
+                # 服务是 GUI 的，等它把 API 拉起来即可（Electron 冷启 ~10-25s）
+                for _ in range(25):
+                    time.sleep(1.0)
+                    if _service_up():
+                        break
+            if not _service_up():
+                ok, msg = _service_start()
+                if not ok:
+                    _refresh_fail[name] = (now + _REFRESH_FAIL_COOLDOWN, msg)
+                    return False, msg
+                spawned = True
+        ok, msg = _try_refresh_inner(name, ent)
+        if not ok:
+            _refresh_fail[name] = (time.time() + _REFRESH_FAIL_COOLDOWN, msg)
+        return ok, msg
     finally:
         if spawned:
             _service_stop()
@@ -454,14 +603,15 @@ def _try_refresh_inner(name, ent):
     old_exp = (ent.get("expires_at") or "").strip()
     try:
         req = urllib.request.Request(
-            "https://127.0.0.1:%d/api/islogin" % _SERVICE_PORT,
+            "https://127.0.0.1:%d/api/islogin" % _service_api_port(),
             headers={"Cookie": "oc_sid=%s" % sid})
         with urllib.request.urlopen(req, timeout=15, context=ctx) as r:
             j = json.loads(r.read().decode("utf-8", "replace"))
     except Exception as e:
         return False, "islogin 调用失败：%s" % str(e)[:120]
     if not j.get("islogin"):
-        return False, "客户端会话已失效（islogin=false），需重新登录客户端"
+        return False, ("华为账号会话已失效（islogin=false）：请在果办 OfficeAce 客户端"
+                       "重新登录，并勾选「记住我 / 30 天内免登录」，看板会自动读取新会话")
     # 轮询 SQLite 等新凭据落盘（实测 1~5s）
     try:
         sys.path.insert(0, ROOT)
@@ -500,7 +650,8 @@ def _try_refresh_inner(name, ent):
                            "请打开 OfficeACE 客户端登录后再续期" % (why_empty or "24 秒内无返回"))
         if not seen_same_uid:
             return False, ("客户端里没有本账号（uid %s）的登录会话，不能借用别的号的凭据；"
-                           "请在客户端切到该账号登录后再续期"
+                           "请在 OfficeACE 客户端切到该账号登录，或在看板里用该手机号"
+                           "「手机号+验证码登录」重登一次后再续期"
                            % (officeace_stable_uid(ent.get("user_id")) or "?")[:20])
         # 本号会话在客户端里、但 24 秒一点没动：客户端只刷新**当前登录**的那个号，
         # 其余号那条会话会一整天停在同一时刻（2026-10-20 实证：0623 停在 07:14，
@@ -513,9 +664,15 @@ def _try_refresh_inner(name, ent):
                 fresher = (nm, str(v.get("expires_at"))[:19])
                 break
         if fresher:
+            # 客户端只刷新**当前登录**的那个号（2026-10-20 实证：0623 停在 07:14，
+            # 同时在用的号刷到 14:08）。点名那个号 + 给出两条可操作路径。
+            ph = str(ent.get("phone") or "")
             return False, ("刷新未生效：客户端当前登录的是「%s」（其凭据到 %s），"
-                           "本账号的会话没被刷新；请在客户端切到本账号登录"
-                           "（或重新输验证码）后再续期" % fresher)
+                           "本账号的会话没被刷新（客户端只刷当前登录的号）。"
+                           "请在 OfficeACE 客户端切到本账号登录，或在看板里用本机号"
+                           "「手机号+验证码登录」重登一次再续期%s"
+                           % (fresher[0], fresher[1],
+                              ("（手机号 %s）" % ph) if len(ph) == 11 else ""))
         return False, "刷新未生效（SQLite expires_at 未变化）"
     for k in ("ak", "sk", "sts_token", "project_id", "expires_at", "refresh_token",
               "refresh_expires_at", "user_id", "host", "region"):
@@ -583,7 +740,35 @@ def load_accounts():
 
 
 # ───────────────────────── 读取 ─────────────────────────
-def _req(ent, path, method="GET", body=None, extra=None, timeout=25):
+def _conn_retryable(e):
+    """连接级错误（瞬时网络波动 / 本地代理重置连接 / 超时 / 分块中断）才安全重试；
+    HTTP 4xx/5xx 是确定的业务响应，绝不重试。"""
+    return isinstance(e, (requests.exceptions.ConnectionError,
+                          requests.exceptions.Timeout,
+                          requests.exceptions.ChunkedEncodingError))
+
+
+def _clean_conn_err(e):
+    """把原始连接异常 repr 转成给用户的干净中文，绝不甩
+    'ConnectionResetError(10054, ...)' / 'Connection aborted.' 这类原始栈。
+    根因（2026-10-22 实测）：本机挂着 HTTPS_PROXY=127.0.0.1:7890，某次看板查
+    订阅时该代理瞬时抖动重置了连接 → 10054；端点本身直连/走代理均可达（已测）。"""
+    s = str(e)
+    if "10054" in s or "ConnectionReset" in s or "Connection aborted" in s:
+        return "OfficeACE 云端连接被重置（网络波动或本地代理中断），已自动重试仍失败，请稍后重试"
+    if "10061" in s or "Connection refused" in s:
+        return "OfficeACE 云端连接被拒绝（目标不可达），请检查网络或本地代理后重试"
+    if "timed out" in s.lower() or "Timeout" in s:
+        return "OfficeACE 云端请求超时，请稍后重试"
+    return "OfficeACE 云端连接失败，请稍后重试"
+
+
+def _req(ent, path, method="GET", body=None, extra=None, timeout=25, _tries=3):
+    """发请求到 OfficeACE（本地原生服务 or 华为云）。
+
+    ⚠ 2026-10-22 加固：连接级错误（10054 重置 / 超时 / 分块中断）自动退避重试
+    （最多 3 次，0.5s→1.0s），避免一次瞬时网络抖动就把订阅查询硬失败；
+    最终失败也只回干净中文，不把原始异常 repr 甩给调用方（呼应「别弹原始报错」）。"""
     host = (ent.get("host") or DEFAULT_HOST).rstrip("/")
     url = host + path
     body_text = json.dumps(body, ensure_ascii=False) if body is not None else ""
@@ -594,15 +779,23 @@ def _req(ent, path, method="GET", body=None, extra=None, timeout=25):
         hdr.update(extra)
     h = sign_request(method, url, ent.get("ak", ""), ent.get("sk", ""), ent.get("sts_token", ""),
                      project_id=ent.get("project_id", ""), body_text=body_text, extra_headers=hdr)
-    try:
-        r = requests.request(method.upper(), url, headers=h,
-                             data=(body_text or None), timeout=timeout, verify=False)
-    except Exception as e:
-        return 0, {"error": str(e)[:160]}
-    try:
-        return r.status_code, r.json()
-    except Exception:
-        return r.status_code, {"raw": r.text[:300]}
+    last = None
+    for attempt in range(1, _tries + 1):
+        try:
+            r = requests.request(method.upper(), url, headers=h,
+                                 data=(body_text or None), timeout=timeout, verify=False)
+        except Exception as e:
+            last = e
+            if _conn_retryable(e) and attempt < _tries:
+                time.sleep(0.5 * attempt)        # 0.5s, 1.0s 退避
+                continue
+            return 0, {"error": _clean_conn_err(e), "raw": str(e)[:160]}
+        try:
+            return r.status_code, r.json()
+        except Exception:
+            # 200 但响应体非 JSON（极少见）→ 不当连接错误重试，直接返回原文截断
+            return r.status_code, {"raw": r.text[:300]}
+    return 0, {"error": _clean_conn_err(last), "raw": str(last)[:160]}
 
 
 def _expired(ent):
@@ -747,7 +940,8 @@ def read_account(name, ent):
                               "expired": exp}
             return empty
     if st != 200:
-        empty["error"] = "订阅查询失败（HTTP %s）：%s" % (st, str(j)[:120])
+        msg = (j.get("error") if isinstance(j, dict) else None) or str(j)
+        empty["error"] = "订阅查询失败（HTTP %s）：%s" % (st, str(msg)[:120])
         empty["extra"] = {"phone": _phone, "expires_at": ent.get("expires_at"), "expired": exp}
         return empty
 
